@@ -1,0 +1,4 @@
+interface:
+  display_name: "Krineon"
+  short_description: "Coordinate evidence-driven vulnerability campaigns"
+  default_prompt: "Use $krineon to start a safe, evidence-driven source-code security campaign."

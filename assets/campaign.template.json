@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "target": "replace-with-target",
+  "repository": "replace-with-repository",
+  "commit": "replace-with-tested-revision",
+  "mode": "source",
+  "programUrl": "",
+  "createdAt": "",
+  "authorization": {
+    "confirmed": false,
+    "basis": "",
+    "allowedEnvironment": "local owned fixture",
+    "stopConditions": []
+  },
+  "scope": [],
+  "outOfScope": [],
+  "lanes": [],
+  "notes": ""
+}

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "F000",
+  "title": "Candidate title",
+  "lane": "unassigned",
+  "status": "idea",
+  "testedVersion": "",
+  "rootCause": "",
+  "ingress": "",
+  "carrier": "",
+  "terminal": "",
+  "impact": "",
+  "preconditions": [],
+  "attackerAcquisition": [],
+  "evidence": [],
+  "controls": {
+    "baseline": "",
+    "negative": "",
+    "positive": "",
+    "patched": ""
+  },
+  "reliability": {
+    "successes": null,
+    "attempts": null,
+    "freshProcesses": false
+  },
+  "gates": {
+    "authorization_confirmed": false,
+    "scope_confirmed": false,
+    "exact_version_pinned": false,
+    "root_cause_identified": false,
+    "attacker_control_proven": false,
+    "baseline_control": false,
+    "negative_control": false,
+    "positive_case": false,
+    "concrete_impact": false,
+    "reproduction_complete": false,
+    "independent_replay": false,
+    "prior_art_checked": false,
+    "official_docs_checked": false,
+    "upstream_tests_checked": false,
+    "patch_status_checked": false,
+    "source_refs_verified": false,
+    "cleanup_verified": false,
+    "secrets_removed": false
+  },
+  "blockers": [],
+  "notes": ""
+}
