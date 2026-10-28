@@ -106,6 +106,8 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("trailmark", payload["commands"])
         self.assertIn("joern", payload["commands"])
         self.assertIn("tree-sitter", payload["commands"])
+        self.assertIn("z3", payload["commands"])
+        self.assertIn("z3", payload["pythonModules"])
 
 
 if __name__ == "__main__":

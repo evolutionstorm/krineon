@@ -21,6 +21,7 @@ COMMANDS: dict[str, list[list[str]]] = {
     "joern": [["joern", "--version"]],
     "joern-parse": [["joern-parse", "--help"]],
     "joern-scan": [["joern-scan", "--help"]],
+    "z3": [["z3", "-version"], ["z3", "--version"]],
     "ripgrep": [["rg", "--version"]],
     "semgrep": [["semgrep", "--version"]],
     "opengrep": [["opengrep", "--version"]],
@@ -33,6 +34,7 @@ COMMANDS: dict[str, list[list[str]]] = {
 PYTHON_MODULES = (
     "tree_sitter",
     "tree_sitter_languages",
+    "z3",
 )
 
 
@@ -97,6 +99,7 @@ def build_inventory() -> dict[str, Any]:
         "guidance": {
             "treeSitter": "Use for syntax-aware census and ordering; absence is a recorded limitation.",
             "joern": "Use for bounded flow and dominance questions; empty graphs are not proof of absence.",
+            "z3": "Use for implementation-matched constraints and candidate inputs; a model is not runtime proof.",
             "trailmark": "Use for rapid structure, entrypoints, call graphs, and diffs; verify manually and at runtime.",
             "authority": "Source semantics and controlled runtime evidence decide the security claim.",
         },

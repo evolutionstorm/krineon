@@ -4,10 +4,9 @@ Krineon is a multi-agent, evidence-driven vulnerability-research harness that
 packages the methodology used across source-code campaigns that produced
 multiple confirmed remote-code-execution chains and several high-severity
 findings. Its central lesson is that finding a primitive is only the beginning.
-A bounty-grade result
-needs a supported ingress, a violated security boundary, a realistic carrier,
-concrete impact, controls, independent replay, and accurate scope and prior-art
-analysis.
+A bounty-grade result needs a supported ingress, a violated security boundary,
+a realistic carrier, concrete impact, controls, independent replay, and
+accurate scope and prior-art analysis.
 
 The harness is intentionally target-neutral. It supports local source audits,
 owned lab environments, testnets, and program-authorized systems. It does not
@@ -20,6 +19,27 @@ workflow maps directly to Codex collaboration tools. For long, adversarial
 campaigns, use **GPT-5.6 Sol with `max` reasoning**. Other models and coding
 agents can run the Python harness and follow the shared methodology, but their
 subagent, permission, and skill-loading interfaces may require adapters.
+
+## Analysis coverage
+
+Krineon combines complementary analysis tools rather than treating any single
+graph or query engine as authoritative:
+
+- **Trailmark** rapidly maps repository structure, entry points, call graphs,
+  and security-relevant changes between revisions.
+- **Tree-sitter** provides syntax-aware censuses and precise ordering checks
+  without matching comments or strings as code.
+- **Joern** builds a code property graph for bounded reachability, data-flow,
+  dominance, and missing-validation questions.
+- **Z3** solves implementation-matched constraints for integer boundaries,
+  parser and serializer disagreements, non-injective encodings, cache-key
+  collisions, and authorization-state combinations.
+
+Together, these tools broaden coverage and help generate concrete test inputs.
+Their output remains a lead or model result until manual source review and a
+controlled runtime differential confirm the security claim. Run
+`scripts/tool_probe.py` to record which optional tools are available. The probe
+does not install or modify them.
 
 ## Quick start
 

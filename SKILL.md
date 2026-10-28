@@ -33,8 +33,8 @@ python3 scripts/tool_probe.py --output CAMPAIGN_DIR/tools/tool-probe.json
    privileged sinks before proposing exploits.
 3. Launch discovery agents in complementary lanes, not duplicate free-form
    searches. Read [references/orchestration.md](references/orchestration.md).
-4. Use Tree-sitter, Joern, Trailmark, targeted search, history, and runtime
-   instrumentation as assistants. Read
+4. Use Trailmark, Tree-sitter, Joern, Z3, targeted search, history, and runtime
+   instrumentation as complementary assistants. Read
    [references/tool-assisted-analysis.md](references/tool-assisted-analysis.md).
 5. Register every hypothesis, including blocked and disproved routes. Avoid
    silently recycling rejected ideas under new names.

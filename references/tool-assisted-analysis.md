@@ -13,8 +13,8 @@ Run:
 python3 scripts/tool_probe.py --json
 ```
 
-Record the result in the campaign. Do not assume Tree-sitter, Joern, Trailmark,
-language frontends, or build databases are present.
+Record the result in the campaign. Do not assume Trailmark, Tree-sitter, Joern,
+Z3, language frontends, or build databases are present.
 
 ## Trailmark
 
@@ -98,6 +98,25 @@ cpg.call.name("privilegedSink").whereNot(_.controlledBy.isCall.name("validate.*"
 Adapt names and frontends to the language. Treat an empty result as “not found
 by this graph,” not proof that the path is impossible.
 
+## Z3
+
+Use Z3 after translating a bounded implementation question into the same bit
+widths, signedness, truncation, encoding, and state transitions used by the
+target. High-value models include:
+
+- integer wrap, length truncation, and signed-versus-unsigned comparisons;
+- parser and serializer disagreements over the same protocol field;
+- non-injective cache keys, identifiers, or binary encodings;
+- authorization, feature-flag, and lifecycle combinations that make a guarded
+  state reachable;
+- the smallest concrete input satisfying a suspected boundary violation.
+
+Retain the model, solver version, constraints, result, and generated input. A
+satisfiable model produces a candidate test case, not an exploit. An
+unsatisfiable result excludes only the encoded model, not the real program.
+Confirm every useful result against the exact shipped implementation and a
+runtime control matrix.
+
 ## Targeted text and history
 
 Use `rg` for exact constants, error messages, header names, option defaults,
@@ -134,8 +153,10 @@ state transition being tested.
 1. Trailmark creates a rapid surface and diff map.
 2. Tree-sitter produces exact syntax censuses and ordering checks.
 3. Joern investigates data flow, reachability, and missing dominance.
-4. `rg`, tests, docs, and history verify intent and completeness.
-5. Manual source reading explains semantics.
-6. Runtime differential tests decide the claim.
+4. Z3 solves bounded representation and state constraints and generates
+   candidate inputs.
+5. `rg`, tests, docs, and history verify intent and completeness.
+6. Manual source reading explains semantics.
+7. Runtime differential tests decide the claim.
 
 If tools disagree, reduce the question until the discrepancy can be explained.
