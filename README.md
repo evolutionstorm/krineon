@@ -17,7 +17,7 @@ automate exploitation of third-party production targets.
 
 The harness is portable, but it works best with Codex because the orchestration
 workflow maps directly to Codex collaboration tools. For long, adversarial
-campaigns, use **GPT-6.1 Sol with `max` reasoning**. Other models and coding
+campaigns, use **GPT-5.6 Sol with `max` reasoning**. Other models and coding
 agents can run the Python harness and follow the shared methodology, but their
 subagent, permission, and skill-loading interfaces may require adapters.
 
