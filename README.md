@@ -1,9 +1,10 @@
 # Krineon
 
-Krineon is an agentic security-research harness that packages the methodology
-used across source-code campaigns that produced multiple confirmed
-remote-code-execution chains and several high-severity findings. Its central
-lesson is that finding a primitive is only the beginning. A bounty-grade result
+Krineon is a multi-agent, evidence-driven vulnerability-research harness that
+packages the methodology used across source-code campaigns that produced
+multiple confirmed remote-code-execution chains and several high-severity
+findings. Its central lesson is that finding a primitive is only the beginning.
+A bounty-grade result
 needs a supported ingress, a violated security boundary, a realistic carrier,
 concrete impact, controls, independent replay, and accurate scope and prior-art
 analysis.
