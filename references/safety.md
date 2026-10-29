@@ -46,6 +46,12 @@ assertions, and deterministic harnesses. Move to uninstrumented stock builds
 only after the trigger is bounded. Avoid uncontrolled shells, persistence,
 network callbacks, credential access, or destructive commands.
 
+`dynamic_harness.py` provides bounded local execution and evidence capture, not
+a security sandbox. Its POSIX resource limits and best-effort process-group
+cleanup do not contain escaped processes, target-written files, or network
+access. Run unsafe targets inside a disposable VM or container, review raw
+artifacts before sharing them, and use a fresh campaign/target pin for a fix.
+
 When testing races or allocator corruption, cap attempts and monitor memory,
 disk, CPU, process count, and listeners. Stop if the host becomes unstable or
 the test escapes the owned environment.

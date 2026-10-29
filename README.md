@@ -47,8 +47,6 @@ does not install or modify them.
 ```bash
 cd krineon
 
-python3 scripts/tool_probe.py --output ../campaigns/example/tools/tool-probe.json
-
 python3 scripts/research_harness.py init ../campaigns/example \
   --target example-project \
   --repo https://github.com/example/project \
@@ -59,6 +57,7 @@ python3 scripts/research_harness.py init ../campaigns/example \
 python3 scripts/research_harness.py plan ../campaigns/example \
   --max-concurrency 3 --lease-seconds 900 \
   --task-timeout-seconds 7200 --max-attempts 2
+python3 scripts/tool_probe.py --output ../campaigns/example/tools/tool-probe.json
 python3 scripts/research_harness.py queue ../campaigns/example
 python3 scripts/research_harness.py worker-register ../campaigns/example worker-a \
   --agent codex:session-a --role originator
@@ -134,6 +133,62 @@ worker, result digest, and outcome are identical. A conflicting reuse fails.
 whose dependencies ended unsuccessfully. Coordinator or worker restarts do not
 erase queue state or accepted submissions.
 
+## Bounded dynamic testing
+
+`scripts/dynamic_harness.py` executes owned local targets without a shell. It
+supports one-input experiments, deterministic mutation fuzzing, optional
+coverage feedback, persistent corpora, crash deduplication, minimization,
+replay, and crash reproduction audits. Dynamic commands require
+`authorization.confirmed: true`, an allowed environment, a pinned campaign
+revision, and `source` or `local-lab` mode.
+
+Run and fuzz a file-input target:
+
+```bash
+python3 scripts/dynamic_harness.py run ../campaigns/example \
+  --input-file seeds/valid.bin --name parser --input-mode file \
+  --cwd /path/to/target --target-artifact /path/to/parser \
+  -- /path/to/parser '{input}'
+
+python3 scripts/dynamic_harness.py fuzz ../campaigns/example \
+  --seed-file seeds/valid.bin --iterations 10000 --rng-seed 1 \
+  --name parser --input-mode file --cwd /path/to/target \
+  --target-artifact /path/to/parser -- /path/to/parser '{input}'
+```
+
+Repeat `--target-artifact` for scripts and data dependencies. The executable is
+also pinned automatically. Replay verifies those hashes and refuses to
+silently substitute a changed target. For stdin targets, omit `--input-mode`
+and `{input}`.
+
+Each seed is calibrated before the requested mutation iterations. A target or
+wrapper can optionally write one coverage edge ID per line to the file named by
+`KRINEON_COVERAGE_FILE`; `KRINEON_INPUT_FILE` names the current input. Inputs
+that discover new edges join `dynamic/corpus/NAME/` and affect subsequent
+mutations. Later fuzz runs reload that corpus unless `--no-load-corpus` is set.
+The runner does not inject compiler instrumentation itself.
+
+Crash and reproduction workflow:
+
+```bash
+python3 scripts/dynamic_harness.py minimize CAMPAIGN CRASH_ID
+python3 scripts/dynamic_harness.py replay crash CAMPAIGN CRASH_ID --minimized
+python3 scripts/dynamic_harness.py replay case CAMPAIGN RUN_ID 0
+python3 scripts/dynamic_harness.py regression CAMPAIGN
+```
+
+Raw inputs, bounded stdout/stderr, coverage, results, and target configuration
+are retained under `dynamic/runs/` and `dynamic/crashes/`. `regression` checks
+that historical crashes still reproduce against their original pinned targets;
+it is not a patched-build gate. A crash or sanitizer report remains a lead until
+controls establish security impact.
+
+The POSIX runner enforces wall-clock, CPU, optional address-space, input, and
+captured-output limits and performs best-effort process-group cleanup. These
+are resource controls, **not a security sandbox**; use a disposable VM or
+container for unsafe targets. Escaped process groups, target-written files,
+and network access are not contained by this module.
+
 ## Workflow
 
 ```text
@@ -165,6 +220,7 @@ SKILL.md                         Codex operating instructions
 agents/openai.yaml               Skill UI metadata
 scripts/research_harness.py      Campaign, registry, gates, lint, hashes
                                 and durable task orchestration
+scripts/dynamic_harness.py       Bounded execution, fuzzing, and crash replay
 scripts/tool_probe.py            Local static-tool capability inventory
 references/methodology.md        End-to-end research method
 references/orchestration.md      Multi-agent waves and handoffs
@@ -177,6 +233,7 @@ assets/campaign.template.json
 assets/finding.template.json
 assets/agent-handoff.template.md
 tests/test_research_harness.py
+tests/test_dynamic_harness.py
 ```
 
 ## Core principles

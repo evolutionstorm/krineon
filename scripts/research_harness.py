@@ -1554,7 +1554,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def iter_artifacts(root: Path) -> Iterable[Path]:
-    for dirname in ("evidence", "findings", "reports", "results"):
+    for dirname in ("evidence", "findings", "reports", "results", "dynamic"):
         base = root / dirname
         if not base.exists():
             continue
@@ -1773,7 +1773,7 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--json", action="store_true")
     gate.set_defaults(func=cmd_gate)
 
-    hash_cmd = sub.add_parser("hash", help="hash retained findings, evidence, reports, and metadata")
+    hash_cmd = sub.add_parser("hash", help="hash retained findings, evidence, dynamic results, reports, and metadata")
     hash_cmd.add_argument("campaign_dir")
     hash_cmd.set_defaults(func=cmd_hash)
 

@@ -107,6 +107,29 @@ their tasks would overlap materially.
 - Never claim a current patch status, version range, CVE relationship, or
   documentation guarantee without checking primary sources on the filing day.
 
+## Bounded dynamic validation
+
+After confirming authorization, use `scripts/dynamic_harness.py` for owned local
+`source` and `local-lab` targets. Pin every load-bearing target artifact, retain
+raw cases, and treat crashes as leads rather than concrete security impact.
+
+```bash
+python3 scripts/dynamic_harness.py fuzz CAMPAIGN_DIR \
+  --seed-file SEED --iterations 10000 --rng-seed 1 \
+  --name TARGET_NAME --input-mode file --cwd TARGET_DIR \
+  --target-artifact TARGET_BINARY -- TARGET_BINARY '{input}'
+python3 scripts/dynamic_harness.py minimize CAMPAIGN_DIR CRASH_ID
+python3 scripts/dynamic_harness.py replay crash CAMPAIGN_DIR CRASH_ID --minimized
+python3 scripts/dynamic_harness.py regression CAMPAIGN_DIR
+```
+
+For coverage feedback, a target or wrapper writes one edge ID per line to
+`KRINEON_COVERAGE_FILE`. New-coverage inputs persist in the target corpus and
+are loaded by later runs. The POSIX resource limits and process-group cleanup
+are not a security sandbox; use a disposable VM or container for unsafe code.
+`regression` verifies reproduction against the original pinned target, not a
+patched build.
+
 ## Harness commands
 
 ```bash
@@ -126,5 +149,7 @@ python3 scripts/research_harness.py lint CAMPAIGN_DIR
 
 The harness is an operational cooperative scheduler, not a model-process
 launcher. Codex, Claude Code, OpenCode, CI jobs, and human workers connect by
-using the worker protocol. It does not attack targets or submit reports.
-External actions remain subject to the user's authorization and program rules.
+using the worker protocol. It does not autonomously attack third-party targets
+or submit reports. Dynamic execution is limited to explicitly authorized local
+processes. External actions remain subject to the user's authorization and
+program rules.

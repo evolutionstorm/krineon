@@ -146,7 +146,10 @@ Static output becomes evidence only after a runtime experiment answers:
 
 Instrument with logs, packet captures, sanitizers, debugger traces, or bounded
 markers only in owned environments. Preserve raw output and avoid changing the
-state transition being tested.
+state transition being tested. For local process targets,
+`scripts/dynamic_harness.py` provides pinned execution, deterministic fuzzing,
+optional file-based coverage feedback, crash minimization, and replay. Its
+resource limits are not a substitute for a disposable VM or container.
 
 ## Recommended combined workflow
 
