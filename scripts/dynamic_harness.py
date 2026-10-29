@@ -28,8 +28,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
+from crash_triage import triage_campaign, triage_one
 
-ENGINE_VERSION = "1"
+
+ENGINE_VERSION = "2"
 INPUT_PLACEHOLDER = "{input}"
 MAX_COVERAGE_EDGES = 65536
 SAFE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
@@ -125,7 +127,7 @@ def require_dynamic_campaign(root: Path) -> dict[str, Any]:
     if campaign.get("mode") not in ("source", "local-lab"):
         raise DynamicError("the local process runner supports only source and local-lab campaign modes")
     revision = str(campaign.get("commit", "")).strip()
-    if not revision or revision == "replace-with-tested-revision":
+    if not revision or revision in {"replace-with-tested-revision", "pending-pin"}:
         raise DynamicError("dynamic testing refused: pin the exact tested revision in campaign.json")
     return campaign
 
@@ -622,6 +624,9 @@ def save_crash(
             "signature": execution.result.get("signature"),
             "sanitizer": execution.result.get("sanitizer"),
             "signal": execution.result.get("signal"),
+            "returnCode": execution.result.get("returnCode"),
+            "stdoutTruncated": execution.result.get("stdoutTruncated"),
+            "stderrTruncated": execution.result.get("stderrTruncated"),
             "createdAt": occurrence["at"],
             "lastSeenAt": occurrence["at"],
             "occurrences": 1,
@@ -635,6 +640,7 @@ def save_crash(
         record["lastSeenAt"] = occurrence["at"]
         write_json(record_path, record)
     append_jsonl(crash_dir / "occurrences.jsonl", occurrence)
+    triage_one(root, fingerprint)
     return fingerprint, is_new
 
 
@@ -1037,6 +1043,7 @@ def cmd_minimize(args: argparse.Namespace) -> int:
     }
     record["minimization"] = minimization
     write_json(crash_dir / "crash.json", record)
+    triage_one(root, crash_id)
     print(f"crash: {crash_id}")
     print(f"minimized {len(original)} -> {len(current)} bytes in {tests} tests")
     return 0
@@ -1090,6 +1097,100 @@ def cmd_regression(args: argparse.Namespace) -> int:
     return 0 if passed else 1
 
 
+def cmd_triage(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    if not (root / "campaign.json").is_file():
+        raise DynamicError(f"not a Krineon campaign: {root}")
+    selected_ids: list[str] = []
+    if args.crash_id:
+        crash_id, _, _ = find_crash(root, args.crash_id)
+        selected_ids.append(crash_id)
+        triage, index = triage_one(root, crash_id)
+        triages = [triage]
+    else:
+        triages, index = triage_campaign(root)
+        selected_ids = [str(item["crashId"]) for item in triages]
+    if not triages:
+        raise DynamicError("no recorded crashes to triage")
+
+    if args.finding_id:
+        if not args.crash_id:
+            raise DynamicError("--finding-id requires --crash-id to avoid linking unrelated crashes")
+        finding_path = root / "findings" / f"{args.finding_id}.json"
+        if not finding_path.is_file():
+            raise DynamicError(f"finding does not exist: {args.finding_id}")
+        finding = read_json(finding_path)
+        linked = finding.get("dynamicTriage")
+        if not isinstance(linked, dict):
+            linked = {}
+        existing_crash_ids = linked.get("crashIds")
+        if not isinstance(existing_crash_ids, list):
+            existing_crash_ids = []
+        existing_cluster_ids = linked.get("acceptedClusterIds")
+        if not isinstance(existing_cluster_ids, list):
+            existing_cluster_ids = []
+        existing_verdicts = linked.get("machineVerdicts")
+        if not isinstance(existing_verdicts, dict):
+            existing_verdicts = {}
+        crash_ids = sorted(
+            set(str(value) for value in existing_crash_ids if value) | set(selected_ids)
+        )
+        cluster_ids = sorted(
+            set(str(value) for value in existing_cluster_ids if value)
+            | {str(item["stack"]["clusterId"]) for item in triages}
+        )
+        verdicts = {
+            str(item["crashId"]): str(item["automatedExploitability"]["verdict"])
+            for item in triages
+        }
+        linked.update(
+            {
+                "required": True,
+                "crashIds": crash_ids,
+                "index": "dynamic/triage/index.json",
+                "acceptedClusterIds": cluster_ids,
+                "machineVerdicts": {**existing_verdicts, **verdicts},
+                "reviewed": bool(args.review_note and args.reviewed_by),
+                "reviewedBy": args.reviewed_by or "",
+                "reviewNotes": args.review_note or "",
+                "overrideReason": linked.get("overrideReason", ""),
+            }
+        )
+        finding["dynamicTriage"] = linked
+        finding.setdefault("gates", {})["automated_triage_reviewed"] = linked["reviewed"]
+        write_json(finding_path, finding)
+
+    payload = {
+        "triaged": len(triages),
+        "crashIds": selected_ids,
+        "clusterCount": index["clusterCount"],
+        "index": str((root / "dynamic" / "triage" / "index.json").relative_to(root)),
+        "results": [
+            {
+                "crashId": item["crashId"],
+                "faultClass": item["firstFault"]["class"],
+                "access": item["firstFault"]["access"],
+                "clusterId": item["stack"]["clusterId"],
+                "controllabilityScore": item["controllability"]["score"],
+                "verdict": item["automatedExploitability"]["verdict"],
+                "gateRecommendation": item["automatedExploitability"]["gateRecommendation"],
+            }
+            for item in triages
+        ],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"triaged: {payload['triaged']}; stack clusters: {payload['clusterCount']}")
+        for result in payload["results"]:
+            print(
+                f"{result['crashId']}: {result['faultClass']}/{result['access']} "
+                f"score={result['controllabilityScore']} verdict={result['verdict']}"
+            )
+        print(f"index: {payload['index']}")
+    return 0
+
+
 def add_target_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--name", required=True, help="stable local target name")
     parser.add_argument("--input-mode", choices=("stdin", "file"), default="stdin")
@@ -1118,7 +1219,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_target_arguments(run)
     run.set_defaults(func=cmd_run)
 
-    fuzz = sub.add_parser("fuzz", help="calibrate seeds and run deterministic mutations")
+    fuzz = sub.add_parser(
+        "fuzz",
+        help="deterministic smoke mutator; use fuzzer_orchestrator.py for coverage-guided fuzzing",
+    )
     fuzz.add_argument("campaign_dir")
     fuzz.add_argument("--seed-file", action="append", required=True)
     fuzz.add_argument("--iterations", type=int, default=1000)
@@ -1153,6 +1257,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     regression.add_argument("campaign_dir")
     regression.set_defaults(func=cmd_regression)
+
+    triage = sub.add_parser(
+        "triage", help="classify first faults, score controllability, and cluster stacks"
+    )
+    triage.add_argument("campaign_dir")
+    triage.add_argument("--crash-id", help="exact crash ID or unique prefix; omit to refresh all")
+    triage.add_argument("--finding-id", help="attach one selected crash to an existing finding")
+    triage.add_argument("--reviewed-by", help="reviewer identity for an attached triage decision")
+    triage.add_argument("--review-note", help="human interpretation of the machine verdict")
+    triage.add_argument("--json", action="store_true")
+    triage.set_defaults(func=cmd_triage)
     return parser
 
 
@@ -1172,6 +1287,8 @@ def main(argv: list[str] | None = None) -> int:
             raise DynamicError("--max-tests must be positive")
         if hasattr(args, "case_number") and args.case_number < 0:
             raise DynamicError("case number must be nonnegative")
+        if bool(getattr(args, "reviewed_by", None)) != bool(getattr(args, "review_note", None)):
+            raise DynamicError("--reviewed-by and --review-note must be supplied together")
         return int(args.func(args))
     except DynamicError as exc:
         print(f"error: {exc}", file=sys.stderr)

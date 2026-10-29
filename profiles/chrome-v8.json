@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "name": "chrome-v8",
+  "description": "Authorized Chrome and V8 source research using local d8 builds, structured fuzzing, sanitizer replay, and sandbox-enabled Chromium validation.",
+  "schedulingPolicy": {
+    "allocation": "dynamic-evidence-driven",
+    "capacity": "runtime-advertised",
+    "fixedWorkersPerLane": false,
+    "allowRuntimeExpansion": true,
+    "preferFourOrMoreWorkersWhenAvailable": true,
+    "approachFamilyBalancing": "active-load-then-coverage-before-priority",
+    "allowPromiseBasedDominance": false,
+    "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link"
+  },
+  "lanes": [
+    {
+      "wave": 0,
+      "id": "chrome-v8-setup",
+      "title": "Chrome/V8 revision, build, and safety coordinator",
+      "objective": "Pin the V8 and Chromium revisions, record authorization, create the release/ASan/debug/full-Chromium build matrix, hash every load-bearing artifact, and prohibit testing against third-party browsing sessions or data.",
+      "deliverables": [
+        "completed Chrome/V8 build matrix",
+        "exact V8 and Chromium commits",
+        "tool and architecture inventory",
+        "authorized disposable-environment record"
+      ],
+      "dependsOn": []
+    },
+    {
+      "wave": 1,
+      "id": "v8-static-analysis-lead-generation",
+      "title": "Executable V8 static-analysis lead generator",
+      "objective": "Run scripts/static_analysis_pipeline.py against the pinned V8 checkout with every available relevant analyzer. Execute the bundled Joern reachability and missing-validation queries, produce a Tree-sitter syntax census, retain Trailmark entrypoints, and derive explicit Z3 specs from implementation constraints. Ingest normalized results into durable static-lead-validation tasks with commit, command, tool-output, and artifact provenance. Analyzer output is a hypothesis, never exploit evidence.",
+      "deliverables": [
+        "retained tools/static run record with command, stdout, stderr, and status for every selected analyzer",
+        "CPG query and syntax-census artifacts for engine and embedder boundaries",
+        "concrete Z3 payloads for source-derived numeric or representation constraints",
+        "idempotent provenance-bound validation tasks in tools/static-leads.json and orchestration.db"
+      ],
+      "priority": 90,
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "jit-compiler-invariants",
+      "title": "Ignition, Maglev, and TurboFan invariant auditor",
+      "objective": "Compare interpreter, baseline, Maglev, and TurboFan assumptions for maps, elements kinds, representations, deoptimization state, feedback, effect ordering, and side-effect invalidation. Prefer web-reachable JavaScript semantics over internal-only flags.",
+      "deliverables": [
+        "optimization invariant table",
+        "source-confirmed reducer and lowering hypotheses",
+        "default-versus-forced-tier differential tests",
+        "blocked and disproved optimization paths"
+      ],
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "gc-object-lifetime",
+      "title": "GC, handles, backing stores, and lifetime auditor",
+      "objective": "Audit moving and concurrent GC, weak references, write barriers, handles, ArrayBuffer backing stores, detachment, external memory, concurrent compilation, and exception or termination cleanup for stale ownership and representation changes.",
+      "deliverables": [
+        "object and backing-store ownership model",
+        "barrier and concurrent-state census",
+        "lifetime-focused deterministic harnesses",
+        "race reliability plan where applicable"
+      ],
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "wasm-parser-compiler",
+      "title": "WebAssembly parser and compiler differential auditor",
+      "objective": "Compare validation, decoding, canonicalization, Liftoff, TurboFan, JS-to-Wasm and Wasm-to-JS boundaries, exception handling, GC types, and memory/table growth across the same module and runtime state.",
+      "deliverables": [
+        "validator/compiler differential table",
+        "structured Wasm seeds",
+        "cross-tier and cross-architecture controls",
+        "exact parser or lowering blockers"
+      ],
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "v8-sandbox-boundaries",
+      "title": "V8 Sandbox and Chromium process-boundary mapper",
+      "objective": "Map pointer tables, trusted and protected objects, external-pointer tags, code and metadata authority, renderer exposure, IPC boundaries, and the distinction between an engine memory-safety bug and a demonstrated sandbox escape.",
+      "deliverables": [
+        "sandbox authority map",
+        "pointer-table and trusted-object sink inventory",
+        "full-Chromium promotion requirements",
+        "claims explicitly excluded by current evidence"
+      ],
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "v8-execution-sink-backtrace",
+      "title": "V8 execution and trusted-sink backtracer",
+      "objective": "From the pinned tree alone, work backward from executable code, trusted pointer tables, code objects, external-pointer dereferences, Wasm code space, JIT write transitions, and browser-process authority. Identify the primitive and attacker-controlled arguments required to reach each sink without history or patched-version comparisons.",
+      "deliverables": [
+        "execution and trusted-sink census",
+        "backward call and data-flow slices",
+        "guard and capability requirements",
+        "source-derived primitive-to-sink hypotheses"
+      ],
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "v8-dependency-boundary-audit",
+      "title": "Pinned Chrome/V8 dependency-boundary auditor",
+      "objective": "Derive exact high-leverage dependency revisions from the pinned DEPS, build graph, generated configuration, and runtime linkage. Pin selected sources under campaign third_party with dependency-add, then audit target-to-library parser, allocator, native, callback, codec, IPC, and sandbox assumptions for primitives that compose with web-reachable V8 or Chromium paths. Do not use dependency history or patched-version diffs.",
+      "deliverables": [
+        "exact dependency pins and target-side provenance",
+        "cross-component trust and memory boundary map",
+        "dependency primitives reachable from target input",
+        "candidate engine or browser chains spanning libraries"
+      ],
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 2,
+      "id": "open-ended-variant-expansion",
+      "title": "Open-ended adjacent-surface and blocker expansion",
+      "objective": "Treat the named lanes as initial search axes rather than a closed testcase list. Follow new call edges, representations, state machines, architecture variants, and producer/consumer disagreements discovered during the campaign. Add focused runtime tasks for promising branches and structured unblock tasks for obstacles.",
+      "deliverables": [
+        "new dynamically scheduled hypotheses",
+        "cross-lane compositions and adjacent surfaces",
+        "structured blocker diagnoses",
+        "unblocking experiments or evidence-backed falsifications"
+      ],
+      "dependsOn": ["v8-static-analysis-lead-generation", "jit-compiler-invariants", "gc-object-lifetime", "wasm-parser-compiler", "v8-sandbox-boundaries", "v8-execution-sink-backtrace", "v8-dependency-boundary-audit"]
+    },
+    {
+      "wave": 2,
+      "id": "structured-js-fuzzing",
+      "title": "Structured JavaScript and state-sequence fuzzing",
+      "objective": "Use the operational external-fuzzer orchestrator with a pinned Fuzzilli/REPRL or equivalent structured engine, verified instrumentation, source-harvested and structured seeds, native parallel jobs, persistent content-addressed corpus exchange, replay-confirmed crash forwarding, and rebuilt coverage. The deterministic byte mutator is smoke-only and cannot satisfy this lane.",
+      "deliverables": [
+        "pinned fuzzer and d8 identities",
+        "verified instrumentation or REPRL build record",
+        "persistent corpus and synchronization record",
+        "deduplicated crash inventory",
+        "replay-confirmed Krineon crash IDs",
+        "execution-rate and rebuilt coverage measurements"
+      ],
+      "dependsOn": ["jit-compiler-invariants", "gc-object-lifetime"]
+    },
+    {
+      "wave": 2,
+      "id": "v8-differential-fuzzing",
+      "title": "Cross-tier, cross-build, and semantic differential fuzzing",
+      "objective": "Compare interpreter, JIT tiers, stress/deopt configurations, release and DCHECK builds, and relevant architectures while filtering nondeterminism and implementation-permitted output differences.",
+      "deliverables": [
+        "configuration-pair rationale",
+        "normalized differential results",
+        "deterministic minimized reproducers",
+        "false-positive suppression record"
+      ],
+      "dependsOn": ["jit-compiler-invariants", "wasm-parser-compiler", "v8-execution-sink-backtrace"]
+    },
+    {
+      "wave": 2,
+      "id": "v8-crash-triage",
+      "title": "Crash deduplication, minimization, and security triage",
+      "objective": "Run the operational crash triager to classify the first fault, access direction, PC evidence, and lifetime or bounds class; cluster normalized stacks across corpus growth; score controllability with explicit limitations; minimize without changing the failure class; replay across ASan/debug/release builds; and distinguish assertion-only, crash-only, and resource-exhaustion failures. Attach reviewed machine verdicts to any candidate evidence gate without treating the score as exploit proof.",
+      "deliverables": [
+        "minimized JavaScript or Wasm testcase",
+        "symbolized first-fault evidence and normalized stack-cluster ID",
+        "controllability score, automated exploitability verdict, and reviewer interpretation",
+        "build-by-build truth table",
+        "security relevance and flakiness classification"
+      ],
+      "dependsOn": ["structured-js-fuzzing", "v8-differential-fuzzing"]
+    },
+    {
+      "wave": 2,
+      "id": "v8-primitive-escalation",
+      "title": "V8 primitive-to-Critical/RCE escalation",
+      "objective": "Turn the first memory-safety or authority primitive into controlled read, write, trusted-object corruption, executable-code influence, renderer code execution, or another program-defined Critical effect. Derive every gadget and coordinate from the pinned source and ordinary runtime behavior; reject crash-only and application-authored terminals.",
+      "deliverables": [
+        "measured primitive capabilities and constraints",
+        "source-derived primitive-to-sink chain",
+        "attacker acquisition for every address and coordinate",
+        "bounded real terminal or exact evidence-backed blocker"
+      ],
+      "dependsOn": ["v8-crash-triage", "v8-execution-sink-backtrace", "v8-sandbox-boundaries"]
+    },
+    {
+      "wave": 3,
+      "id": "chromium-integration",
+      "title": "Sandbox-enabled Chromium reachability validation",
+      "objective": "Move surviving d8 cases into an unmodified, sandbox-enabled release Chromium build using an owned local page. Development, test-shell, debug-only, and component-fixture behavior is lead-only and cannot satisfy this lane. Prove web reachability without internal-only V8 flags and keep renderer compromise separate from any browser or OS sandbox claim.",
+      "deliverables": [
+        "direct-CDP owned-page browser replay with retained positive and control cases",
+        "sandbox-enabled process evidence",
+        "off-origin request-blocking evidence and final owned URL",
+        "default-feature and no-internal-flag controls",
+        "engine-only versus sandbox-boundary conclusion"
+      ],
+      "dependsOn": ["v8-primitive-escalation"]
+    },
+    {
+      "wave": 3,
+      "id": "v8-finding-scoped-replay-scheduler",
+      "title": "Finding-scoped Chrome/V8 replay scheduler",
+      "objective": "Register each surviving Critical/RCE chain with its originating agent, then use schedule-replay twice to create clean finding-specific tasks that exclude that agent, its aliases, and every prior reviewer agent. Do not complete this lane until two distinct agents' accepted clean-build replays pass machine verification; list every verified finding in taskResult.replayFindings.",
+      "deliverables": [
+        "stable finding and originator identities",
+        "finding-scoped replay task IDs",
+        "originator-agent alias exclusions",
+        "self-contained clean-build replay package",
+        "accepted replay digests and passing machine gates"
+      ],
+      "dependsOn": ["chromium-integration"]
+    },
+    {
+      "wave": 3,
+      "id": "v8-adversarial-review",
+      "title": "Chrome VRP scope, exploitability, and duplicate adversary",
+      "objective": "Attack the claim as an internal-flag artifact, DCHECK-only failure, intended semantic freedom, resource exhaustion, crash-only primitive, unsupported configuration, unavailable coordinate, synthetic terminal, or sandbox overclaim. Independently walk the exact web-entry-to-sink path, enumerate every conditional and concrete attacker-selected outcome, search for contradictions, and refuse unresolved assumptions. Do not use advisories, history, or patched-version comparisons.",
+      "deliverables": [
+        "strongest closure arguments",
+        "current VRP scope and primary-source checks",
+        "narrow surviving security claim",
+        "filing-day version and duplicate assessment"
+      ],
+      "dependsOn": ["v8-finding-scoped-replay-scheduler"]
+    },
+    {
+      "wave": 4,
+      "id": "v8-root-synthesis",
+      "title": "Chrome/V8 root-cause synthesis and disclosure package",
+      "objective": "Package only a complete engine-to-bounded-execution chain or a program-defined Critical browser boundary with concrete impact. Require a passing linked path proof whose ordered steps, complete branch inventory, attacker mechanisms, retained evidence, contradiction checks, empty assumptions list, and independent registered reviewer are revalidated by the candidate gate. If the result remains a crash or partial primitive, retain it as blocked rather than produce a lower-severity report.",
+      "deliverables": [
+        "root-cause-first report",
+        "minimal safe reproducer",
+        "build and replay manifest",
+        "passing evidence/path-proofs finding record",
+        "SHA256SUMS and cleanup record"
+      ],
+      "dependsOn": ["v8-adversarial-review"]
+    }
+  ]
+}

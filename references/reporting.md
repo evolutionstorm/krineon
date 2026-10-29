@@ -27,14 +27,14 @@ replay, an unassisted success rate, or a stock-runtime command result.
 
 1. Title and affected asset
 2. Summary
-3. Tested and inferred versions
+3. Exact version tested by execution
 4. Exact deployment conditions
 5. Root cause with pinned source references
 6. End-to-end attack path
 7. Three-case truth table
 8. Reproduction steps and expected output
 9. Impact
-10. Prior art and distinction
+10. Post-validation duplicate assessment
 11. Recommended remediation
 12. Safety, cleanup, and artifact hashes
 
@@ -44,18 +44,25 @@ Use precise labels:
 
 - **confirmed by execution** for observed runtime behavior;
 - **source-confirmed** for a located code path not reached in the complete PoC;
-- **source-inferred** for an affected version range;
 - **conditional** for platform, memory, network, or configuration dependencies;
 - **not claimed** for untested outcomes.
 
 Never let an inferred variant read like part of the executed proof.
+
+Do not write a bounty finding from development-server or development-build
+evidence. Dev-mode output may appear only as discovery context after the same
+primary terminal is reproduced through a supported production-equivalent or
+release entrypoint. Name that entrypoint, retain its build/configuration
+evidence, and state explicitly that hot reload, test hooks, debug-only code, and
+developer middleware were absent.
 
 ## Root-cause explanation
 
 Show the exact producer/consumer or validation/use discrepancy with short code
 excerpts and pinned links. Explain ordering and ownership, not only line numbers.
 For vendored code, cite the compiled artifact the product actually ships and
-the upstream source when both are relevant.
+the same-revision upstream source when both are available. Do not derive the
+report from a patched-version or historical diff.
 
 Separate:
 
@@ -84,13 +91,12 @@ Include the exact expected discriminator, not pages of logs.
 
 ## Impact language
 
-Describe the authority gained relative to the attacker starting point. For
-example:
+Describe the Critical/RCE authority gained relative to the attacker starting
+point. For example:
 
 - unauthenticated request to server-process JavaScript execution;
-- self-registered account to administrator-only policy mutation;
-- tenant A input returned to tenant B;
-- untrusted response restored as a framework-internal control header.
+- renderer input to bounded native code execution; or
+- an owned-data operation that the program explicitly classifies Critical.
 
 Use real harmless effects where possible. If command execution is demonstrated,
 show bounded output such as process identity and time. Do not access real
@@ -118,8 +124,10 @@ Pre-answer only the objections that materially affect validity:
 - Is this intended behavior or documented trust?
 - Is the sink application-authored?
 - Does the current release reproduce?
-- Is this the same root cause as a prior advisory?
+- Did a post-validation duplicate check identify the same public root cause?
 - Are platform or hosting constraints explicit?
 - Does the control isolate the claimed mechanism?
 
 Do not bury the report under speculative variants or defensive essays.
+Do not use the reporting phase to mine patches or add history-derived links to
+the exploit chain.

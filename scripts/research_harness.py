@@ -23,10 +23,18 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
+
+try:
+    from .path_proof import validate_path_proof
+except ImportError:  # Direct script execution.
+    from path_proof import validate_path_proof
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = PROJECT_ROOT / "assets"
+PROFILES = PROJECT_ROOT / "profiles"
+APPROACH_FAMILIES = PROFILES / "approach-families.json"
 
 CAMPAIGN_DIRS = (
     "tasks",
@@ -37,6 +45,7 @@ CAMPAIGN_DIRS = (
     "logs",
     "results",
     "worktrees",
+    "third_party",
 )
 
 ORCHESTRATION_DB = "orchestration.db"
@@ -61,10 +70,19 @@ CANDIDATE_GATES = (
     "exact_version_pinned",
     "root_cause_identified",
     "attacker_control_proven",
+    "critical_chain_complete",
+    "stock_or_supported_reachability",
+    "rce_or_critical_impact",
+    "no_app_authored_sink",
+    "harmless_real_terminal",
+    "deployment_feasible",
+    "production_equivalent_environment",
     "baseline_control",
     "negative_control",
     "positive_case",
     "concrete_impact",
+    "automated_triage_reviewed",
+    "path_proof_complete",
 )
 
 REPORTABLE_GATES = CANDIDATE_GATES + (
@@ -73,164 +91,93 @@ REPORTABLE_GATES = CANDIDATE_GATES + (
     "prior_art_checked",
     "official_docs_checked",
     "upstream_tests_checked",
-    "patch_status_checked",
+    "current_version_checked",
     "source_refs_verified",
     "cleanup_verified",
     "secrets_removed",
 )
 
-LANES = (
-    {
-        "wave": 0,
-        "id": "coordinator-setup",
-        "title": "Scope, revision, and threat-model coordinator",
-        "objective": (
-            "Freeze authorization, scope, exact artifacts, documented security "
-            "promises, public entry points, privileged sinks, and stop conditions."
-        ),
-        "deliverables": (
-            "completed campaign.json",
-            "authorization record",
-            "entry-point and sink inventory",
-            "tool probe",
-        ),
-    },
-    {
-        "wave": 1,
-        "id": "boundary-map",
-        "title": "Trust-boundary and identity mapper",
-        "objective": (
-            "Map authentication, provenance, tenant/project/build/route identity, "
-            "manifest authority, normalization, and validation boundaries."
-        ),
-        "deliverables": (
-            "boundary map",
-            "source references",
-            "falsifiable hypotheses",
-            "searched-surface inventory",
-        ),
-    },
-    {
-        "wave": 1,
-        "id": "sink-first",
-        "title": "Sink-first reachability tracer",
-        "objective": (
-            "Work backward from execution, module load, file, network, native "
-            "parser, key, cache, and policy sinks to public inputs."
-        ),
-        "deliverables": (
-            "sink inventory",
-            "guard and dominance map",
-            "candidate paths",
-            "blocked paths",
-        ),
-    },
-    {
-        "wave": 1,
-        "id": "state-lifecycle",
-        "title": "State, ownership, and lifecycle auditor",
-        "objective": (
-            "Audit globals, pooling, async settlement, parser errors, ownership, "
-            "recycling, realm boundaries, cleanup, and failure-state invariants."
-        ),
-        "deliverables": (
-            "state-owner table",
-            "lifecycle diagrams",
-            "error/async differences",
-            "hypotheses and blockers",
-        ),
-    },
-    {
-        "wave": 2,
-        "id": "protocol-differential",
-        "title": "Producer/consumer and cross-layer differential",
-        "objective": (
-            "Compare parsing, lengths, encodings, case, paths, methods, headers, "
-            "and type domains across every layer that handles the same value."
-        ),
-        "deliverables": (
-            "differential table",
-            "minimal harness",
-            "baseline and negative control",
-            "candidate registry entries",
-        ),
-    },
-    {
-        "wave": 2,
-        "id": "patch-variants",
-        "title": "Patch, sibling-path, and prior-art auditor",
-        "objective": (
-            "Inspect recent fixes, sibling functions, generated bundles, platform "
-            "variants, upstream tests, advisories, and duplicate root causes."
-        ),
-        "deliverables": (
-            "patch matrix",
-            "sibling census",
-            "prior-art assessment",
-            "incomplete-fix hypotheses",
-        ),
-    },
-    {
-        "wave": 2,
-        "id": "deployment-matrix",
-        "title": "Deployment and attacker-acquisition analyst",
-        "objective": (
-            "Test defaults, supported configurations, hosts, platforms, public "
-            "coordinate acquisition, and realistic application carriers."
-        ),
-        "deliverables": (
-            "configuration matrix",
-            "remote-acquisition proof or blocker",
-            "resource measurements",
-            "exact conditions",
-        ),
-    },
-    {
-        "wave": 3,
-        "id": "independent-replay",
-        "title": "Independent clean replay and controls",
-        "objective": (
-            "Reproduce a candidate without the originating agent's private state, "
-            "run fresh-process controls, and preserve raw evidence and cleanup."
-        ),
-        "deliverables": (
-            "clean reproduction",
-            "three-case truth table",
-            "N/M reliability where applicable",
-            "artifact hashes",
-        ),
-    },
-    {
-        "wave": 3,
-        "id": "adversarial-review",
-        "title": "Scope, documentation, duplicate, and severity adversary",
-        "objective": (
-            "Try to close the candidate as intended behavior, application misuse, "
-            "out of scope, stale, unpatched prior art, duplicate, or overstated."
-        ),
-        "deliverables": (
-            "closure arguments",
-            "primary-source checks",
-            "CVSS metric review",
-            "narrow surviving claim",
-        ),
-    },
-    {
-        "wave": 4,
-        "id": "root-synthesis",
-        "title": "Root synthesis and filing package",
-        "objective": (
-            "Resolve conflicting evidence, run reportable gates, write the "
-            "root-cause-first report, and verify a clean package."
-        ),
-        "deliverables": (
-            "submission report",
-            "reviewer README",
-            "self-contained PoC",
-            "SHA256SUMS",
-        ),
-    },
-)
+PROFILE_NAMES = ("critical-rce", "chrome-v8")
+
+
+def approach_family_config() -> dict[str, Any]:
+    config = read_json(APPROACH_FAMILIES)
+    families = config.get("families")
+    mappings = config.get("profileMappings")
+    if not isinstance(families, list) or not families or not isinstance(mappings, dict):
+        raise SystemExit("invalid approach-family registry")
+    required = {"id", "title", "boundary", "mechanism", "invariant", "exploration"}
+    ids: set[str] = set()
+    for family in families:
+        if not isinstance(family, dict) or not required.issubset(family):
+            raise SystemExit("invalid approach-family definition")
+        family_id = str(family["id"])
+        if family_id in ids:
+            raise SystemExit(f"duplicate approach family: {family_id}")
+        ids.add(family_id)
+    for profile_name, profile_mapping in mappings.items():
+        if not isinstance(profile_mapping, dict):
+            raise SystemExit(f"invalid approach mapping for profile: {profile_name}")
+        for lane_id, family_ids in profile_mapping.items():
+            if not isinstance(family_ids, list) or not family_ids:
+                raise SystemExit(f"lane has no approach families: {profile_name}/{lane_id}")
+            unknown = set(str(value) for value in family_ids).difference(ids)
+            if unknown:
+                raise SystemExit(
+                    f"lane {profile_name}/{lane_id} uses unknown approach families: "
+                    + ", ".join(sorted(unknown))
+                )
+    return config
+
+
+def approach_family_definitions() -> dict[str, dict[str, Any]]:
+    return {
+        str(family["id"]): dict(family)
+        for family in approach_family_config()["families"]
+    }
+
+
+def campaign_lanes(profile_name: str) -> tuple[dict[str, Any], ...]:
+    if profile_name not in PROFILE_NAMES:
+        raise SystemExit(f"unknown campaign profile: {profile_name}")
+    profile = read_json(PROFILES / f"{profile_name}.json")
+    approach_config = approach_family_config()
+    profile_mapping = approach_config["profileMappings"].get(profile_name)
+    if not isinstance(profile_mapping, dict):
+        raise SystemExit(f"profile has no approach-family mapping: {profile_name}")
+    lanes = profile.get("lanes")
+    if not isinstance(lanes, list) or not lanes:
+        raise SystemExit(f"profile has no lanes: {profile_name}")
+    required = {"wave", "id", "title", "objective", "deliverables"}
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for lane in lanes:
+        if not isinstance(lane, dict) or not required.issubset(lane):
+            raise SystemExit(f"invalid lane in profile: {profile_name}")
+        lane_id = str(lane["id"])
+        if lane_id in seen:
+            raise SystemExit(f"duplicate lane in profile {profile_name}: {lane_id}")
+        seen.add(lane_id)
+        item = dict(lane)
+        item["deliverables"] = tuple(str(value) for value in lane["deliverables"])
+        item["dependsOn"] = [str(value) for value in lane.get("dependsOn", [])]
+        item["priority"] = int(lane.get("priority", 0))
+        family_ids = profile_mapping.get(lane_id)
+        if not isinstance(family_ids, list) or not family_ids:
+            raise SystemExit(
+                f"profile lane has no explicit semantic approach family: "
+                f"{profile_name}/{lane_id}"
+            )
+        item["approachFamilies"] = [str(value) for value in family_ids]
+        normalized.append(item)
+    for lane in normalized:
+        unknown = set(lane["dependsOn"]).difference(seen)
+        if unknown:
+            raise SystemExit(
+                f"profile {profile_name} lane {lane['id']} has unknown dependencies: "
+                + ", ".join(sorted(unknown))
+            )
+    return tuple(normalized)
 
 
 def utc_now() -> str:
@@ -260,6 +207,7 @@ def connect_orchestration(root: Path, *, required: bool = True) -> sqlite3.Conne
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA synchronous = FULL")
+    initialize_orchestration_schema(connection)
     return connection
 
 
@@ -288,7 +236,13 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           priority INTEGER NOT NULL DEFAULT 0,
           depends_json TEXT NOT NULL,
           excluded_workers_json TEXT NOT NULL DEFAULT '[]',
+          excluded_agents_json TEXT NOT NULL DEFAULT '[]',
           finding_id TEXT,
+          unblocks_task_id TEXT,
+          research_round INTEGER NOT NULL DEFAULT 0,
+          route_id TEXT,
+          task_kind TEXT NOT NULL DEFAULT 'ordinary',
+          reviews_task_id TEXT,
           attempt INTEGER NOT NULL DEFAULT 0,
           max_attempts INTEGER NOT NULL,
           timeout_seconds INTEGER NOT NULL,
@@ -324,10 +278,54 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           worker_id TEXT,
           payload_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS approach_families (
+          family_id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          boundary TEXT NOT NULL,
+          mechanism TEXT NOT NULL,
+          invariant_text TEXT NOT NULL,
+          exploration INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_approach_families (
+          task_id TEXT NOT NULL,
+          family_id TEXT NOT NULL,
+          PRIMARY KEY(task_id, family_id),
+          FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+          FOREIGN KEY(family_id) REFERENCES approach_families(family_id)
+        );
         CREATE INDEX IF NOT EXISTS tasks_state_wave_idx ON tasks(state, wave, priority);
+        CREATE INDEX IF NOT EXISTS task_approach_family_idx
+          ON task_approach_families(family_id, task_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_running_per_worker
+          ON tasks(lease_owner)
+          WHERE state = 'running' AND lease_owner IS NOT NULL;
         CREATE INDEX IF NOT EXISTS events_task_idx ON events(task_id, event_id);
         """
     )
+    task_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    if "unblocks_task_id" not in task_columns:
+        connection.execute("ALTER TABLE tasks ADD COLUMN unblocks_task_id TEXT")
+    if "excluded_agents_json" not in task_columns:
+        connection.execute(
+            "ALTER TABLE tasks ADD COLUMN excluded_agents_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "research_round" not in task_columns:
+        connection.execute(
+            "ALTER TABLE tasks ADD COLUMN research_round INTEGER NOT NULL DEFAULT 0"
+        )
+    if "route_id" not in task_columns:
+        connection.execute("ALTER TABLE tasks ADD COLUMN route_id TEXT")
+    if "task_kind" not in task_columns:
+        connection.execute(
+            "ALTER TABLE tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT 'ordinary'"
+        )
+    if "reviews_task_id" not in task_columns:
+        connection.execute("ALTER TABLE tasks ADD COLUMN reviews_task_id TEXT")
+    connection.commit()
 
 
 def set_metadata(connection: sqlite3.Connection, key: str, value: Any) -> None:
@@ -341,6 +339,153 @@ def set_metadata(connection: sqlite3.Connection, key: str, value: Any) -> None:
 def get_metadata(connection: sqlite3.Connection, key: str, default: Any = None) -> Any:
     row = connection.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
     return default if row is None else json.loads(row["value"])
+
+
+def sync_approach_family_registry(
+    connection: sqlite3.Connection, selected: list[dict[str, Any]] | None = None
+) -> None:
+    now = utc_now()
+    families = selected if selected is not None else approach_family_config()["families"]
+    for family in families:
+        connection.execute(
+            "INSERT INTO approach_families(family_id,title,boundary,mechanism,invariant_text,"
+            "exploration,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(family_id) DO UPDATE SET title=excluded.title,boundary=excluded.boundary,"
+            "mechanism=excluded.mechanism,invariant_text=excluded.invariant_text,"
+            "exploration=excluded.exploration,updated_at=excluded.updated_at",
+            (
+                family["id"],
+                family["title"],
+                family["boundary"],
+                family["mechanism"],
+                family["invariant"],
+                1 if family["exploration"] else 0,
+                now,
+                now,
+            ),
+        )
+
+
+def set_task_approach_families(
+    connection: sqlite3.Connection, task_id: str, family_ids: list[str]
+) -> None:
+    normalized = list(dict.fromkeys(str(value).strip() for value in family_ids if str(value).strip()))
+    if not normalized:
+        raise SystemExit(f"task has no explicit approach family: {task_id}")
+    known = {
+        row["family_id"]
+        for row in connection.execute(
+            "SELECT family_id FROM approach_families WHERE family_id IN ("
+            + ",".join("?" for _ in normalized)
+            + ")",
+            normalized,
+        ).fetchall()
+    }
+    unknown = set(normalized).difference(known)
+    if unknown:
+        raise SystemExit(
+            f"task {task_id} uses unknown approach families: {', '.join(sorted(unknown))}"
+        )
+    connection.execute("DELETE FROM task_approach_families WHERE task_id=?", (task_id,))
+    connection.executemany(
+        "INSERT INTO task_approach_families(task_id,family_id) VALUES(?,?)",
+        [(task_id, family_id) for family_id in normalized],
+    )
+
+
+def task_approach_families(connection: sqlite3.Connection, task_id: str) -> list[str]:
+    return [
+        row["family_id"]
+        for row in connection.execute(
+            "SELECT family_id FROM task_approach_families WHERE task_id=? ORDER BY family_id",
+            (task_id,),
+        ).fetchall()
+    ]
+
+
+def approach_family_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
+    families: list[dict[str, Any]] = []
+    for family in connection.execute(
+        "SELECT * FROM approach_families ORDER BY family_id"
+    ).fetchall():
+        state_counts = {
+            row["state"]: int(row["count"])
+            for row in connection.execute(
+                "SELECT tasks.state,COUNT(DISTINCT tasks.task_id) AS count "
+                "FROM task_approach_families JOIN tasks USING(task_id) "
+                "WHERE family_id=? GROUP BY tasks.state",
+                (family["family_id"],),
+            ).fetchall()
+        }
+        active_agents = int(
+            connection.execute(
+                "SELECT COUNT(DISTINCT workers.agent) AS count "
+                "FROM task_approach_families JOIN tasks USING(task_id) "
+                "JOIN workers ON workers.worker_id=tasks.lease_owner "
+                "WHERE family_id=? AND tasks.state='running'",
+                (family["family_id"],),
+            ).fetchone()["count"]
+        )
+        explored = sum(
+            state_counts.get(state, 0)
+            for state in ("completed", "failed", "blocked", "timed-out", "cancelled")
+        )
+        families.append(
+            {
+                "id": family["family_id"],
+                "title": family["title"],
+                "boundary": family["boundary"],
+                "mechanism": family["mechanism"],
+                "invariant": family["invariant_text"],
+                "exploration": bool(family["exploration"]),
+                "taskStates": state_counts,
+                "activeAgents": active_agents,
+                "exploredTasks": explored,
+                "coverageLoad": explored + state_counts.get("running", 0),
+            }
+        )
+    exploration = [family for family in families if family["exploration"]]
+    active_exploration_agents = int(
+        connection.execute(
+            "SELECT COUNT(DISTINCT workers.agent) AS count "
+            "FROM task_approach_families JOIN approach_families USING(family_id) "
+            "JOIN tasks USING(task_id) JOIN workers ON workers.worker_id=tasks.lease_owner "
+            "WHERE tasks.state='running' AND approach_families.exploration=1"
+        ).fetchone()["count"]
+    )
+    convergence_threshold = max(2, (active_exploration_agents + 1) // 2)
+    minimum_load = min((family["coverageLoad"] for family in exploration), default=0)
+    underexplored = [
+        family["id"] for family in exploration if family["coverageLoad"] == minimum_load
+    ]
+    converged = [
+        family["id"]
+        for family in exploration
+        if family["activeAgents"] >= convergence_threshold
+    ]
+    return {
+        "schemaVersion": 1,
+        "generatedAt": utc_now(),
+        "policy": {
+            "identityBasis": "registered boundary + mechanism + invariant, never task wording",
+            "convergenceThreshold": convergence_threshold,
+            "activeExplorationAgents": active_exploration_agents,
+            "redirectBeforeDominance": True,
+            "selectionOrder": [
+                "lowest-active-agent-load",
+                "lowest-prior-coverage",
+                "task-priority",
+            ],
+            "promisingOrSuspiciousDoesNotOverrideDiversity": True,
+        },
+        "underexploredFamilies": underexplored,
+        "convergedFamilies": converged,
+        "families": families,
+    }
+
+
+def write_approach_family_snapshot(root: Path, connection: sqlite3.Connection) -> None:
+    write_json(root / "approach-registry.json", approach_family_snapshot(connection))
 
 
 def record_event(
@@ -364,6 +509,395 @@ def validate_identity(value: str) -> str:
             "identity must use letters, digits, and . _ @ : -"
         )
     return value
+
+
+def parse_max_concurrency(value: Any) -> str | int:
+    text = str(value).strip().lower()
+    if text == "auto":
+        return "auto"
+    try:
+        parsed = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "max concurrency must be 'auto' or a positive integer"
+        ) from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(
+            "max concurrency must be 'auto' or a positive integer"
+        )
+    return parsed
+
+
+def active_agent_count(connection: sqlite3.Connection) -> int:
+    return int(
+        connection.execute(
+            "SELECT COUNT(DISTINCT agent) AS count FROM workers WHERE status='active'"
+        ).fetchone()["count"]
+    )
+
+
+def resolve_concurrency_limit(connection: sqlite3.Connection) -> tuple[str | int, int]:
+    configured = get_metadata(connection, "maxConcurrency", "auto")
+    active = active_agent_count(connection)
+    if configured == "auto":
+        return configured, active
+    limit = int(configured)
+    return limit, min(limit, active)
+
+
+def validate_task_id(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{1,127}", value):
+        raise argparse.ArgumentTypeError(
+            "task ID must start with a letter and use letters, digits, dot, underscore, or dash"
+        )
+    return value
+
+
+def require_string(value: Any, label: str) -> str:
+    result = str(value or "").strip()
+    if not result:
+        raise SystemExit(f"result must include non-empty {label}")
+    return result
+
+
+def require_string_list(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise SystemExit(f"result must include {label} as a non-empty list")
+    result = [str(item).strip() for item in value if str(item).strip()]
+    if not result:
+        raise SystemExit(f"result must include {label} as a non-empty list")
+    return result
+
+
+def validate_blocker_result(result: dict[str, Any]) -> dict[str, Any]:
+    blocker = result.get("blocker")
+    if not isinstance(blocker, dict):
+        raise SystemExit("blocked outcome requires a blocker object")
+    require_string(blocker.get("category"), "blocker.category")
+    require_string(blocker.get("reason"), "blocker.reason")
+    require_string(blocker.get("blockedLink"), "blocker.blockedLink")
+    require_string(blocker.get("guardOrFailure"), "blocker.guardOrFailure")
+    require_string(blocker.get("mechanismFingerprint"), "blocker.mechanismFingerprint")
+    require_string(blocker.get("whyBlocked"), "blocker.whyBlocked")
+    require_string(blocker.get("cheapestDiscriminator"), "blocker.cheapestDiscriminator")
+    require_string(blocker.get("authorityRequired"), "blocker.authorityRequired")
+    require_string_list(blocker.get("evidence"), "blocker.evidence")
+    require_string_list(blocker.get("attempts"), "blocker.attempts")
+    require_string_list(blocker.get("nextExperiments"), "blocker.nextExperiments")
+    require_string_list(blocker.get("bypassHypotheses"), "blocker.bypassHypotheses")
+    require_string_list(blocker.get("alternativeRoutes"), "blocker.alternativeRoutes")
+    if not isinstance(blocker.get("canSelfResolve"), bool):
+        raise SystemExit("blocker.canSelfResolve must be true or false")
+    validate_analysis_provenance(blocker)
+    return blocker
+
+
+def validate_unblock_result(
+    root: Path,
+    connection: sqlite3.Connection,
+    result: dict[str, Any],
+    blocked_task_id: str,
+) -> dict[str, Any]:
+    unblock = result.get("unblock")
+    if not isinstance(unblock, dict):
+        raise SystemExit("unblock task requires an unblock object")
+    if unblock.get("blockedTaskId") != blocked_task_id:
+        raise SystemExit("unblock.blockedTaskId does not match the scheduled parent task")
+    if unblock.get("blockerAddressed") is not True:
+        raise SystemExit("unblock.blockerAddressed must be true before completing the task")
+    require_string_list(unblock.get("evidence"), "unblock.evidence")
+    require_string(unblock.get("resumeStrategy"), "unblock.resumeStrategy")
+    new_mechanism = unblock.get("newMechanism")
+    if not isinstance(new_mechanism, dict):
+        raise SystemExit("unblock.newMechanism must describe a genuinely new mechanism")
+    fingerprint = require_string(
+        new_mechanism.get("fingerprint"), "unblock.newMechanism.fingerprint"
+    )
+    differs_from = require_string(
+        new_mechanism.get("differsFrom"), "unblock.newMechanism.differsFrom"
+    )
+    require_string(new_mechanism.get("mechanism"), "unblock.newMechanism.mechanism")
+    require_string(
+        new_mechanism.get("difference"), "unblock.newMechanism.difference"
+    )
+    require_string_list(
+        new_mechanism.get("evidence"), "unblock.newMechanism.evidence"
+    )
+    submission = latest_task_submission(connection, blocked_task_id)
+    if submission is None:
+        raise SystemExit("blocked task has no retained blocker result")
+    previous_result = read_json(root / str(submission["result_path"]))
+    previous_blocker = previous_result.get("blocker")
+    if isinstance(previous_blocker, dict):
+        previous_fingerprint = require_string(
+            previous_blocker.get("mechanismFingerprint"),
+            "previous blocker.mechanismFingerprint",
+        )
+    else:
+        failure = previous_result.get("failure")
+        if not isinstance(failure, dict):
+            raise SystemExit("blocked task result has no retained mechanism")
+        previous_fingerprint = "failure:" + require_string(
+            failure.get("category"), "previous failure.category"
+        )
+    if differs_from != previous_fingerprint or fingerprint == previous_fingerprint:
+        raise SystemExit(
+            "blocked approach may reopen only with a different mechanism fingerprint"
+        )
+    return unblock
+
+
+PROHIBITED_PROVENANCE_FLAGS = (
+    "changelogUsed",
+    "gitHistoryUsed",
+    "advisoryMiningUsed",
+    "patchedVersionDiffUsed",
+    "internetPatchDiffUsed",
+)
+
+
+def validate_analysis_provenance(container: dict[str, Any]) -> dict[str, Any]:
+    provenance = container.get("analysisProvenance")
+    if not isinstance(provenance, dict):
+        raise SystemExit("completed result requires an analysisProvenance object")
+    if provenance.get("firstPrinciplesOnly") is not True:
+        raise SystemExit("analysisProvenance.firstPrinciplesOnly must be true")
+    for field in PROHIBITED_PROVENANCE_FLAGS:
+        if provenance.get(field) is not False:
+            raise SystemExit(f"analysisProvenance.{field} must be false")
+    return provenance
+
+
+def validate_completed_result(result: dict[str, Any], task_id: str) -> None:
+    task_result = result.get("taskResult")
+    if not isinstance(task_result, dict):
+        raise SystemExit("completed result requires a taskResult object")
+    if task_result.get("taskId") != task_id:
+        raise SystemExit("taskResult.taskId must match the leased task")
+    require_string(task_result.get("summary"), "taskResult.summary")
+    require_string(task_result.get("conclusion"), "taskResult.conclusion")
+    require_string_list(task_result.get("searchedSurface"), "taskResult.searchedSurface")
+    require_string_list(task_result.get("sourceReferences"), "taskResult.sourceReferences")
+    require_string_list(task_result.get("evidence"), "taskResult.evidence")
+    dependencies = task_result.get("dependenciesAnalyzed", [])
+    if not isinstance(dependencies, list):
+        raise SystemExit("taskResult.dependenciesAnalyzed must be a list")
+    for index, dependency in enumerate(dependencies):
+        if not isinstance(dependency, dict):
+            raise SystemExit(f"taskResult.dependenciesAnalyzed[{index}] must be an object")
+        require_string(
+            dependency.get("name"), f"taskResult.dependenciesAnalyzed[{index}].name"
+        )
+        resolved = require_string(
+            dependency.get("resolvedCommit"),
+            f"taskResult.dependenciesAnalyzed[{index}].resolvedCommit",
+        )
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", resolved):
+            raise SystemExit(
+                f"taskResult.dependenciesAnalyzed[{index}].resolvedCommit must be a full object ID"
+            )
+        require_string(
+            dependency.get("targetLockEvidence"),
+            f"taskResult.dependenciesAnalyzed[{index}].targetLockEvidence",
+        )
+        require_string(
+            dependency.get("boundary"),
+            f"taskResult.dependenciesAnalyzed[{index}].boundary",
+        )
+    for field in ("hypotheses", "nextTasks"):
+        if not isinstance(task_result.get(field), list):
+            raise SystemExit(f"taskResult.{field} must be a list")
+    validate_analysis_provenance(task_result)
+
+
+def validate_route_development_result(
+    result: dict[str, Any], route_id: str, research_round: int
+) -> None:
+    development = result.get("routeDevelopment")
+    if not isinstance(development, dict):
+        raise SystemExit("route-development task requires routeDevelopment")
+    if development.get("routeId") != route_id:
+        raise SystemExit("routeDevelopment.routeId must match the leased route")
+    if int(development.get("round", -1)) != research_round:
+        raise SystemExit("routeDevelopment.round must match the leased research round")
+    require_string_list(development.get("strengths"), "routeDevelopment.strengths")
+    require_string_list(development.get("gaps"), "routeDevelopment.gaps")
+    require_string_list(development.get("evidence"), "routeDevelopment.evidence")
+    require_string(development.get("nextExperiment"), "routeDevelopment.nextExperiment")
+    fresh_ideas = require_string_list(
+        development.get("freshIdeas"), "routeDevelopment.freshIdeas"
+    )
+    intermediate_bugs = development.get("intermediateBugs")
+    if not isinstance(intermediate_bugs, list):
+        raise SystemExit("routeDevelopment.intermediateBugs must be a list")
+    for index, bug in enumerate(intermediate_bugs):
+        if not isinstance(bug, dict):
+            raise SystemExit(f"routeDevelopment.intermediateBugs[{index}] must be an object")
+        require_string(bug.get("id"), f"routeDevelopment.intermediateBugs[{index}].id")
+        require_string(
+            bug.get("rootCause"),
+            f"routeDevelopment.intermediateBugs[{index}].rootCause",
+        )
+        require_string(bug.get("primitive"), f"routeDevelopment.intermediateBugs[{index}].primitive")
+        require_string_list(
+            bug.get("evidence"), f"routeDevelopment.intermediateBugs[{index}].evidence"
+        )
+    chain_hypotheses = development.get("chainHypotheses")
+    if not isinstance(chain_hypotheses, list):
+        raise SystemExit("routeDevelopment.chainHypotheses must be a list")
+    if intermediate_bugs and not [item for item in chain_hypotheses if str(item).strip()]:
+        raise SystemExit("intermediate bugs require non-empty chainHypotheses")
+    if not fresh_ideas:
+        raise SystemExit("a route may not end merely because the current approach found nothing")
+
+
+def validate_adversarial_route_result(
+    result: dict[str, Any], reviewed_task_id: str, route_id: str, research_round: int
+) -> None:
+    review = result.get("adversarialReview")
+    if not isinstance(review, dict):
+        raise SystemExit("adversarial route task requires adversarialReview")
+    if review.get("reviewedTaskId") != reviewed_task_id:
+        raise SystemExit("adversarialReview.reviewedTaskId does not match the route task")
+    if review.get("routeId") != route_id or int(review.get("round", -1)) != research_round:
+        raise SystemExit("adversarialReview route or round does not match the leased task")
+    if not isinstance(review.get("sanityPassed"), bool):
+        raise SystemExit("adversarialReview.sanityPassed must be true or false")
+    require_string(
+        review.get("strongestCounterargument"),
+        "adversarialReview.strongestCounterargument",
+    )
+    require_string_list(review.get("evidence"), "adversarialReview.evidence")
+    if not isinstance(review.get("unresolvedGaps"), list):
+        raise SystemExit("adversarialReview.unresolvedGaps must be a list")
+
+
+def validate_round_synthesis_result(
+    result: dict[str, Any],
+    research_round: int,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    synthesis = result.get("roundSynthesis")
+    if not isinstance(synthesis, dict):
+        raise SystemExit("root-round-synthesis task requires roundSynthesis")
+    if int(synthesis.get("round", -1)) != research_round:
+        raise SystemExit("roundSynthesis.round must match the leased research round")
+    routes = synthesis.get("routes")
+    if not isinstance(routes, list) or len(routes) < 3:
+        raise SystemExit("roundSynthesis.routes must contain at least three routes")
+    for index, route in enumerate(routes):
+        if not isinstance(route, dict):
+            raise SystemExit(f"roundSynthesis.routes[{index}] must be an object")
+        require_string(route.get("routeId"), f"roundSynthesis.routes[{index}].routeId")
+        require_string_list(route.get("strengths"), f"roundSynthesis.routes[{index}].strengths")
+        require_string_list(route.get("gaps"), f"roundSynthesis.routes[{index}].gaps")
+        require_string(route.get("decision"), f"roundSynthesis.routes[{index}].decision")
+        require_string(
+            route.get("nextExperiment"),
+            f"roundSynthesis.routes[{index}].nextExperiment",
+        )
+    require_string_list(synthesis.get("challenges"), "roundSynthesis.challenges")
+    if not isinstance(synthesis.get("redirects"), list):
+        raise SystemExit("roundSynthesis.redirects must be a list")
+    fresh_ideas = require_string_list(synthesis.get("freshIdeas"), "roundSynthesis.freshIdeas")
+    if len(fresh_ideas) < 3:
+        raise SystemExit("roundSynthesis.freshIdeas must contain at least three new directions")
+    intermediate_chains = synthesis.get("intermediateChains")
+    if not isinstance(intermediate_chains, list):
+        raise SystemExit("roundSynthesis.intermediateChains must be a list")
+    for index, chain in enumerate(intermediate_chains):
+        if not isinstance(chain, dict):
+            raise SystemExit(f"roundSynthesis.intermediateChains[{index}] must be an object")
+        require_string_list(
+            chain.get("sourceIntermediateBugs"),
+            f"roundSynthesis.intermediateChains[{index}].sourceIntermediateBugs",
+        )
+        require_string(chain.get("outcome"), f"roundSynthesis.intermediateChains[{index}].outcome")
+        require_string(
+            chain.get("nextExperiment"),
+            f"roundSynthesis.intermediateChains[{index}].nextExperiment",
+        )
+    if connection is not None:
+        completed_chain_count = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM tasks WHERE research_round=? "
+                "AND task_kind='intermediate-chain-composition' AND state='completed'",
+                (research_round,),
+            ).fetchone()["count"]
+        )
+        if completed_chain_count and not intermediate_chains:
+            raise SystemExit(
+                "roundSynthesis must incorporate completed intermediate-bug chain tasks"
+            )
+    if not isinstance(synthesis.get("launchNextRound"), bool):
+        raise SystemExit("roundSynthesis.launchNextRound must be true or false")
+    if synthesis["launchNextRound"] is True:
+        require_string_list(
+            synthesis.get("nextRoundDirections"), "roundSynthesis.nextRoundDirections"
+        )
+    else:
+        hard_stop = synthesis.get("hardStop")
+        if not isinstance(hard_stop, dict):
+            raise SystemExit(
+                "no findings or failed approaches cannot stop the campaign; record a hardStop"
+            )
+        category = require_string(hard_stop.get("category"), "roundSynthesis.hardStop.category")
+        if category not in {
+            "explicit-user-stop",
+            "authorization-required",
+            "campaign-budget-exhausted",
+            "unsafe-or-out-of-scope",
+        }:
+            raise SystemExit("roundSynthesis hardStop category is not an allowed terminal condition")
+        require_string(hard_stop.get("reason"), "roundSynthesis.hardStop.reason")
+        require_string_list(hard_stop.get("evidence"), "roundSynthesis.hardStop.evidence")
+
+
+def validate_intermediate_chain_result(result: dict[str, Any]) -> None:
+    chain = result.get("chainComposition")
+    if not isinstance(chain, dict):
+        raise SystemExit("intermediate chain task requires chainComposition")
+    require_string_list(
+        chain.get("sourceIntermediateBugs"), "chainComposition.sourceIntermediateBugs"
+    )
+    require_string_list(chain.get("attemptedChains"), "chainComposition.attemptedChains")
+    require_string(chain.get("outcome"), "chainComposition.outcome")
+    require_string_list(chain.get("freshIdeas"), "chainComposition.freshIdeas")
+    require_string_list(chain.get("evidence"), "chainComposition.evidence")
+
+
+def validate_next_round_planning_result(
+    connection: sqlite3.Connection, result: dict[str, Any], from_round: int
+) -> None:
+    planning = result.get("nextRoundPlanning")
+    if not isinstance(planning, dict):
+        raise SystemExit("next-round planning task requires nextRoundPlanning")
+    if int(planning.get("fromRound", -1)) != from_round:
+        raise SystemExit("nextRoundPlanning.fromRound does not match the synthesis round")
+    target_round = from_round + 1
+    if int(planning.get("launchedRound", -1)) != target_round:
+        raise SystemExit("nextRoundPlanning.launchedRound must be the immediate next round")
+    require_string(planning.get("planPath"), "nextRoundPlanning.planPath")
+    require_string_list(planning.get("launchedTaskIds"), "nextRoundPlanning.launchedTaskIds")
+    if int(get_metadata(connection, "lastResearchRound", 0)) < target_round:
+        raise SystemExit("launch the next round with round-plan before completing this task")
+    synthesis_id = f"round-{target_round}-root-synthesis"
+    if connection.execute(
+        "SELECT 1 FROM tasks WHERE task_id=? AND research_round=?",
+        (synthesis_id, target_round),
+    ).fetchone() is None:
+        raise SystemExit("nextRoundPlanning does not correspond to a launched round")
+
+
+def validate_failed_result(result: dict[str, Any]) -> dict[str, Any]:
+    failure = result.get("failure")
+    if not isinstance(failure, dict):
+        raise SystemExit("failed outcome requires a failure object")
+    require_string(failure.get("category"), "failure.category")
+    require_string(failure.get("reason"), "failure.reason")
+    require_string_list(failure.get("evidence"), "failure.evidence")
+    validate_analysis_provenance(failure)
+    return failure
 
 
 def task_dependencies(row: sqlite3.Row) -> list[str]:
@@ -480,6 +1014,21 @@ def recover_tasks(connection: sqlite3.Connection) -> dict[str, int]:
     }
 
 
+def revive_dependency_blocks(connection: sqlite3.Connection) -> int:
+    revived = 0
+    for row in connection.execute(
+        "SELECT * FROM tasks WHERE state='blocked' AND last_error='dependency ended unsuccessfully'"
+    ).fetchall():
+        if dependency_state(connection, row) != "blocked":
+            connection.execute(
+                "UPDATE tasks SET state='queued',last_error=NULL,updated_at=? WHERE task_id=?",
+                (utc_now(), row["task_id"]),
+            )
+            record_event(connection, "dependency-block-revived", task_id=row["task_id"])
+            revived += 1
+    return revived
+
+
 def campaign_budget_exhausted(connection: sqlite3.Connection) -> bool:
     deadline = get_metadata(connection, "deadlineAt")
     return bool(deadline and parse_time(deadline) <= dt.datetime.now(dt.timezone.utc))
@@ -528,6 +1077,90 @@ def provision_workspace(
     task_source = root / packet
     if task_source.is_file():
         shutil.copy2(task_source, workspace / "KRINEON_TASK.md")
+    for source_name, target_name in (
+        ("campaign.json", "KRINEON_CAMPAIGN.json"),
+        ("AUTHORIZATION.md", "AUTHORIZATION.md"),
+        ("PROGRAM_GUIDELINES.md", "PROGRAM_GUIDELINES.md"),
+        ("PROGRAM_SCOPE.md", "PROGRAM_SCOPE.md"),
+        ("approach-registry.json", "KRINEON_APPROACH_REGISTRY.json"),
+    ):
+        source = root / source_name
+        if source.is_file():
+            shutil.copy2(source, workspace / target_name)
+    result_template = ASSETS / "task-result.template.json"
+    if result_template.is_file():
+        shutil.copy2(result_template, workspace / "KRINEON_TASK_RESULT.template.json")
+    reference_root = workspace / "KRINEON_REFERENCES"
+    reference_root.mkdir(exist_ok=True)
+    reference_names = ["critical-rce.md", "approach-families.md", "dependencies.md"]
+    if campaign.get("profile") == "chrome-v8":
+        reference_names.extend(("chrome-v8.md", "chrome-v8-agent.md"))
+    for reference_name in reference_names:
+        source = (
+            PROJECT_ROOT / "agents" / reference_name
+            if reference_name.endswith("-agent.md")
+            else PROJECT_ROOT / "references" / reference_name
+        )
+        if source.is_file():
+            shutil.copy2(source, reference_root / reference_name)
+    if campaign.get("profile") == "chrome-v8":
+        chrome_result_template = ASSETS / "chrome-v8-result.template.json"
+        if chrome_result_template.is_file():
+            shutil.copy2(
+                chrome_result_template,
+                reference_root / "chrome-v8-result.template.json",
+            )
+    dependency_mounts: list[dict[str, str]] = []
+    manifest_path = root / "third_party" / "manifest.json"
+    if manifest_path.is_file():
+        manifest = read_json(manifest_path)
+        shutil.copy2(manifest_path, workspace / "KRINEON_DEPENDENCIES.json")
+        dependencies = manifest.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise RuntimeError("invalid third_party dependency manifest")
+        dependency_root = workspace / "KRINEON_THIRD_PARTY"
+        dependency_root.mkdir(exist_ok=True)
+        campaign_dependency_root = (root / "third_party").resolve()
+        for item in dependencies:
+            if not isinstance(item, dict):
+                raise RuntimeError("invalid dependency manifest entry")
+            try:
+                name = validate_dependency_name(str(item.get("name") or ""))
+            except argparse.ArgumentTypeError as exc:
+                raise RuntimeError(str(exc)) from exc
+            source = (root / str(item.get("path") or "")).resolve()
+            try:
+                source.relative_to(campaign_dependency_root)
+            except ValueError as exc:
+                raise RuntimeError(f"dependency path escapes third_party: {source}") from exc
+            revision = str(item.get("resolvedCommit") or "")
+            destination = dependency_root / name
+            completed = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(source),
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(destination),
+                    revision,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode:
+                raise RuntimeError(
+                    f"dependency worktree failed for {name}: {completed.stderr.strip()}"
+                )
+            dependency_mounts.append(
+                {
+                    "name": name,
+                    "path": destination.relative_to(workspace).as_posix(),
+                    "resolvedCommit": revision,
+                }
+            )
     write_json(
         workspace / "KRINEON_ASSIGNMENT.json",
         {
@@ -537,6 +1170,7 @@ def provision_workspace(
             "taskId": task_id,
             "attempt": attempt,
             "workspaceMode": mode,
+            "dependencyWorktrees": dependency_mounts,
             "createdAt": utc_now(),
         },
     )
@@ -575,7 +1209,25 @@ def campaign_root(value: str) -> Path:
 
 
 def require_campaign(root: Path) -> dict[str, Any]:
-    return read_json(root / "campaign.json")
+    campaign_path = root / "campaign.json"
+    campaign = read_json(campaign_path)
+    third_party = root / "third_party"
+    third_party.mkdir(exist_ok=True)
+    manifest_path = third_party / "manifest.json"
+    if not manifest_path.is_file():
+        write_json(
+            manifest_path,
+            {
+                "schemaVersion": 1,
+                "createdAt": utc_now(),
+                "updatedAt": utc_now(),
+                "dependencies": [],
+            },
+        )
+    if campaign.get("dependencyManifest") != "third_party/manifest.json":
+        campaign["dependencyManifest"] = "third_party/manifest.json"
+        write_json(campaign_path, campaign)
+    return campaign
 
 
 def registry_path(root: Path) -> Path:
@@ -593,6 +1245,15 @@ def save_registry(root: Path, registry: dict[str, Any]) -> None:
 
 def task_markdown(lane: dict[str, Any], campaign: dict[str, Any]) -> str:
     deliverables = "\n".join(f"- {item}" for item in lane["deliverables"])
+    definitions = approach_family_definitions()
+    approach_lines = []
+    for family_id in lane["approachFamilies"]:
+        family = definitions[family_id]
+        approach_lines.append(
+            f"- `{family_id}`: boundary={family['boundary']}; "
+            f"mechanism={family['mechanism']}; invariant={family['invariant']}"
+        )
+    approaches = "\n".join(approach_lines)
     return f"""# Task: {lane['title']}
 
 ## Campaign
@@ -601,14 +1262,44 @@ def task_markdown(lane: dict[str, Any], campaign: dict[str, Any]) -> str:
 - Repository: {campaign['repository']}
 - Exact revision: {campaign['commit']}
 - Mode: {campaign['mode']}
+- Profile: {campaign.get('profile', 'critical-rce')}
 - Wave: {lane['wave']}
 
-Read `AUTHORIZATION.md` and `campaign.json` before taking any dynamic action.
+Read `AUTHORIZATION.md` and `KRINEON_CAMPAIGN.json` before taking any dynamic action.
 Stay within the recorded environment and stop conditions.
+Read `KRINEON_REFERENCES/critical-rce.md` before discovery or chain construction.
+Read `KRINEON_REFERENCES/dependencies.md` and `KRINEON_DEPENDENCIES.json` before
+assuming a library boundary ends the chain. Pinned dependency worktrees, when
+present, are under `KRINEON_THIRD_PARTY/`.
+{"Read `KRINEON_REFERENCES/chrome-v8.md` and `KRINEON_REFERENCES/chrome-v8-agent.md` before starting." if campaign.get('profile') == 'chrome-v8' else ""}
+
+## Critical/RCE mission
+
+Build only a complete Critical/RCE chain from first-principles analysis of the
+pinned source and its exact-revision runtime behavior. Do not use changelogs,
+advisories, git history or blame, historical commits, patched-version
+comparisons, or an internet-based patch diff to locate vulnerabilities. Work
+from public ingress toward a privileged sink, and from execution/native sinks
+back toward attacker-controlled input. A crash, assertion, denial of service,
+isolated primitive, or lower-severity issue is a chain link, not a finding.
+Development servers, development builds, hot-reload paths, test or fixture
+servers, preview-only runtimes, and debug-only paths are also lead-generation
+environments, not findings. The primary terminal must survive a supported
+production-equivalent or release entrypoint before promotion.
 
 ## Primary objective
 
 {lane['objective']}
+
+## Registered approach families
+
+{approaches}
+
+These identities are semantic. Classify work by the security boundary,
+mechanism, and invariant above, not by similar task titles or prose. Record the
+families actually exercised in the task result. If this family is already
+converged, expect the scheduler to redirect free agents toward less-explored
+families.
 
 ## Required deliverables
 
@@ -622,12 +1313,135 @@ Stay within the recorded environment and stop conditions.
 - State the falsification condition for each hypothesis.
 - Do not use a static-tool result as exploit evidence.
 - Do not access third-party data, degrade services, or broaden authorization.
+- Submit completed work using `KRINEON_TASK_RESULT.template.json`; the scheduler
+  rejects missing evidence, searched surfaces, pinned source references, or
+  prohibited discovery provenance.
+
+## Exploration and blocker contract
+
+This lane is a starting search direction, not a fixed testcase list. Follow
+adjacent call paths, state transitions, representations, platforms, sibling
+implementations, and cross-lane compositions while they remain inside the
+recorded authorization. Add focused tasks with `task-add` when new evidence
+opens a material branch.
+
+Do not end with only "blocked." Record the exact missing chain link, guard or
+failure mechanism, why it blocks the current assumptions, evidence, attempts,
+bypass hypotheses, alternative routes, cheapest discriminator, authority
+requirements, and next experiments. A self-resolvable technical blocker
+automatically creates a high-priority fresh-agent breakout task. If an exact
+route is falsified, preserve that result and pursue a different source-derived
+route rather than forcing an exploit claim or ending the campaign.
 
 ## Handoff
 
 Use `assets/agent-handoff.template.md` as the structure. Return exact commands,
 artifact paths, controls, blockers, and cleanup state.
 """
+
+
+def validate_dependency_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
+        raise argparse.ArgumentTypeError(
+            "dependency name must use letters, digits, dot, underscore, or hyphen"
+        )
+    return value
+
+
+def dependency_manifest(root: Path) -> dict[str, Any]:
+    manifest = read_json(root / "third_party" / "manifest.json")
+    dependencies = manifest.get("dependencies")
+    if not isinstance(dependencies, list):
+        raise SystemExit("invalid third_party dependency manifest")
+    return manifest
+
+
+def run_git_checked(arguments: list[str], description: str) -> str:
+    completed = subprocess.run(arguments, check=False, capture_output=True, text=True)
+    if completed.returncode:
+        raise SystemExit(f"{description} failed: {completed.stderr.strip()}")
+    return completed.stdout.strip()
+
+
+def cmd_dependency_add(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    require_campaign(root)
+    manifest = dependency_manifest(root)
+    if any(item.get("name") == args.name for item in manifest["dependencies"]):
+        raise SystemExit(f"dependency already registered: {args.name}")
+    parsed = urlsplit(args.repo)
+    if parsed.scheme in {"http", "https"} and (parsed.username or parsed.password):
+        raise SystemExit("dependency repository URLs must not embed credentials")
+    destination = root / "third_party" / args.name
+    if destination.exists():
+        raise SystemExit(f"dependency destination already exists: {destination}")
+    try:
+        run_git_checked(
+            ["git", "clone", "--no-checkout", "--", args.repo, str(destination)],
+            "dependency clone",
+        )
+        run_git_checked(
+            ["git", "-C", str(destination), "checkout", "--detach", args.commit],
+            "dependency revision checkout",
+        )
+        resolved = run_git_checked(
+            ["git", "-C", str(destination), "rev-parse", "HEAD"],
+            "dependency revision resolution",
+        )
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", resolved):
+            raise SystemExit("dependency revision did not resolve to a full object ID")
+        dirty = run_git_checked(
+            ["git", "-C", str(destination), "status", "--porcelain"],
+            "dependency worktree check",
+        )
+        if dirty:
+            raise SystemExit("new dependency checkout is unexpectedly dirty")
+    except BaseException:
+        if destination.exists():
+            shutil.rmtree(destination)
+        raise
+    now = utc_now()
+    manifest["updatedAt"] = now
+    manifest["dependencies"].append(
+        {
+            "name": args.name,
+            "repository": args.repo,
+            "requestedRevision": args.commit,
+            "resolvedCommit": resolved,
+            "path": f"third_party/{args.name}",
+            "relationship": args.relationship,
+            "scopeStatus": args.scope_status,
+            "lockEvidence": list(args.lock_evidence),
+            "reason": args.reason,
+            "addedAt": now,
+            "discoveryBoundary": "exact pinned dependency; no history or patched-version diff",
+        }
+    )
+    write_json(root / "third_party" / "manifest.json", manifest)
+    print(f"added dependency {args.name} at {resolved}")
+    print(f"manifest: {root / 'third_party' / 'manifest.json'}")
+    return 0
+
+
+def cmd_dependency_status(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    require_campaign(root)
+    manifest = dependency_manifest(root)
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+        return 0
+    dependencies = manifest["dependencies"]
+    if not dependencies:
+        print("no pinned third-party dependencies")
+        return 0
+    print(f"{'NAME':<24} {'RELATIONSHIP':<14} {'SCOPE':<20} COMMIT")
+    print("-" * 100)
+    for item in dependencies:
+        print(
+            f"{str(item['name']):<24} {str(item['relationship']):<14} "
+            f"{str(item['scopeStatus']):<20} {item['resolvedCommit']}"
+        )
+    return 0
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -638,9 +1452,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     for name in CAMPAIGN_DIRS:
         (root / name).mkdir(exist_ok=True)
 
+    lanes = campaign_lanes(args.profile)
     data = template("campaign.template.json")
     data.update(
         {
+            "profile": args.profile,
             "target": args.target,
             "repository": args.repo,
             "localCheckout": str(Path(args.checkout).expanduser().resolve()) if args.checkout else "",
@@ -648,13 +1464,51 @@ def cmd_init(args: argparse.Namespace) -> int:
             "mode": args.mode,
             "programUrl": args.program_url or "",
             "createdAt": utc_now(),
-            "lanes": [lane["id"] for lane in LANES],
+            "lanes": [lane["id"] for lane in lanes],
+            "dependencyManifest": "third_party/manifest.json",
         }
     )
     write_json(root / "campaign.json", data)
     write_json(
+        root / "third_party" / "manifest.json",
+        {
+            "schemaVersion": 1,
+            "createdAt": utc_now(),
+            "updatedAt": utc_now(),
+            "dependencies": [],
+        },
+    )
+    if args.profile == "chrome-v8":
+        chrome_root = root / "chrome-v8"
+        chrome_root.mkdir(exist_ok=True)
+        builds = template("chrome-v8-builds.template.json")
+        builds["createdAt"] = utc_now()
+        write_json(chrome_root / "builds.json", builds)
+        write_json(
+            chrome_root / "result.template.json",
+            template("chrome-v8-result.template.json"),
+        )
+    write_json(
         registry_path(root),
         {"schemaVersion": 1, "createdAt": utc_now(), "updatedAt": utc_now(), "findings": []},
+    )
+    definitions = approach_family_definitions()
+    selected_family_ids = sorted(
+        {family_id for lane in lanes for family_id in lane["approachFamilies"]}
+    )
+    write_json(
+        root / "approach-registry.json",
+        {
+            "schemaVersion": 1,
+            "generatedAt": utc_now(),
+            "policy": {
+                "identityBasis": "registered boundary + mechanism + invariant, never task wording",
+                "redirectBeforeDominance": True,
+            },
+            "underexploredFamilies": selected_family_ids,
+            "convergedFamilies": [],
+            "families": [definitions[family_id] for family_id in selected_family_ids],
+        },
     )
 
     authorization = f"""# Authorization record
@@ -662,6 +1516,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 - Target: {args.target}
 - Repository or asset: {args.repo}
 - Exact revision: {args.commit}
+- Campaign profile: {args.profile}
 - Program URL: {args.program_url or 'not recorded'}
 - Authorization confirmed: NO
 - Allowed environment: local owned fixture
@@ -682,12 +1537,16 @@ Edit this file and `campaign.json` before any live or shared-system test.
 def cmd_plan(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     campaign = require_campaign(root)
+    profile_name = str(campaign.get("profile") or "critical-rce")
+    profile = read_json(PROFILES / f"{profile_name}.json")
+    lanes = campaign_lanes(profile_name)
     selected = set(args.lane or ())
-    unknown = selected.difference(lane["id"] for lane in LANES)
+    unknown = selected.difference(lane["id"] for lane in lanes)
     if unknown:
         raise SystemExit(f"unknown lanes: {', '.join(sorted(unknown))}")
 
-    included = [lane for lane in LANES if not selected or lane["id"] in selected]
+    included = [lane for lane in lanes if not selected or lane["id"] in selected]
+    included_ids = {lane["id"] for lane in included}
     planned: list[dict[str, Any]] = []
     for lane in included:
         path = root / "tasks" / f"wave-{lane['wave']}-{lane['id']}.md"
@@ -699,21 +1558,36 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 "lane": lane["id"],
                 "title": lane["title"],
                 "task": str(path.relative_to(root)),
+                "priority": lane["priority"],
+                "approachFamilies": lane["approachFamilies"],
                 "dependsOn": (
-                    []
-                    if lane["wave"] == 0
-                    else [
-                        earlier["id"]
-                        for earlier in included
-                        if earlier["wave"] == lane["wave"] - 1
-                    ]
+                    [value for value in lane.get("dependsOn", []) if value in included_ids]
+                    if "dependsOn" in lane
+                    else (
+                        []
+                        if lane["wave"] == 0
+                        else [
+                            earlier["id"]
+                            for earlier in included
+                            if earlier["wave"] == lane["wave"] - 1
+                        ]
+                    )
                 ),
             }
         )
+    definitions = approach_family_definitions()
+    selected_family_ids = sorted(
+        {family_id for task in planned for family_id in task["approachFamilies"]}
+        | {"blocker-alternative-route", "chain-composition", "validation-replay"}
+    )
     write_json(
         root / "launch-plan.json",
         {
             "schemaVersion": 2,
+            "profile": profile_name,
+            "mission": "critical-rce-chain",
+            "discoveryPolicy": campaign.get("discoveryPolicy", {}),
+            "schedulingPolicy": profile.get("schedulingPolicy", {}),
             "generatedAt": utc_now(),
             "maxConcurrency": args.max_concurrency,
             "defaultLeaseSeconds": args.lease_seconds,
@@ -721,6 +1595,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "defaultMaxAttempts": args.max_attempts,
             "campaignBudgetSeconds": args.budget_seconds,
             "validationRule": "a candidate must be replayed by an agent that did not originate it",
+            "approachFamilies": [definitions[family_id] for family_id in selected_family_ids],
             "tasks": planned,
         },
     )
@@ -737,9 +1612,18 @@ def cmd_queue(args: argparse.Namespace) -> int:
     try:
         initialize_orchestration_schema(connection)
         with connection:
+            sync_approach_family_registry(
+                connection, list(plan.get("approachFamilies", []))
+            )
             set_metadata(connection, "schemaVersion", 1)
             set_metadata(connection, "createdAt", get_metadata(connection, "createdAt", now))
-            set_metadata(connection, "maxConcurrency", int(plan.get("maxConcurrency", 3)))
+            configured_concurrency = parse_max_concurrency(
+                plan.get("maxConcurrency", "auto")
+            )
+            set_metadata(connection, "maxConcurrency", configured_concurrency)
+            set_metadata(
+                connection, "schedulingPolicy", plan.get("schedulingPolicy", {})
+            )
             set_metadata(connection, "defaultLeaseSeconds", int(plan.get("defaultLeaseSeconds", 900)))
             set_metadata(
                 connection,
@@ -762,6 +1646,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                     str(task["title"]),
                     str(task["task"]),
                     "queued",
+                    int(task.get("priority", 0)),
                     json.dumps(task.get("dependsOn", [])),
                     int(plan.get("defaultMaxAttempts", 2)),
                     int(plan.get("defaultTaskTimeoutSeconds", 7200)),
@@ -770,8 +1655,8 @@ def cmd_queue(args: argparse.Namespace) -> int:
                 )
                 cursor = connection.execute(
                     "INSERT OR IGNORE INTO tasks("
-                    "task_id,wave,lane,title,packet,state,depends_json,max_attempts,"
-                    "timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "task_id,wave,lane,title,packet,state,priority,depends_json,max_attempts,"
+                    "timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     values,
                 )
                 if cursor.rowcount:
@@ -783,13 +1668,14 @@ def cmd_queue(args: argparse.Namespace) -> int:
                     ).fetchone()
                     if existing and existing["state"] == "queued":
                         connection.execute(
-                            "UPDATE tasks SET wave=?,lane=?,title=?,packet=?,depends_json=?,"
+                            "UPDATE tasks SET wave=?,lane=?,title=?,packet=?,priority=?,depends_json=?,"
                             "max_attempts=?,timeout_seconds=?,updated_at=? WHERE task_id=?",
                             (
                                 int(task["wave"]),
                                 str(task["lane"]),
                                 str(task["title"]),
                                 str(task["task"]),
+                                int(task.get("priority", 0)),
                                 json.dumps(task.get("dependsOn", [])),
                                 int(plan.get("defaultMaxAttempts", 2)),
                                 int(plan.get("defaultTaskTimeoutSeconds", 7200)),
@@ -798,11 +1684,15 @@ def cmd_queue(args: argparse.Namespace) -> int:
                             ),
                         )
                         refreshed += 1
+                set_task_approach_families(
+                    connection, task_id, list(task.get("approachFamilies", []))
+                )
             record_event(
                 connection,
                 "queue-reconciled",
                 payload={"inserted": inserted, "refreshed": refreshed},
             )
+            write_approach_family_snapshot(root, connection)
         print(f"queued {inserted} new tasks; refreshed {refreshed} queued tasks")
         print(f"durable state: {orchestration_path(root)}")
         return 0
@@ -817,6 +1707,13 @@ def cmd_worker_register(args: argparse.Namespace) -> int:
     now = utc_now()
     try:
         with connection:
+            existing = connection.execute(
+                "SELECT agent FROM workers WHERE worker_id=?", (args.worker_id,)
+            ).fetchone()
+            if existing is not None and existing["agent"] != args.agent:
+                raise SystemExit(
+                    "worker agent identity is immutable; register a new worker ID instead"
+                )
             connection.execute(
                 "INSERT INTO workers(worker_id,agent,role,status,registered_at,updated_at) "
                 "VALUES(?,?,?,?,?,?) ON CONFLICT(worker_id) DO UPDATE SET "
@@ -870,10 +1767,128 @@ def cmd_worker_stop(args: argparse.Namespace) -> int:
                 (utc_now(), args.worker_id),
             )
             record_event(connection, "worker-stopped", worker_id=args.worker_id)
+            write_approach_family_snapshot(root, connection)
         print(f"stopped worker {args.worker_id}; requeued {len(running)} tasks")
         return 0
     finally:
         connection.close()
+
+
+def diversity_rank_ready_tasks(
+    connection: sqlite3.Connection, rows: list[sqlite3.Row]
+) -> tuple[list[sqlite3.Row], dict[str, Any] | None]:
+    if len(rows) < 2:
+        return rows, None
+    snapshot = approach_family_snapshot(connection)
+    family_stats = {family["id"]: family for family in snapshot["families"]}
+    task_families: dict[str, list[str]] = {}
+    for row in rows:
+        task_families[str(row["task_id"])] = [
+            family_id
+            for family_id in task_approach_families(connection, str(row["task_id"]))
+            if family_stats.get(family_id, {}).get("exploration")
+        ]
+    baseline_families = task_families[str(rows[0]["task_id"])]
+    if not baseline_families:
+        return rows, None
+    ready_families = {
+        family_id for family_ids in task_families.values() for family_id in family_ids
+    }
+    if len(ready_families) < 2:
+        return rows, None
+
+    def load_key(row: sqlite3.Row) -> tuple[int, int]:
+        families = task_families[str(row["task_id"])]
+        if not families:
+            return (sys.maxsize, sys.maxsize)
+        # A multi-family task must account for its most-loaded family. Otherwise
+        # attaching one unused label could disguise continued concentration.
+        return (
+            max(int(family_stats[family_id]["activeAgents"]) for family_id in families),
+            max(int(family_stats[family_id]["coverageLoad"]) for family_id in families),
+        )
+
+    exploration_rows = [row for row in rows if task_families[str(row["task_id"])]]
+    best_load = min(load_key(row) for row in exploration_rows)
+    baseline_load = load_key(rows[0])
+    if baseline_load == best_load:
+        return rows, None
+    preferred: list[sqlite3.Row] = []
+    remainder: list[sqlite3.Row] = []
+    for row in rows:
+        if load_key(row) == best_load:
+            preferred.append(row)
+        else:
+            remainder.append(row)
+    ranked = preferred + remainder
+    minimum_active = min(family_stats[family_id]["activeAgents"] for family_id in ready_families)
+    underexplored = sorted(
+        family_id
+        for family_id in ready_families
+        if family_stats[family_id]["activeAgents"] == minimum_active
+        and family_stats[family_id]["coverageLoad"]
+        == min(
+            family_stats[candidate]["coverageLoad"]
+            for candidate in ready_families
+            if family_stats[candidate]["activeAgents"] == minimum_active
+        )
+    )
+    dominated = sorted(
+        family_id
+        for family_id in ready_families
+        if family_stats[family_id]["activeAgents"] > minimum_active
+        or family_stats[family_id]["coverageLoad"] > best_load[1]
+    )
+    return ranked, {
+        "fromTaskId": rows[0]["task_id"],
+        "toTaskId": ranked[0]["task_id"],
+        "dominatedFamilies": dominated,
+        "underexploredFamilies": underexplored,
+        "baselineLoad": {"activeAgents": baseline_load[0], "coverageLoad": baseline_load[1]},
+        "selectedLoad": {"activeAgents": best_load[0], "coverageLoad": best_load[1]},
+        "reason": "approach diversity outranks suspicion, promise, and raw task priority",
+        "identityBasis": "registered boundary + mechanism + invariant",
+    }
+
+
+def worker_is_eligible_for_round_task(
+    connection: sqlite3.Connection, worker: sqlite3.Row, task: sqlite3.Row
+) -> bool:
+    task_kind = str(task["task_kind"] or "ordinary")
+    research_round = int(task["research_round"] or 0)
+    if task_kind in {"root-round-synthesis", "next-round-planning"} and worker[
+        "role"
+    ] != "coordinator":
+        return False
+    if worker["role"] == "coordinator" and task_kind in {
+        "route-development",
+        "adversarial-route-review",
+        "mature-cross-pollination",
+    }:
+        return False
+    if task_kind == "route-development" and research_round > 0:
+        used_agents = {
+            row["agent"]
+            for row in connection.execute(
+                "SELECT DISTINCT workers.agent FROM tasks "
+                "JOIN workers ON workers.worker_id=tasks.lease_owner "
+                "WHERE tasks.research_round=? AND tasks.task_kind='route-development' "
+                "AND tasks.route_id<>? AND tasks.state IN ('running','completed','blocked','failed')",
+                (research_round, task["route_id"] or ""),
+            ).fetchall()
+        }
+        if worker["agent"] in used_agents:
+            return False
+    if task_kind == "adversarial-route-review" and task["reviews_task_id"]:
+        developer = connection.execute(
+            "SELECT workers.agent FROM tasks "
+            "JOIN workers ON workers.worker_id=tasks.lease_owner "
+            "WHERE tasks.task_id=?",
+            (task["reviews_task_id"],),
+        ).fetchone()
+        if developer is not None and developer["agent"] == worker["agent"]:
+            return False
+    return True
 
 
 def cmd_claim(args: argparse.Namespace) -> int:
@@ -892,7 +1907,28 @@ def cmd_claim(args: argparse.Namespace) -> int:
             connection.commit()
             print("campaign budget exhausted", file=sys.stderr)
             return 4
-        max_concurrency = int(get_metadata(connection, "maxConcurrency", 3))
+        active_for_agent = connection.execute(
+            "SELECT tasks.task_id FROM tasks JOIN workers ON workers.worker_id=tasks.lease_owner "
+            "WHERE tasks.state='running' AND workers.agent=? LIMIT 1",
+            (worker["agent"],),
+        ).fetchone()
+        if active_for_agent is not None:
+            connection.commit()
+            payload = {
+                "claimed": False,
+                "reason": "agent-already-holds-running-task",
+                "taskId": active_for_agent["task_id"],
+                "recovery": recovery,
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            else:
+                print(
+                    f"agent identity already owns running task: {active_for_agent['task_id']}",
+                    file=sys.stderr,
+                )
+            return 3
+        _, max_concurrency = resolve_concurrency_limit(connection)
         running = connection.execute(
             "SELECT COUNT(*) AS count FROM tasks WHERE state='running'"
         ).fetchone()["count"]
@@ -901,15 +1937,21 @@ def cmd_claim(args: argparse.Namespace) -> int:
             print("concurrency limit reached", file=sys.stderr)
             return 3
         chosen = None
+        eligible: list[sqlite3.Row] = []
         for row in connection.execute(
             "SELECT * FROM tasks WHERE state='queued' ORDER BY priority DESC,wave,created_at,task_id"
         ).fetchall():
             excluded = json.loads(row["excluded_workers_json"])
-            if args.worker_id in excluded:
+            excluded_agents = json.loads(row["excluded_agents_json"])
+            if args.worker_id in excluded or worker["agent"] in excluded_agents:
+                continue
+            if not worker_is_eligible_for_round_task(connection, worker, row):
                 continue
             if dependency_state(connection, row) == "ready":
-                chosen = row
-                break
+                eligible.append(row)
+        ranked, redirect = diversity_rank_ready_tasks(connection, eligible)
+        if ranked:
+            chosen = ranked[0]
         if chosen is None:
             connection.commit()
             if args.json:
@@ -921,7 +1963,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
         lease_seconds = args.lease_seconds or int(
             get_metadata(connection, "defaultLeaseSeconds", 900)
         )
-        token = secrets.token_urlsafe(24)
+        # Prefix the capability so argparse never mistakes a leading '-' from
+        # token_urlsafe() for a new command-line option.
+        token = "lease_" + secrets.token_urlsafe(24)
         workspace, workspace_mode = provision_workspace(
             root,
             campaign,
@@ -957,8 +2001,20 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 "leaseSeconds": lease_seconds,
                 "workspace": str(workspace.relative_to(root)),
                 "workspaceMode": workspace_mode,
+                "approachFamilies": task_approach_families(
+                    connection, str(chosen["task_id"])
+                ),
             },
         )
+        if redirect is not None:
+            record_event(
+                connection,
+                "approach-family-redirect",
+                task_id=chosen["task_id"],
+                worker_id=args.worker_id,
+                payload=redirect,
+            )
+        write_approach_family_snapshot(root, connection)
         connection.commit()
         payload = {
             "claimed": True,
@@ -972,6 +2028,14 @@ def cmd_claim(args: argparse.Namespace) -> int:
             "leaseExpiresAt": lease_expires_at,
             "timeoutSeconds": chosen["timeout_seconds"],
             "findingId": chosen["finding_id"],
+            "researchRound": chosen["research_round"],
+            "routeId": chosen["route_id"],
+            "taskKind": chosen["task_kind"],
+            "reviewsTaskId": chosen["reviews_task_id"],
+            "approachFamilies": task_approach_families(
+                connection, str(chosen["task_id"])
+            ),
+            "approachRedirect": redirect,
             "recovery": recovery,
         }
         if args.json:
@@ -1029,8 +2093,964 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
         connection.close()
 
 
+def validate_dependencies(connection: sqlite3.Connection, dependencies: list[str]) -> None:
+    for dependency in dependencies:
+        if connection.execute(
+            "SELECT 1 FROM tasks WHERE task_id=?", (dependency,)
+        ).fetchone() is None:
+            raise SystemExit(f"unknown task dependency: {dependency}")
+
+
+def insert_dynamic_task(
+    connection: sqlite3.Connection,
+    *,
+    task_id: str,
+    wave: int,
+    lane: str,
+    title: str,
+    packet: str,
+    priority: int,
+    dependencies: list[str],
+    excluded_workers: list[str],
+    max_attempts: int,
+    timeout_seconds: int,
+    approach_families: list[str],
+    unblocks_task_id: str | None = None,
+    research_round: int = 0,
+    route_id: str | None = None,
+    task_kind: str = "ordinary",
+    reviews_task_id: str | None = None,
+    excluded_agents: list[str] | None = None,
+) -> None:
+    validate_dependencies(connection, dependencies)
+    if connection.execute("SELECT 1 FROM tasks WHERE task_id=?", (task_id,)).fetchone():
+        raise SystemExit(f"task already exists: {task_id}")
+    now = utc_now()
+    connection.execute(
+        "INSERT INTO tasks(task_id,wave,lane,title,packet,state,priority,depends_json,"
+        "excluded_workers_json,excluded_agents_json,unblocks_task_id,research_round,route_id,"
+        "task_kind,reviews_task_id,max_attempts,timeout_seconds,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            task_id,
+            wave,
+            lane,
+            title,
+            packet,
+            priority,
+            json.dumps(dependencies),
+            json.dumps(excluded_workers),
+            json.dumps(sorted(set(excluded_agents or []))),
+            unblocks_task_id,
+            research_round,
+            route_id,
+            task_kind,
+            reviews_task_id,
+            max_attempts,
+            timeout_seconds,
+            now,
+            now,
+        ),
+    )
+    set_task_approach_families(connection, task_id, approach_families)
+
+
+def cmd_task_add(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    require_campaign(root)
+    if args.wave < 0 or args.max_attempts < 1 or args.timeout_seconds < 1:
+        raise SystemExit("wave must be nonnegative; attempts and timeout must be positive")
+    connection = connect_orchestration(root)
+    packet = root / "tasks" / f"dynamic-{args.task_id}.md"
+    success = "\n".join(f"- {item}" for item in args.success_criterion)
+    packet.write_text(
+        f"""# Dynamic exploration task: {args.title}
+
+## Objective
+
+{args.objective}
+
+## Registered approach families
+
+{chr(10).join(f'- `{family_id}`' for family_id in args.approach_family)}
+
+Use these stable semantic family identities. Do not relabel the same mechanism
+with different prose to make it look like new coverage.
+
+## Success criteria
+
+{success}
+
+## Expansion mandate
+
+Treat the objective as a starting direction, not an exhaustive testcase list.
+Follow adjacent source paths, state transitions, platform variants, and
+producer/consumer boundaries while they remain inside `AUTHORIZATION.md`. If a
+path blocks, identify the missing link, blocking mechanism, bypass hypotheses,
+alternative routes, and cheapest discriminator. Submit structured evidence;
+do not stop at a prose statement that the lane is blocked. Self-resolvable
+technical blockers automatically become fresh-agent breakout tasks.
+
+## Critical/RCE discovery policy
+
+Pursue only missing links in a complete Critical/RCE chain. Analyze the pinned
+source and exact-revision runtime from first principles. Do not use changelogs,
+advisories, Git history or blame, historical commits, patched-version
+comparisons, or internet-derived patch diffs. Do not promote crash-only, DoS,
+or lower-severity outcomes.
+
+## Evidence contract
+
+- Preserve exact revisions, commands, controls, and artifact paths.
+- Separate confirmed runtime behavior from source inference.
+- Register promising, blocked, and disproved variants.
+- Do not broaden authorization or test third-party systems.
+""",
+        encoding="utf-8",
+    )
+    try:
+        with connection:
+            insert_dynamic_task(
+                connection,
+                task_id=args.task_id,
+                wave=args.wave,
+                lane=args.lane,
+                title=args.title,
+                packet=packet.relative_to(root).as_posix(),
+                priority=args.priority,
+                dependencies=args.depends_on or [],
+                excluded_workers=args.exclude_worker or [],
+                max_attempts=args.max_attempts,
+                timeout_seconds=args.timeout_seconds,
+                approach_families=args.approach_family,
+            )
+            record_event(
+                connection,
+                "dynamic-task-added",
+                task_id=args.task_id,
+                payload={
+                    "lane": args.lane,
+                    "objective": args.objective,
+                    "dependencies": args.depends_on or [],
+                    "approachFamilies": args.approach_family,
+                },
+            )
+        print(f"added exploration task {args.task_id}")
+        return 0
+    finally:
+        connection.close()
+
+
+def route_maturity(
+    root: Path, connection: sqlite3.Connection, route_id: str, before_round: int
+) -> dict[str, int]:
+    development = int(
+        connection.execute(
+            "SELECT COUNT(DISTINCT research_round) AS count FROM tasks "
+            "WHERE route_id=? AND task_kind='route-development' AND state='completed' "
+            "AND research_round<?",
+            (route_id, before_round),
+        ).fetchone()["count"]
+    )
+    passed_rounds: set[int] = set()
+    for row in connection.execute(
+        "SELECT tasks.research_round,submissions.result_path FROM tasks "
+        "JOIN submissions ON submissions.task_id=tasks.task_id "
+        "WHERE tasks.route_id=? AND tasks.task_kind='adversarial-route-review' "
+        "AND tasks.state='completed' AND tasks.research_round<? "
+        "AND submissions.outcome='completed'",
+        (route_id, before_round),
+    ).fetchall():
+        result_path = root / str(row["result_path"])
+        if not result_path.is_file():
+            continue
+        review = read_json(result_path).get("adversarialReview")
+        if isinstance(review, dict) and review.get("sanityPassed") is True:
+            passed_rounds.add(int(row["research_round"]))
+    adversarial = len(passed_rounds)
+    return {"developmentRounds": development, "adversarialRounds": adversarial}
+
+
+def cmd_round_plan(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    require_campaign(root)
+    plan = read_json(Path(args.plan).expanduser().resolve())
+    research_round = int(plan.get("round", 0))
+    routes = plan.get("routes")
+    if research_round < 1 or not isinstance(routes, list) or len(routes) < 3:
+        raise SystemExit("round plan requires a positive round and at least three routes")
+    connection = connect_orchestration(root)
+    try:
+        with connection:
+            coordinator = connection.execute(
+                "SELECT * FROM workers WHERE worker_id=?", (args.worker_id,)
+            ).fetchone()
+            if coordinator is None or coordinator["status"] != "active":
+                raise SystemExit("round coordinator must be a registered active worker")
+            if coordinator["role"] != "coordinator":
+                raise SystemExit("round-plan may be launched only by a coordinator worker")
+            expected_round = int(get_metadata(connection, "lastResearchRound", 0)) + 1
+            if research_round != expected_round:
+                raise SystemExit(f"next research round must be {expected_round}")
+            if research_round > 1:
+                previous_synthesis_id = f"round-{research_round - 1}-root-synthesis"
+                previous = connection.execute(
+                    "SELECT tasks.state,submissions.result_path FROM tasks "
+                    "LEFT JOIN submissions ON submissions.task_id=tasks.task_id "
+                    "AND submissions.outcome='completed' "
+                    "WHERE tasks.task_id=? ORDER BY submissions.submitted_at DESC LIMIT 1",
+                    (previous_synthesis_id,),
+                ).fetchone()
+                if previous is None or previous["state"] != "completed" or not previous["result_path"]:
+                    raise SystemExit(
+                        "the previous coordinator synthesis must complete before another round"
+                    )
+                previous_result = read_json(root / str(previous["result_path"]))
+                previous_synthesis = previous_result.get("roundSynthesis")
+                if (
+                    not isinstance(previous_synthesis, dict)
+                    or previous_synthesis.get("launchNextRound") is not True
+                ):
+                    raise SystemExit(
+                        "the previous root synthesis did not authorize another research round"
+                    )
+            definitions = {
+                row["family_id"]: row
+                for row in connection.execute("SELECT * FROM approach_families").fetchall()
+            }
+            route_by_id: dict[str, dict[str, Any]] = {}
+            family_ids: set[str] = set()
+            for index, route in enumerate(routes):
+                if not isinstance(route, dict):
+                    raise SystemExit(f"routes[{index}] must be an object")
+                route_id = validate_task_id(require_string(route.get("id"), f"routes[{index}].id"))
+                family_id = require_string(route.get("family"), f"routes[{index}].family")
+                if route_id in route_by_id:
+                    raise SystemExit(f"duplicate route ID: {route_id}")
+                if family_id in family_ids:
+                    raise SystemExit(
+                        "independent routes in one round must use distinct semantic families"
+                    )
+                family = definitions.get(family_id)
+                if family is None or not family["exploration"]:
+                    raise SystemExit(f"route must use a registered exploration family: {family_id}")
+                previous_family = connection.execute(
+                    "SELECT task_approach_families.family_id FROM tasks "
+                    "JOIN task_approach_families USING(task_id) "
+                    "WHERE tasks.route_id=? AND tasks.task_kind='route-development' "
+                    "ORDER BY tasks.research_round DESC LIMIT 1",
+                    (route_id,),
+                ).fetchone()
+                if previous_family is not None and previous_family["family_id"] != family_id:
+                    raise SystemExit(
+                        f"route {route_id} cannot change semantic family across rounds"
+                    )
+                require_string(route.get("title"), f"routes[{index}].title")
+                require_string(route.get("objective"), f"routes[{index}].objective")
+                require_string_list(route.get("successCriteria"), f"routes[{index}].successCriteria")
+                incompatible = require_string_list(
+                    route.get("incompatibleWith"), f"routes[{index}].incompatibleWith"
+                )
+                if route_id in incompatible:
+                    raise SystemExit("a route cannot be incompatible with itself")
+                route_by_id[route_id] = route
+                family_ids.add(family_id)
+            route_ids = set(route_by_id)
+            for route_id, route in route_by_id.items():
+                incompatible = set(str(value) for value in route["incompatibleWith"])
+                unknown = incompatible.difference(route_ids)
+                if unknown:
+                    raise SystemExit(
+                        f"route {route_id} references unknown incompatible routes: "
+                        + ", ".join(sorted(unknown))
+                    )
+                if not any(
+                    route_id in set(str(value) for value in route_by_id[other]["incompatibleWith"])
+                    for other in incompatible
+                ):
+                    raise SystemExit(
+                        f"route {route_id} needs at least one reciprocal incompatibility"
+                    )
+
+            adversarial_task_ids: dict[str, str] = {}
+            for route_id, route in route_by_id.items():
+                family_id = str(route["family"])
+                development_id = f"round-{research_round}-{route_id}-develop"
+                adversarial_id = f"round-{research_round}-{route_id}-adversary"
+                criteria = "\n".join(f"- {item}" for item in route["successCriteria"])
+                incompatibility = ", ".join(f"`{item}`" for item in route["incompatibleWith"])
+                development_packet = root / "tasks" / f"dynamic-{development_id}.md"
+                development_packet.write_text(
+                    f"""# Independent route development: {route['title']}
+
+Research round: {research_round}
+Route ID: `{route_id}`
+Semantic family: `{family_id}`
+Incompatible routes kept alive this round: {incompatibility}
+
+## Objective
+
+{route['objective']}
+
+## Success criteria
+
+{criteria}
+
+Develop this route independently. Do not consume another route's unpublished
+ideas or combine mechanisms during this task. Record real strengths, gaps,
+evidence, intermediate bugs, chain hypotheses, fresh ideas, and the next
+experiment in `routeDevelopment`. A result of "no finding" is not a terminal
+outcome. Independence exists to expose what this route can and cannot do before
+synthesis.
+""",
+                    encoding="utf-8",
+                )
+                insert_dynamic_task(
+                    connection,
+                    task_id=development_id,
+                    wave=100 + research_round,
+                    lane="independent-route-development",
+                    title=f"Round {research_round}: {route['title']}",
+                    packet=development_packet.relative_to(root).as_posix(),
+                    priority=3000,
+                    dependencies=[],
+                    excluded_workers=[],
+                    max_attempts=int(plan.get("maxAttempts", 2)),
+                    timeout_seconds=int(plan.get("timeoutSeconds", 7200)),
+                    approach_families=[family_id],
+                    research_round=research_round,
+                    route_id=route_id,
+                    task_kind="route-development",
+                )
+                adversarial_packet = root / "tasks" / f"dynamic-{adversarial_id}.md"
+                adversarial_packet.write_text(
+                    f"""# Adversarial route review: {route['title']}
+
+Research round: {research_round}
+Route ID: `{route_id}`
+Review task: `{development_id}`
+
+Attack the route's assumptions, attacker control, reachability, invariants,
+evidence, and terminal. Reproduce the decisive observation where safe. Do not
+help the developer repair the route until the strongest counterargument and
+unresolved gaps are recorded. Submit `adversarialReview`; the scheduler rejects
+the same runtime-agent identity that developed the route.
+""",
+                    encoding="utf-8",
+                )
+                insert_dynamic_task(
+                    connection,
+                    task_id=adversarial_id,
+                    wave=100 + research_round,
+                    lane="adversarial-route-review",
+                    title=f"Adversarial review of {route['title']}",
+                    packet=adversarial_packet.relative_to(root).as_posix(),
+                    priority=2900,
+                    dependencies=[development_id],
+                    excluded_workers=[],
+                    max_attempts=int(plan.get("maxAttempts", 2)),
+                    timeout_seconds=int(plan.get("timeoutSeconds", 7200)),
+                    approach_families=[family_id],
+                    research_round=research_round,
+                    route_id=route_id,
+                    task_kind="adversarial-route-review",
+                    reviews_task_id=development_id,
+                )
+                adversarial_task_ids[route_id] = adversarial_id
+
+            cross_task_ids: list[str] = []
+            cross_pollinations = plan.get("crossPollinations", [])
+            if not isinstance(cross_pollinations, list):
+                raise SystemExit("crossPollinations must be a list")
+            for index, cross in enumerate(cross_pollinations):
+                if not isinstance(cross, dict):
+                    raise SystemExit(f"crossPollinations[{index}] must be an object")
+                cross_id = validate_task_id(
+                    require_string(cross.get("id"), f"crossPollinations[{index}].id")
+                )
+                left = require_string(cross.get("leftRoute"), "crossPollination.leftRoute")
+                right = require_string(cross.get("rightRoute"), "crossPollination.rightRoute")
+                if left == right or left not in route_by_id or right not in route_by_id:
+                    raise SystemExit("cross-pollination requires two current, distinct routes")
+                for route_id in (left, right):
+                    maturity = route_maturity(root, connection, route_id, research_round)
+                    if maturity["developmentRounds"] < 2 or maturity["adversarialRounds"] < 2:
+                        raise SystemExit(
+                            f"cross-pollination is premature for {route_id}; "
+                            "require two completed development and adversarial rounds"
+                        )
+                title = require_string(cross.get("title"), "crossPollination.title")
+                objective = require_string(cross.get("objective"), "crossPollination.objective")
+                success = require_string_list(
+                    cross.get("successCriteria"), "crossPollination.successCriteria"
+                )
+                task_id = f"round-{research_round}-cross-{cross_id}"
+                packet = root / "tasks" / f"dynamic-{task_id}.md"
+                packet.write_text(
+                    f"""# Mature-route cross-pollination: {title}
+
+Source routes: `{left}` and `{right}`
+Research round: {research_round}
+
+Both routes completed at least two independent development and adversarial
+rounds. Combine only their retained strengths and explicitly account for both
+sets of gaps.
+
+## Objective
+
+{objective}
+
+## Success criteria
+
+{chr(10).join(f'- {item}' for item in success)}
+""",
+                    encoding="utf-8",
+                )
+                insert_dynamic_task(
+                    connection,
+                    task_id=task_id,
+                    wave=100 + research_round,
+                    lane="mature-route-cross-pollination",
+                    title=title,
+                    packet=packet.relative_to(root).as_posix(),
+                    priority=2950,
+                    dependencies=[adversarial_task_ids[left], adversarial_task_ids[right]],
+                    excluded_workers=[],
+                    max_attempts=int(plan.get("maxAttempts", 2)),
+                    timeout_seconds=int(plan.get("timeoutSeconds", 7200)),
+                    approach_families=list(
+                        dict.fromkeys(
+                            [
+                                str(route_by_id[left]["family"]),
+                                str(route_by_id[right]["family"]),
+                                "chain-composition",
+                            ]
+                        )
+                    ),
+                    research_round=research_round,
+                    route_id=f"{left}+{right}",
+                    task_kind="mature-cross-pollination",
+                )
+                cross_task_ids.append(task_id)
+
+            synthesis_id = f"round-{research_round}-root-synthesis"
+            synthesis_packet = root / "tasks" / f"dynamic-{synthesis_id}.md"
+            synthesis_packet.write_text(
+                f"""# Root synthesis for research round {research_round}
+
+Read every route-development result and adversarial review. Compare strengths,
+gaps, falsifications, and missing links without collapsing the campaign onto
+the most exciting route. Redirect weak routes to their cheapest discriminators,
+challenge strong routes with their best counterarguments, and decide which
+incompatible routes remain alive. Generate at least three fresh directions and
+chain all sanity-checked intermediate bugs before synthesis can finish. Launch
+the next round with `round-plan` when `roundSynthesis.launchNextRound` is true.
+"No findings" and failed current approaches are not hard stops. Cross-pollinate
+only routes that have already satisfied the two-round maturity gate.
+""",
+                encoding="utf-8",
+            )
+            insert_dynamic_task(
+                connection,
+                task_id=synthesis_id,
+                wave=100 + research_round,
+                lane="root-round-synthesis",
+                title=f"Root synthesis for round {research_round}",
+                packet=synthesis_packet.relative_to(root).as_posix(),
+                priority=2800,
+                dependencies=list(adversarial_task_ids.values()) + cross_task_ids,
+                excluded_workers=[],
+                max_attempts=2,
+                timeout_seconds=int(plan.get("timeoutSeconds", 7200)),
+                approach_families=["chain-composition"],
+                research_round=research_round,
+                task_kind="root-round-synthesis",
+            )
+            set_metadata(connection, "lastResearchRound", research_round)
+            record_event(
+                connection,
+                "research-round-launched",
+                task_id=synthesis_id,
+                worker_id=args.worker_id,
+                payload={
+                    "round": research_round,
+                    "routes": sorted(route_by_id),
+                    "crossPollinations": cross_task_ids,
+                },
+            )
+            write_approach_family_snapshot(root, connection)
+        print(
+            f"launched round {research_round}: {len(route_by_id)} independent routes, "
+            f"{len(route_by_id)} adversarial reviews, {len(cross_task_ids)} cross-pollinations"
+        )
+        return 0
+    finally:
+        connection.close()
+
+
+def latest_task_submission(connection: sqlite3.Connection, task_id: str) -> sqlite3.Row | None:
+    return connection.execute(
+        "SELECT * FROM submissions WHERE task_id=? ORDER BY submitted_at DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+
+
+def schedule_intermediate_chain_task(
+    root: Path,
+    connection: sqlite3.Connection,
+    review_task: sqlite3.Row,
+    review_result: dict[str, Any],
+    reviewer_worker: str,
+) -> str | None:
+    review = review_result.get("adversarialReview")
+    if not isinstance(review, dict) or review.get("sanityPassed") is not True:
+        return None
+    development_id = str(review_task["reviews_task_id"] or "")
+    submission = latest_task_submission(connection, development_id)
+    if submission is None:
+        return None
+    development_result = read_json(root / str(submission["result_path"]))
+    development = development_result.get("routeDevelopment")
+    if not isinstance(development, dict):
+        return None
+    intermediate_bugs = development.get("intermediateBugs")
+    if not isinstance(intermediate_bugs, list) or not intermediate_bugs:
+        return None
+    route_id = str(review_task["route_id"])
+    research_round = int(review_task["research_round"])
+    existing = int(
+        connection.execute(
+            "SELECT COUNT(*) AS count FROM tasks WHERE research_round=? AND route_id=? "
+            "AND task_kind='intermediate-chain-composition'",
+            (research_round, route_id),
+        ).fetchone()["count"]
+    )
+    task_id = f"round-{research_round}-{route_id}-chain-{existing + 1}"
+    bug_lines = "\n".join(
+        f"- `{bug['id']}`: root cause={bug['rootCause']}; primitive={bug['primitive']}"
+        for bug in intermediate_bugs
+        if isinstance(bug, dict)
+    )
+    hypotheses = "\n".join(
+        f"- {item}"
+        for item in development.get("chainHypotheses", [])
+        if str(item).strip()
+    )
+    packet = root / "tasks" / f"dynamic-{task_id}.md"
+    packet.write_text(
+        f"""# Intermediate-bug chain composition
+
+Research round: {research_round}
+Route: `{route_id}`
+Source development: `{development_id}`
+Sanity review: `{review_task['task_id']}`
+
+## Sanity-checked intermediate bugs
+
+{bug_lines}
+
+## Source route's chain hypotheses
+
+{hypotheses}
+
+Do not discard these bugs because none is Critical alone. Attempt compositions
+with other retained primitives, acquisition paths, authority transitions, and
+stock sinks. Record attempted chains, evidence, the strongest surviving or
+falsified composition, and fresh ideas. A failed composition is not permission
+to end the route or campaign.
+""",
+        encoding="utf-8",
+    )
+    excluded_agents: set[str] = set()
+    for worker_id in (str(submission["worker_id"]), reviewer_worker):
+        worker = connection.execute(
+            "SELECT agent FROM workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        if worker is not None:
+            excluded_agents.add(str(worker["agent"]))
+    excluded_workers = [
+        row["worker_id"]
+        for agent in sorted(excluded_agents)
+        for row in connection.execute(
+            "SELECT worker_id FROM workers WHERE agent=?", (agent,)
+        ).fetchall()
+    ]
+    insert_dynamic_task(
+        connection,
+        task_id=task_id,
+        wave=int(review_task["wave"]),
+        lane="intermediate-bug-chain-composition",
+        title=f"Chain sanity-checked intermediate bugs from {route_id}",
+        packet=packet.relative_to(root).as_posix(),
+        priority=2975,
+        dependencies=[str(review_task["task_id"])],
+        excluded_workers=sorted(set(excluded_workers)),
+        excluded_agents=sorted(excluded_agents),
+        max_attempts=max(2, int(review_task["max_attempts"])),
+        timeout_seconds=int(review_task["timeout_seconds"]),
+        approach_families=list(
+            dict.fromkeys(
+                task_approach_families(connection, development_id)
+                + ["chain-composition"]
+            )
+        ),
+        research_round=research_round,
+        route_id=route_id,
+        task_kind="intermediate-chain-composition",
+    )
+    synthesis = connection.execute(
+        "SELECT * FROM tasks WHERE research_round=? AND task_kind='root-round-synthesis'",
+        (research_round,),
+    ).fetchone()
+    if synthesis is not None and synthesis["state"] == "queued":
+        dependencies = task_dependencies(synthesis)
+        if task_id not in dependencies:
+            dependencies.append(task_id)
+            connection.execute(
+                "UPDATE tasks SET depends_json=?,updated_at=? WHERE task_id=?",
+                (json.dumps(dependencies), utc_now(), synthesis["task_id"]),
+            )
+    record_event(
+        connection,
+        "intermediate-chain-task-scheduled",
+        task_id=task_id,
+        worker_id=reviewer_worker,
+        payload={
+            "routeId": route_id,
+            "round": research_round,
+            "sourceTaskId": development_id,
+            "reviewTaskId": review_task["task_id"],
+            "intermediateBugIds": [
+                str(bug.get("id")) for bug in intermediate_bugs if isinstance(bug, dict)
+            ],
+        },
+    )
+    return task_id
+
+
+def schedule_next_round_planning_task(
+    root: Path,
+    connection: sqlite3.Connection,
+    synthesis_task: sqlite3.Row,
+    synthesis_result: dict[str, Any],
+    coordinator_worker: str,
+) -> str | None:
+    synthesis = synthesis_result.get("roundSynthesis")
+    if not isinstance(synthesis, dict) or synthesis.get("launchNextRound") is not True:
+        return None
+    from_round = int(synthesis_task["research_round"])
+    target_round = from_round + 1
+    task_id = f"round-{target_round}-planning"
+    if connection.execute("SELECT 1 FROM tasks WHERE task_id=?", (task_id,)).fetchone():
+        return task_id
+    directions = "\n".join(
+        f"- {item}" for item in synthesis.get("nextRoundDirections", []) if str(item).strip()
+    )
+    fresh_ideas = "\n".join(
+        f"- {item}" for item in synthesis.get("freshIdeas", []) if str(item).strip()
+    )
+    packet = root / "tasks" / f"dynamic-{task_id}.md"
+    packet.write_text(
+        f"""# Plan and launch research round {target_round}
+
+Previous synthesis: `{synthesis_task['task_id']}`
+Coordinator: `{coordinator_worker}`
+
+## Required next-round directions
+
+{directions}
+
+## Fresh ideas retained by synthesis
+
+{fresh_ideas}
+
+Build a new round plan with at least three genuinely incompatible semantic
+families. Preserve viable routes, redirect falsified mechanisms only when a new
+mechanism exists, and allocate fresh routes to underexplored boundaries. Do not
+complete this task merely by writing a plan: invoke `round-plan` and verify that
+round {target_round}'s development, adversarial, and root-synthesis tasks exist.
+Submit `nextRoundPlanning` with the retained plan path and launched task IDs.
+"No findings" is not permission to return without launching this round.
+""",
+        encoding="utf-8",
+    )
+    insert_dynamic_task(
+        connection,
+        task_id=task_id,
+        wave=int(synthesis_task["wave"]) + 1,
+        lane="root-next-round-planning",
+        title=f"Plan and launch research round {target_round}",
+        packet=packet.relative_to(root).as_posix(),
+        priority=3100,
+        dependencies=[str(synthesis_task["task_id"])],
+        excluded_workers=[],
+        max_attempts=max(2, int(synthesis_task["max_attempts"])),
+        timeout_seconds=int(synthesis_task["timeout_seconds"]),
+        approach_families=["chain-composition"],
+        research_round=from_round,
+        task_kind="next-round-planning",
+    )
+    record_event(
+        connection,
+        "next-round-planning-scheduled",
+        task_id=task_id,
+        worker_id=coordinator_worker,
+        payload={
+            "fromRound": from_round,
+            "targetRound": target_round,
+            "directions": synthesis.get("nextRoundDirections", []),
+        },
+    )
+    return task_id
+
+
+def root_blocking_dependencies(
+    connection: sqlite3.Connection, row: sqlite3.Row, seen: set[str] | None = None
+) -> set[str]:
+    seen = set() if seen is None else seen
+    task_id = str(row["task_id"])
+    if task_id in seen:
+        return {task_id}
+    seen.add(task_id)
+    if row["state"] in ("failed", "timed-out", "cancelled"):
+        return {task_id}
+    if row["state"] == "blocked" and row["last_error"] != "dependency ended unsuccessfully":
+        return {task_id}
+    roots: set[str] = set()
+    for dependency in task_dependencies(row):
+        dependency_row = connection.execute(
+            "SELECT * FROM tasks WHERE task_id=?", (dependency,)
+        ).fetchone()
+        if dependency_row is None or dependency_row["state"] == "completed":
+            continue
+        roots.update(root_blocking_dependencies(connection, dependency_row, seen))
+    return roots or {task_id}
+
+
+def schedule_automatic_unblock(
+    connection: sqlite3.Connection,
+    root: Path,
+    blocked: sqlite3.Row,
+    blocker: dict[str, Any],
+    originator_worker: str,
+) -> str | None:
+    authority = str(blocker.get("authorityRequired") or "").strip().lower()
+    if blocker.get("canSelfResolve") is not True or authority not in {
+        "none",
+        "no",
+        "not required",
+    }:
+        return None
+    existing = connection.execute(
+        "SELECT COUNT(*) AS count FROM tasks WHERE unblocks_task_id=?",
+        (blocked["task_id"],),
+    ).fetchone()["count"]
+    task_id = f"unblock-{blocked['task_id']}-{existing + 1}"
+    experiments: list[str] = []
+    for field in ("bypassHypotheses", "alternativeRoutes", "nextExperiments"):
+        for value in blocker.get(field, []):
+            text = str(value).strip()
+            if text and text not in experiments:
+                experiments.append(text)
+    experiment_list = "\n".join(f"- {item}" for item in experiments)
+    evidence_list = "\n".join(f"- `{item}`" for item in blocker.get("evidence", []))
+    packet = root / "tasks" / f"dynamic-{task_id}.md"
+    packet.write_text(
+        f"""# Automatic blocker breakout: {blocked['task_id']}
+
+Blocked task: `{blocked['task_id']}`
+Blocked chain link: {blocker['blockedLink']}
+Guard or failure mechanism: {blocker['guardOrFailure']}
+Why the current path is blocked: {blocker['whyBlocked']}
+Cheapest discriminator: {blocker['cheapestDiscriminator']}
+
+## Retained evidence
+
+{evidence_list}
+
+## Source-derived bypass and alternate-route hypotheses
+
+{experiment_list}
+
+Do not merely replay the failed input. Explain which assumption or guard blocks
+the chain, derive the smallest safe experiment that can distinguish the listed
+hypotheses, and pursue an alternative route to the same Critical/RCE boundary
+when the original path is genuinely closed. Add new focused tasks when the
+evidence branches. Return to the pinned, unmodified supported build for the
+security claim after diagnostic instrumentation.
+
+Completion requires the normal `taskResult` plus an `unblock` object for
+`{blocked['task_id']}`. `unblock.newMechanism` must provide a fingerprint that
+differs from `{blocker['mechanismFingerprint']}`, explain the semantic change,
+and retain enabling evidence. New wording or another input for the same
+mechanism does not reopen the route. If this experiment exposes another
+technical blocker, submit a new structured blocker; Krineon will continue the
+breakout loop.
+
+Never bypass authorization, access third-party data, disable an essential
+production security boundary merely to manufacture impact, or evade campaign
+budgets and safety stop conditions. Resolve only technical chain blockers in
+the authorized source tree and disposable environment. Do not use changelogs,
+advisories, Git history, patched versions, or internet patch diffs.
+""",
+        encoding="utf-8",
+    )
+    dependencies: list[str] = []
+    for dependency in task_dependencies(blocked):
+        state = connection.execute(
+            "SELECT state FROM tasks WHERE task_id=?", (dependency,)
+        ).fetchone()
+        if state is not None and state["state"] == "completed":
+            dependencies.append(dependency)
+    insert_dynamic_task(
+        connection,
+        task_id=task_id,
+        wave=int(blocked["wave"]),
+        lane="automatic-blocker-breakout",
+        title=f"Break out of blocker in {blocked['task_id']}",
+        packet=packet.relative_to(root).as_posix(),
+        priority=max(2000, int(blocked["priority"]) + 1),
+        dependencies=dependencies,
+        excluded_workers=[originator_worker],
+        max_attempts=max(2, int(blocked["max_attempts"])),
+        timeout_seconds=int(blocked["timeout_seconds"]),
+        approach_families=list(
+            dict.fromkeys(
+                task_approach_families(connection, str(blocked["task_id"]))
+                + ["blocker-alternative-route"]
+            )
+        ),
+        unblocks_task_id=str(blocked["task_id"]),
+    )
+    record_event(
+        connection,
+        "automatic-unblock-scheduled",
+        task_id=task_id,
+        payload={
+            "blockedTaskId": blocked["task_id"],
+            "blockedLink": blocker["blockedLink"],
+            "guardOrFailure": blocker["guardOrFailure"],
+            "originatingWorkerExcluded": originator_worker,
+        },
+    )
+    return task_id
+
+
+def cmd_schedule_unblock(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    require_campaign(root)
+    if args.max_attempts < 1 or args.timeout_seconds < 1:
+        raise SystemExit("attempts and timeout must be positive")
+    connection = connect_orchestration(root)
+    try:
+        with connection:
+            blocked = connection.execute(
+                "SELECT * FROM tasks WHERE task_id=?", (args.blocked_task_id,)
+            ).fetchone()
+            if blocked is None:
+                raise SystemExit(f"unknown blocked task: {args.blocked_task_id}")
+            if blocked["state"] not in ("blocked", "failed", "timed-out"):
+                raise SystemExit(
+                    f"task must be blocked, failed, or timed-out; current state is {blocked['state']}"
+                )
+            if (
+                blocked["state"] == "blocked"
+                and blocked["last_error"] == "dependency ended unsuccessfully"
+            ):
+                roots = sorted(root_blocking_dependencies(connection, blocked))
+                raise SystemExit(
+                    "task is only transitively blocked; schedule one unblock task for each "
+                    f"root blocker instead: {', '.join(roots)}"
+                )
+            existing = connection.execute(
+                "SELECT COUNT(*) AS count FROM tasks WHERE unblocks_task_id=?",
+                (args.blocked_task_id,),
+            ).fetchone()["count"]
+            task_id = args.task_id or f"unblock-{args.blocked_task_id}-{existing + 1}"
+            submission = latest_task_submission(connection, args.blocked_task_id)
+            blocker_result = submission["result_path"] if submission else "not recorded"
+            packet = root / "tasks" / f"dynamic-{task_id}.md"
+            packet.write_text(
+                f"""# Unblock task: {args.blocked_task_id}
+
+Blocked task: `{args.blocked_task_id}`
+Recorded blocker result: `{blocker_result}`
+
+## Working hypothesis
+
+{args.strategy}
+
+## Success criterion
+
+{args.success_criterion}
+
+Inspect the recorded blocker evidence first. Determine whether the stop came
+from a missing tool, build artifact, unsupported assumption, nondeterminism,
+coverage gap, inaccessible state transition, environment mismatch, or a real
+falsification. Test the smallest safe experiment that distinguishes those
+possibilities. Explore alternative routes to the same security boundary when
+the original mechanism is disproved.
+
+Completion requires a JSON `unblock` object containing the original
+`blockedTaskId`, `blockerAddressed: true`, retained `evidence`, and a concrete
+`resumeStrategy`, plus `newMechanism` with a new fingerprint, semantic
+difference, and enabling evidence. A renamed or lightly varied copy of the
+blocked mechanism cannot resume it. If the blocker survives, submit this task
+as blocked with a new structured blocker object, first-principles provenance,
+and next experiments.
+
+Stay within the Critical/RCE chain mission. Resolve the blocker from the pinned
+source and exact-revision runtime only; do not use changelogs, advisories, Git
+history, patched-version comparisons, or internet-derived patch diffs.
+""",
+                encoding="utf-8",
+            )
+            dependencies = []
+            for dependency in task_dependencies(blocked):
+                state = connection.execute(
+                    "SELECT state FROM tasks WHERE task_id=?", (dependency,)
+                ).fetchone()
+                if state is not None and state["state"] == "completed":
+                    dependencies.append(dependency)
+            insert_dynamic_task(
+                connection,
+                task_id=task_id,
+                wave=int(blocked["wave"]),
+                lane="unblock",
+                title=f"Unblock {args.blocked_task_id}: {args.title}",
+                packet=packet.relative_to(root).as_posix(),
+                priority=args.priority,
+                dependencies=dependencies,
+                excluded_workers=args.exclude_worker or [],
+                max_attempts=args.max_attempts,
+                timeout_seconds=args.timeout_seconds,
+                approach_families=list(
+                    dict.fromkeys(
+                        task_approach_families(connection, args.blocked_task_id)
+                        + ["blocker-alternative-route"]
+                    )
+                ),
+                unblocks_task_id=args.blocked_task_id,
+            )
+            record_event(
+                connection,
+                "unblock-task-scheduled",
+                task_id=task_id,
+                payload={
+                    "blockedTaskId": args.blocked_task_id,
+                    "strategy": args.strategy,
+                    "successCriterion": args.success_criterion,
+                },
+            )
+        print(f"scheduled {task_id} to unblock {args.blocked_task_id}")
+        return 0
+    finally:
+        connection.close()
+
+
 def update_finding_from_submission(
     root: Path,
+    connection: sqlite3.Connection,
     finding_id: str,
     worker_id: str,
     task_id: str,
@@ -1048,6 +3068,25 @@ def update_finding_from_submission(
             raise SystemExit(f"finding {finding_id} has no recorded originator")
         if originator == worker_id:
             raise SystemExit("originating worker cannot submit the independent replay")
+        originator_worker = connection.execute(
+            "SELECT agent FROM workers WHERE worker_id=?", (originator,)
+        ).fetchone()
+        reviewer_worker = connection.execute(
+            "SELECT agent FROM workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        if originator_worker is None or reviewer_worker is None:
+            raise SystemExit("originator and reviewer must be registered workers")
+        if originator_worker["agent"] == reviewer_worker["agent"]:
+            raise SystemExit("independent replay requires a different agent identity")
+        prior_reviewer_agents = {
+            str(item.get("reviewerAgent") or "").strip()
+            for item in finding.get("independentReplays", [])
+            if isinstance(item, dict) and item.get("passed") is True
+        }
+        if reviewer_worker["agent"] in prior_reviewer_agents:
+            raise SystemExit(
+                "double sanity replay requires a reviewer agent not used by an earlier replay"
+            )
         replay_record = result.get("independentReplay")
         if not isinstance(replay_record, dict) or replay_record.get("passed") is not True:
             raise SystemExit("replay result must contain independentReplay.passed=true")
@@ -1060,7 +3099,9 @@ def update_finding_from_submission(
         record = {
             "taskId": task_id,
             "originator": originator,
+            "originatorAgent": originator_worker["agent"],
             "reviewer": worker_id,
+            "reviewerAgent": reviewer_worker["agent"],
             "result": result_path,
             "sha256": digest,
             "submittedAt": utc_now(),
@@ -1072,7 +3113,15 @@ def update_finding_from_submission(
         reviewers = finding.setdefault("reviewers", [])
         if worker_id not in reviewers:
             reviewers.append(worker_id)
-        finding.setdefault("gates", {})["independent_replay"] = True
+        distinct_reviewer_agents = {
+            str(item.get("reviewerAgent") or "").strip()
+            for item in replays
+            if isinstance(item, dict) and item.get("passed") is True
+        }
+        distinct_reviewer_agents.discard("")
+        finding.setdefault("gates", {})["independent_replay"] = (
+            len(distinct_reviewer_agents) >= 2
+        )
     else:
         originator = str(finding.get("originator") or "").strip()
         if originator and originator != worker_id:
@@ -1082,6 +3131,24 @@ def update_finding_from_submission(
         else:
             finding["originator"] = worker_id
     write_json(path, finding)
+
+
+def validate_replay_scheduler_result(root: Path, result: dict[str, Any]) -> None:
+    task_result = result.get("taskResult")
+    findings = task_result.get("replayFindings") if isinstance(task_result, dict) else None
+    if not isinstance(findings, list) or not findings:
+        raise SystemExit(
+            "replay-scheduler completion requires taskResult.replayFindings"
+        )
+    for finding_id in findings:
+        value = str(finding_id).strip()
+        if not value:
+            raise SystemExit("taskResult.replayFindings contains an empty finding ID")
+        finding = read_json(finding_path(root, value))
+        if not replay_is_machine_verified(root, finding):
+            raise SystemExit(
+                f"finding {value} has no accepted machine-verifiable independent replay"
+            )
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
@@ -1112,10 +3179,53 @@ def cmd_submit(args: argparse.Namespace) -> int:
         task = require_owned_lease(
             connection, args.task_id, args.worker_id, args.lease_token
         )
+        blocker = validate_blocker_result(result) if args.outcome == "blocked" else None
+        failure = validate_failed_result(result) if args.outcome == "failed" else None
         replay_of = args.replay_of or (
             task["finding_id"] if task["lane"] == "independent-replay" else None
         )
+        if args.replay_of and task["lane"] != "independent-replay":
+            raise SystemExit("--replay-of is valid only for an independent-replay task")
+        if replay_of and task["finding_id"] != replay_of:
+            raise SystemExit("replay finding must match the leased replay task")
+        if args.finding_id and replay_of and args.finding_id != replay_of:
+            raise SystemExit("--finding-id and --replay-of must not conflict")
         finding_id = replay_of or args.finding_id
+        if args.outcome == "completed":
+            validate_completed_result(result, str(task["task_id"]))
+            if task["task_kind"] == "route-development":
+                validate_route_development_result(
+                    result, str(task["route_id"]), int(task["research_round"])
+                )
+            elif task["task_kind"] == "adversarial-route-review":
+                validate_adversarial_route_result(
+                    result,
+                    str(task["reviews_task_id"]),
+                    str(task["route_id"]),
+                    int(task["research_round"]),
+                )
+            elif task["task_kind"] == "root-round-synthesis":
+                validate_round_synthesis_result(
+                    result, int(task["research_round"]), connection
+                )
+            elif task["task_kind"] == "intermediate-chain-composition":
+                validate_intermediate_chain_result(result)
+            elif task["task_kind"] == "next-round-planning":
+                validate_next_round_planning_result(
+                    connection, result, int(task["research_round"])
+                )
+            if task["unblocks_task_id"]:
+                validate_unblock_result(
+                    root,
+                    connection,
+                    result,
+                    str(task["unblocks_task_id"]),
+                )
+            if task["lane"] in {
+                "finding-scoped-replay-scheduler",
+                "v8-finding-scoped-replay-scheduler",
+            }:
+                validate_replay_scheduler_result(root, result)
         result_dir = root / "results" / task["task_id"]
         result_dir.mkdir(parents=True, exist_ok=True)
         result_name = f"attempt-{task['attempt']}-{digest[:16]}.json"
@@ -1125,9 +3235,10 @@ def cmd_submit(args: argparse.Namespace) -> int:
         if not result_target.exists():
             shutil.copy2(result_source, result_target)
         relative_result = result_target.relative_to(root).as_posix()
-        if finding_id:
+        if finding_id and args.outcome == "completed":
             update_finding_from_submission(
                 root,
+                connection,
                 finding_id,
                 args.worker_id,
                 args.task_id,
@@ -1136,7 +3247,16 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 result,
                 replay=bool(replay_of),
             )
-        next_state = "completed" if args.outcome == "completed" else "failed"
+        next_state = {
+            "completed": "completed",
+            "failed": "failed",
+            "blocked": "blocked",
+        }[args.outcome]
+        last_error = (
+            str(blocker["reason"])
+            if blocker is not None
+            else (str(failure["reason"]) if failure is not None else None)
+        )
         connection.execute(
             "INSERT INTO submissions(idempotency_key,task_id,worker_id,digest,result_path,"
             "outcome,submitted_at) VALUES(?,?,?,?,?,?,?)",
@@ -1151,10 +3271,28 @@ def cmd_submit(args: argparse.Namespace) -> int:
             ),
         )
         connection.execute(
-            "UPDATE tasks SET state=?,completed_at=?,result_digest=?,lease_expires_at=NULL,"
-            "updated_at=? WHERE task_id=?",
-            (next_state, utc_now(), digest, utc_now(), args.task_id),
+            "UPDATE tasks SET state=?,completed_at=?,result_digest=?,lease_token=NULL,"
+            "lease_expires_at=NULL,last_error=?,updated_at=? WHERE task_id=?",
+            (next_state, utc_now(), digest, last_error, utc_now(), args.task_id),
         )
+        automatic_unblock = None
+        if blocker is not None:
+            automatic_unblock = schedule_automatic_unblock(
+                connection, root, task, blocker, args.worker_id
+            )
+        intermediate_chain_task = None
+        if (
+            args.outcome == "completed"
+            and task["task_kind"] == "adversarial-route-review"
+        ):
+            intermediate_chain_task = schedule_intermediate_chain_task(
+                root, connection, task, result, args.worker_id
+            )
+        next_round_planning_task = None
+        if args.outcome == "completed" and task["task_kind"] == "root-round-synthesis":
+            next_round_planning_task = schedule_next_round_planning_task(
+                root, connection, task, result, args.worker_id
+            )
         record_event(
             connection,
             "task-submitted",
@@ -1165,10 +3303,43 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 "digest": digest,
                 "result": relative_result,
                 "findingId": finding_id,
+                "automaticUnblockTask": automatic_unblock,
+                "intermediateChainTask": intermediate_chain_task,
+                "nextRoundPlanningTask": next_round_planning_task,
             },
         )
+        if task["unblocks_task_id"] and args.outcome == "completed":
+            blocked_task_id = str(task["unblocks_task_id"])
+            blocked_task = connection.execute(
+                "SELECT * FROM tasks WHERE task_id=?", (blocked_task_id,)
+            ).fetchone()
+            if blocked_task and blocked_task["state"] in ("blocked", "failed", "timed-out"):
+                max_attempts = max(
+                    int(blocked_task["max_attempts"]), int(blocked_task["attempt"]) + 1
+                )
+                connection.execute(
+                    "UPDATE tasks SET state='queued',max_attempts=?,lease_owner=NULL,"
+                    "lease_token=NULL,lease_expires_at=NULL,completed_at=NULL,last_error=NULL,"
+                    "result_digest=NULL,updated_at=? WHERE task_id=?",
+                    (max_attempts, utc_now(), blocked_task_id),
+                )
+                record_event(
+                    connection,
+                    "task-unblocked",
+                    task_id=blocked_task_id,
+                    worker_id=args.worker_id,
+                    payload={"unblockTaskId": args.task_id, "result": relative_result},
+                )
+                revive_dependency_blocks(connection)
+        write_approach_family_snapshot(root, connection)
         connection.commit()
         print(f"accepted {args.outcome} result: {relative_result}")
+        if automatic_unblock:
+            print(f"scheduled automatic blocker breakout: {automatic_unblock}")
+        if intermediate_chain_task:
+            print(f"scheduled intermediate-bug chain task: {intermediate_chain_task}")
+        if next_round_planning_task:
+            print(f"scheduled next-round planning task: {next_round_planning_task}")
         return 0
     except Exception:
         connection.rollback()
@@ -1187,6 +3358,31 @@ def cmd_schedule_replay(args: argparse.Namespace) -> int:
     connection = connect_orchestration(root)
     try:
         with connection:
+            originator_worker = connection.execute(
+                "SELECT agent FROM workers WHERE worker_id=?", (originator,)
+            ).fetchone()
+            if originator_worker is None:
+                raise SystemExit("finding originator must be a registered worker")
+            aliases = [
+                row["worker_id"]
+                for row in connection.execute(
+                    "SELECT worker_id FROM workers WHERE agent=?",
+                    (originator_worker["agent"],),
+                ).fetchall()
+            ]
+            prior_reviewer_agents = {
+                str(item.get("reviewerAgent") or "").strip()
+                for item in finding.get("independentReplays", [])
+                if isinstance(item, dict) and item.get("passed") is True
+            }
+            prior_reviewer_agents.discard("")
+            prior_reviewer_aliases = [
+                row["worker_id"]
+                for agent in sorted(prior_reviewer_agents)
+                for row in connection.execute(
+                    "SELECT worker_id FROM workers WHERE agent=?", (agent,)
+                ).fetchall()
+            ]
             existing = connection.execute(
                 "SELECT COUNT(*) AS count FROM tasks WHERE finding_id=? AND lane='independent-replay'",
                 (args.finding_id,),
@@ -1202,30 +3398,40 @@ def cmd_schedule_replay(args: argparse.Namespace) -> int:
 
 Finding: `{args.finding_id}`
 Originating worker: `{originator}`
-Assigned reviewer must be a different registered identity.
+Assigned reviewer must be a different registered agent identity, not an alias
+of the originating runtime.
 
 Reproduce from the pinned campaign revision without using private originator
 state. Preserve the baseline, negative, and positive controls, raw evidence,
 environment metadata, hashes, reliability, and cleanup. Submit a JSON result
 whose `independentReplay` object contains `findingId`, `originator`, `reviewer`,
-and `passed: true` only after a clean replay.
+and `passed: true` only after a clean replay, alongside the completed-task
+result contract copied into the workspace.
+
+Replay the source-derived Critical/RCE chain as submitted. Do not mine
+changelogs, advisories, Git history, patched versions, or internet patch diffs
+for missing links.
 """,
                 encoding="utf-8",
             )
             now = utc_now()
             connection.execute(
                 "INSERT INTO tasks(task_id,wave,lane,title,packet,state,priority,depends_json,"
-                "excluded_workers_json,finding_id,max_attempts,timeout_seconds,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?)",
+                "excluded_workers_json,excluded_agents_json,finding_id,max_attempts,"
+                "timeout_seconds,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)",
                 (
                     task_id,
                     3,
                     "independent-replay",
                     f"Independent replay for {args.finding_id}",
                     packet.relative_to(root).as_posix(),
-                    100,
+                    2000,
                     json.dumps(args.depends_on or []),
-                    json.dumps([originator]),
+                    json.dumps(sorted(set(aliases + prior_reviewer_aliases))),
+                    json.dumps(
+                        sorted({originator_worker["agent"], *prior_reviewer_agents})
+                    ),
                     args.finding_id,
                     args.max_attempts,
                     args.timeout_seconds,
@@ -1233,13 +3439,25 @@ and `passed: true` only after a clean replay.
                     now,
                 ),
             )
+            set_task_approach_families(
+                connection, task_id, ["validation-replay"]
+            )
             record_event(
                 connection,
                 "replay-scheduled",
                 task_id=task_id,
-                payload={"findingId": args.finding_id, "excludedOriginator": originator},
+                payload={
+                    "findingId": args.finding_id,
+                    "excludedOriginator": originator,
+                    "excludedAgent": originator_worker["agent"],
+                    "excludedWorkerAliases": sorted(set(aliases)),
+                    "excludedPriorReviewerAgents": sorted(prior_reviewer_agents),
+                },
             )
-        print(f"scheduled {task_id}; excluded originator {originator}")
+        print(
+            f"scheduled {task_id}; excluded originator agent "
+            f"{originator_worker['agent']} ({', '.join(sorted(set(aliases)))})"
+        )
         return 0
     finally:
         connection.close()
@@ -1268,6 +3486,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
                 payload={"reason": args.reason},
             )
             recover_tasks(connection)
+            write_approach_family_snapshot(root, connection)
         print(f"cancelled {args.task_id}")
         return 0
     finally:
@@ -1282,7 +3501,12 @@ def cmd_retry(args: argparse.Namespace) -> int:
             row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (args.task_id,)).fetchone()
             if row is None:
                 raise SystemExit(f"unknown task: {args.task_id}")
-            if row["state"] not in ("failed", "timed-out", "cancelled", "blocked"):
+            if row["state"] == "blocked":
+                raise SystemExit(
+                    "blocked tasks cannot be retried directly; use schedule-unblock and "
+                    "submit evidence for a genuinely new mechanism fingerprint"
+                )
+            if row["state"] not in ("failed", "timed-out", "cancelled"):
                 raise SystemExit(f"task is not retryable from state {row['state']}")
             if row["attempt"] >= row["max_attempts"] and not args.extend_attempts:
                 raise SystemExit("attempt budget exhausted; use --extend-attempts explicitly")
@@ -1299,6 +3523,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
                 task_id=args.task_id,
                 payload={"maxAttempts": max_attempts, "reason": args.reason},
             )
+            write_approach_family_snapshot(root, connection)
         print(f"requeued {args.task_id}")
         return 0
     finally:
@@ -1311,6 +3536,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
     try:
         with connection:
             result = recover_tasks(connection)
+            write_approach_family_snapshot(root, connection)
         print(json.dumps(result, indent=2) if args.json else ", ".join(f"{k}={v}" for k, v in result.items()))
         return 0
     finally:
@@ -1318,22 +3544,97 @@ def cmd_recover(args: argparse.Namespace) -> int:
 
 
 def orchestration_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
-    tasks = [dict(row) for row in connection.execute("SELECT * FROM tasks ORDER BY wave,task_id")]
+    task_rows = connection.execute("SELECT * FROM tasks ORDER BY wave,task_id").fetchall()
+    tasks = [dict(row) for row in task_rows]
     workers = [dict(row) for row in connection.execute("SELECT * FROM workers ORDER BY worker_id")]
     counts: dict[str, int] = {}
     for task in tasks:
         counts[task["state"]] = counts.get(task["state"], 0) + 1
         task["dependsOn"] = json.loads(task.pop("depends_json"))
         task["excludedWorkers"] = json.loads(task.pop("excluded_workers_json"))
+        task["excludedAgents"] = json.loads(task.pop("excluded_agents_json"))
+        task["approachFamilies"] = task_approach_families(
+            connection, str(task["task_id"])
+        )
         task.pop("lease_token", None)
+    configured, resolved = resolve_concurrency_limit(connection)
+    running = counts.get("running", 0)
+    ready_rows = [
+        row
+        for row in task_rows
+        if row["state"] == "queued" and dependency_state(connection, row) == "ready"
+    ]
+    active_workers_by_agent: dict[str, set[str]] = {}
+    for worker in workers:
+        if worker["status"] == "active":
+            active_workers_by_agent.setdefault(worker["agent"], set()).add(
+                worker["worker_id"]
+            )
+    running_agents = {
+        row["agent"]
+        for row in connection.execute(
+            "SELECT DISTINCT workers.agent FROM tasks "
+            "JOIN workers ON workers.worker_id=tasks.lease_owner "
+            "WHERE tasks.state='running'"
+        ).fetchall()
+    }
+    idle_agents = sorted(set(active_workers_by_agent).difference(running_agents))
+
+    def agent_can_claim(agent: str, row: sqlite3.Row) -> bool:
+        if agent in set(json.loads(row["excluded_agents_json"])):
+            return False
+        excluded_workers = set(json.loads(row["excluded_workers_json"]))
+        for worker_id in active_workers_by_agent[agent].difference(excluded_workers):
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE worker_id=?", (worker_id,)
+            ).fetchone()
+            if worker_row is not None and worker_is_eligible_for_round_task(
+                connection, worker_row, row
+            ):
+                return True
+        return False
+
+    matched_task_to_agent: dict[int, str] = {}
+
+    def match_agent(agent: str, seen_tasks: set[int]) -> bool:
+        for index, row in enumerate(ready_rows):
+            if index in seen_tasks or not agent_can_claim(agent, row):
+                continue
+            seen_tasks.add(index)
+            current = matched_task_to_agent.get(index)
+            if current is None or match_agent(current, seen_tasks):
+                matched_task_to_agent[index] = agent
+                return True
+        return False
+
+    for agent in idle_agents:
+        match_agent(agent, set())
+    claimable_by_active = len(matched_task_to_agent)
+    available_slots = max(0, resolved - running)
+    recommended_claims = min(available_slots, claimable_by_active)
+    unmatched_ready = max(0, len(ready_rows) - claimable_by_active)
+    can_expand = configured == "auto" or running + recommended_claims < int(configured)
     return {
         "metadata": {
             row["key"]: json.loads(row["value"])
             for row in connection.execute("SELECT key,value FROM metadata ORDER BY key")
         },
         "taskCounts": counts,
+        "schedulerDemand": {
+            "configuredConcurrency": configured,
+            "resolvedConcurrency": resolved,
+            "activeAgentIdentities": active_agent_count(connection),
+            "running": running,
+            "availableSlots": available_slots,
+            "runnableTasks": len(ready_rows),
+            "claimableByActiveAgents": claimable_by_active,
+            "recommendedClaims": recommended_claims,
+            "scaleOutOpportunity": unmatched_ready > 0 and can_expand,
+            "hardCapReached": configured != "auto" and running >= int(configured),
+        },
         "workers": workers,
         "tasks": tasks,
+        "approachRegistry": approach_family_snapshot(connection),
     }
 
 
@@ -1350,6 +3651,14 @@ def cmd_orchestration_status(args: argparse.Namespace) -> int:
             return 0
         print("tasks: " + ", ".join(f"{key}={value}" for key, value in sorted(snapshot["taskCounts"].items())))
         print(f"workers: {len(snapshot['workers'])}")
+        demand = snapshot["schedulerDemand"]
+        print(
+            "scheduler: "
+            f"configured={demand['configuredConcurrency']} "
+            f"resolved={demand['resolvedConcurrency']} "
+            f"running={demand['running']} runnable={demand['runnableTasks']} "
+            f"recommended-claims={demand['recommendedClaims']}"
+        )
         print()
         print(f"{'TASK':<30} {'STATE':<12} {'WORKER':<18} ATTEMPT  DEPENDENCIES")
         print("-" * 100)
@@ -1358,6 +3667,37 @@ def cmd_orchestration_status(args: argparse.Namespace) -> int:
                 f"{task['task_id']:<30} {task['state']:<12} "
                 f"{(task['lease_owner'] or '-'):<18} {task['attempt']}/{task['max_attempts']}      "
                 f"{','.join(task['dependsOn']) or '-'}"
+            )
+        return 0
+    finally:
+        connection.close()
+
+
+def cmd_approach_status(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        snapshot = approach_family_snapshot(connection)
+        write_approach_family_snapshot(root, connection)
+        if args.json:
+            print(json.dumps(snapshot, indent=2))
+            return 0
+        print(
+            "converged: "
+            + (", ".join(snapshot["convergedFamilies"]) or "none")
+        )
+        print(
+            "underexplored: "
+            + (", ".join(snapshot["underexploredFamilies"]) or "none")
+        )
+        print()
+        print(f"{'FAMILY':<32} {'ACTIVE':>6} {'EXPLORED':>8} {'LOAD':>5}  MECHANISM")
+        print("-" * 110)
+        for family in snapshot["families"]:
+            print(
+                f"{family['id']:<32} {family['activeAgents']:>6} "
+                f"{family['exploredTasks']:>8} {family['coverageLoad']:>5}  "
+                f"{family['mechanism']}"
             )
         return 0
     finally:
@@ -1420,6 +3760,12 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
         return False
     connection = connect_orchestration(root)
     try:
+        originator_worker = connection.execute(
+            "SELECT * FROM workers WHERE worker_id=?", (originator,)
+        ).fetchone()
+        if originator_worker is None:
+            return False
+        verified_reviewer_agents: set[str] = set()
         for replay in replays:
             if not isinstance(replay, dict) or replay.get("passed") is not True:
                 continue
@@ -1445,11 +3791,15 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
             ).fetchone()
             if task is None or submission is None or worker is None:
                 continue
+            if worker["agent"] == originator_worker["agent"]:
+                continue
             if (
                 task["state"] != "completed"
                 or task["lane"] != "independent-replay"
                 or task["finding_id"] != finding_id
-                or originator not in json.loads(task["excluded_workers_json"])
+                or originator not in set(json.loads(task["excluded_workers_json"]))
+                or originator_worker["agent"]
+                not in set(json.loads(task["excluded_agents_json"]))
             ):
                 continue
             payload = read_json(result_path).get("independentReplay")
@@ -1461,14 +3811,18 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
                 and payload.get("reviewer") == reviewer
                 and payload.get("passed") is True
             ):
-                return True
-        return False
+                verified_reviewer_agents.add(str(worker["agent"]))
+        return len(verified_reviewer_agents) >= 2
     finally:
         connection.close()
 
 
 def gate_result(
-    finding: dict[str, Any], level: str, *, replay_verified: bool = False
+    finding: dict[str, Any],
+    level: str,
+    *,
+    replay_verified: bool = False,
+    campaign_root_path: Path | None = None,
 ) -> dict[str, Any]:
     required_gates = CANDIDATE_GATES if level == "candidate" else REPORTABLE_GATES
     gates = finding.get("gates", {})
@@ -1477,14 +3831,358 @@ def gate_result(
     for field in ("rootCause", "impact"):
         if not str(finding.get(field, "")).strip():
             missing_fields.append(field)
+    impact_class = str(finding.get("impactClass") or "").strip()
+    if impact_class not in {"rce", "program-defined-critical"}:
+        missing_fields.append("impactClass:rce-or-program-defined-critical")
+    if impact_class == "program-defined-critical" and not str(
+        finding.get("criticalScopeRule") or ""
+    ).strip():
+        missing_fields.append("criticalScopeRule")
     for field in ("preconditions", "evidence"):
         value = finding.get(field)
         if not isinstance(value, list) or not value:
             missing_fields.append(field)
+    chain = finding.get("chain")
+    if not isinstance(chain, dict):
+        missing_fields.append("chain")
+    else:
+        for field in (
+            "attacker",
+            "ingress",
+            "attackerControl",
+            "brokenInvariant",
+            "primitive",
+            "executionOrCriticalSink",
+            "terminal",
+            "remoteAcquisition",
+            "deployment",
+        ):
+            if not str(chain.get(field) or "").strip():
+                missing_fields.append(f"chain.{field}")
+        transformations = chain.get("transformations")
+        if not isinstance(transformations, list) or not any(
+            str(item).strip() for item in transformations
+        ):
+            missing_fields.append("chain.transformations")
+        if chain.get("applicationAuthoredSink") is not False:
+            missing_fields.append("chain.applicationAuthoredSink:false")
+    terminal_evidence = finding.get("terminalEvidence")
+    if not isinstance(terminal_evidence, dict):
+        missing_fields.append("terminalEvidence")
+    else:
+        if str(terminal_evidence.get("type") or "") not in {
+            "bounded-command-execution",
+            "program-defined-critical-effect",
+        }:
+            missing_fields.append("terminalEvidence.type")
+        if not str(terminal_evidence.get("commandOrEffect") or "").strip():
+            missing_fields.append("terminalEvidence.commandOrEffect")
+        if terminal_evidence.get("synthetic") is not False:
+            missing_fields.append("terminalEvidence.synthetic:false")
+    environment = finding.get("executionEnvironment")
+    if not isinstance(environment, dict):
+        missing_fields.append("executionEnvironment")
+    else:
+        environment_class = str(environment.get("environmentClass") or "").strip()
+        if environment_class not in {
+            "production-equivalent",
+            "release-build",
+            "supported-production",
+        }:
+            missing_fields.append(
+                "executionEnvironment.environmentClass:production-or-release-equivalent"
+            )
+        if environment.get("developmentServer") is not False:
+            missing_fields.append("executionEnvironment.developmentServer:false")
+        if environment.get("developmentBuild") is not False:
+            missing_fields.append("executionEnvironment.developmentBuild:false")
+        if environment.get("supportedConfiguration") is not True:
+            missing_fields.append("executionEnvironment.supportedConfiguration:true")
+        if environment.get("primaryTerminalObserved") is not True:
+            missing_fields.append("executionEnvironment.primaryTerminalObserved:true")
+        if not str(environment.get("commandOrEntrypoint") or "").strip():
+            missing_fields.append("executionEnvironment.commandOrEntrypoint")
+        environment_evidence = environment.get("evidence")
+        if not isinstance(environment_evidence, list) or not any(
+            str(item).strip() for item in environment_evidence
+        ):
+            missing_fields.append("executionEnvironment.evidence")
+    provenance = finding.get("analysisProvenance")
+    if not isinstance(provenance, dict):
+        missing_fields.append("analysisProvenance")
+    else:
+        if provenance.get("firstPrinciplesOnly") is not True:
+            missing_fields.append("analysisProvenance.firstPrinciplesOnly:true")
+        for field in (
+            "changelogUsed",
+            "gitHistoryUsed",
+            "advisoryMiningUsed",
+            "patchedVersionDiffUsed",
+            "internetPatchDiffUsed",
+        ):
+            if provenance.get(field) is not False:
+                missing_fields.append(f"analysisProvenance.{field}:false")
     controls = finding.get("controls", {})
     for control in ("baseline", "negative", "positive"):
         if not str(controls.get(control, "")).strip():
             missing_fields.append(f"controls.{control}")
+    path_proof_summary: dict[str, Any] = {
+        "required": True,
+        "passed": False,
+        "errors": [],
+        "summary": {},
+    }
+    finding_id = str(finding.get("id") or "")
+    expected_path_proof = f"evidence/path-proofs/{finding_id}.json"
+    path_proof = finding.get("pathProof")
+    if not isinstance(path_proof, dict):
+        missing_fields.append("pathProof")
+    else:
+        if path_proof.get("required") is not True:
+            missing_fields.append("pathProof.required:true")
+        if path_proof.get("path") != expected_path_proof:
+            missing_fields.append("pathProof.path:canonical")
+    if campaign_root_path is None:
+        missing_fields.append("pathProof.campaignRoot")
+    elif isinstance(path_proof, dict) and path_proof.get("path") == expected_path_proof:
+        proof_path = campaign_root_path / expected_path_proof
+        if not proof_path.is_file():
+            missing_fields.append("pathProof.missing")
+        else:
+            proof_record: dict[str, Any] = {}
+            try:
+                proof_record = read_json(proof_path)
+                proof_audit = validate_path_proof(
+                    proof_record,
+                    expected_finding_id=finding_id,
+                    expected_originator=str(finding.get("originator") or ""),
+                    campaign_root=campaign_root_path,
+                )
+            except (OSError, json.JSONDecodeError, SystemExit) as error:
+                proof_audit = {
+                    "passed": False,
+                    "errors": [f"unreadable:{error}"],
+                    "summary": {},
+                }
+            path_proof_summary.update(proof_audit)
+            for error in proof_audit["errors"]:
+                missing_fields.append(f"pathProof.{error}")
+            if proof_record:
+                identity_errors: list[str] = []
+                review = proof_record.get("review")
+                review = review if isinstance(review, dict) else {}
+                originator_id = str(review.get("originator") or "")
+                reviewer_id = str(review.get("reviewer") or "")
+                database = orchestration_path(campaign_root_path)
+                if not database.is_file():
+                    identity_errors.append("review.identityRegistry")
+                else:
+                    connection = connect_orchestration(campaign_root_path)
+                    try:
+                        originator_worker = connection.execute(
+                            "SELECT agent FROM workers WHERE worker_id=?",
+                            (originator_id,),
+                        ).fetchone()
+                        reviewer_worker = connection.execute(
+                            "SELECT agent FROM workers WHERE worker_id=?",
+                            (reviewer_id,),
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                    if originator_worker is None:
+                        identity_errors.append("review.originator:unregistered")
+                    if reviewer_worker is None:
+                        identity_errors.append("review.reviewer:unregistered")
+                    if (
+                        originator_worker is not None
+                        and reviewer_worker is not None
+                        and originator_worker["agent"] == reviewer_worker["agent"]
+                    ):
+                        identity_errors.append("review.agent:must-be-independent")
+                if identity_errors:
+                    path_proof_summary["passed"] = False
+                    path_proof_summary.setdefault("errors", []).extend(identity_errors)
+                    for error in identity_errors:
+                        missing_fields.append(f"pathProof.{error}")
+    triage_summary: dict[str, Any] = {"required": False, "verdicts": []}
+    dynamic_triage = finding.get("dynamicTriage")
+    if isinstance(dynamic_triage, dict) and (
+        dynamic_triage.get("required") is True or dynamic_triage.get("crashIds")
+    ):
+        triage_summary["required"] = True
+        crash_ids = dynamic_triage.get("crashIds")
+        if not isinstance(crash_ids, list) or not crash_ids:
+            missing_fields.append("dynamicTriage.crashIds")
+            crash_ids = []
+        if dynamic_triage.get("reviewed") is not True:
+            missing_fields.append("dynamicTriage.reviewed:true")
+        if not str(dynamic_triage.get("reviewedBy") or "").strip():
+            missing_fields.append("dynamicTriage.reviewedBy")
+        if not str(dynamic_triage.get("reviewNotes") or "").strip():
+            missing_fields.append("dynamicTriage.reviewNotes")
+        if dynamic_triage.get("index") != "dynamic/triage/index.json":
+            missing_fields.append("dynamicTriage.index:dynamic/triage/index.json")
+        accepted_clusters = dynamic_triage.get("acceptedClusterIds")
+        if not isinstance(accepted_clusters, list):
+            accepted_clusters = []
+            missing_fields.append("dynamicTriage.acceptedClusterIds")
+        machine_verdicts = dynamic_triage.get("machineVerdicts")
+        if not isinstance(machine_verdicts, dict):
+            machine_verdicts = {}
+            missing_fields.append("dynamicTriage.machineVerdicts")
+        if campaign_root_path is None:
+            missing_fields.append("dynamicTriage.campaignRoot")
+        else:
+            index_path = campaign_root_path / "dynamic" / "triage" / "index.json"
+            indexed_crashes: dict[str, dict[str, Any]] = {}
+            if not index_path.is_file():
+                missing_fields.append("dynamicTriage.index:missing")
+            else:
+                index_record = read_json(index_path)
+                index_rows = index_record.get("crashes")
+                if isinstance(index_rows, list):
+                    indexed_crashes = {
+                        str(row.get("crashId")): row
+                        for row in index_rows
+                        if isinstance(row, dict) and row.get("crashId")
+                    }
+                else:
+                    missing_fields.append("dynamicTriage.index:invalid")
+            for crash_id_value in crash_ids:
+                crash_id = str(crash_id_value)
+                if not re.fullmatch(r"[0-9a-f]{64}", crash_id):
+                    missing_fields.append(f"dynamicTriage.crashId:{crash_id}")
+                    continue
+                triage_path = (
+                    campaign_root_path / "dynamic" / "crashes" / crash_id / "triage.json"
+                )
+                if not triage_path.is_file():
+                    missing_fields.append(f"dynamicTriage.missing:{crash_id}")
+                    continue
+                triage = read_json(triage_path)
+                stack = triage.get("stack") if isinstance(triage.get("stack"), dict) else {}
+                assessment = (
+                    triage.get("automatedExploitability")
+                    if isinstance(triage.get("automatedExploitability"), dict)
+                    else {}
+                )
+                verdict_name = str(assessment.get("verdict") or "")
+                cluster_id = str(stack.get("clusterId") or "")
+                recommendation = str(assessment.get("gateRecommendation") or "")
+                triage_summary["verdicts"].append(
+                    {
+                        "crashId": crash_id,
+                        "clusterId": cluster_id,
+                        "verdict": verdict_name,
+                        "gateRecommendation": recommendation,
+                    }
+                )
+                if triage.get("crashId") != crash_id:
+                    missing_fields.append(f"dynamicTriage.identityMismatch:{crash_id}")
+                if cluster_id not in set(str(value) for value in accepted_clusters):
+                    missing_fields.append(f"dynamicTriage.unacceptedCluster:{cluster_id}")
+                if machine_verdicts.get(crash_id) != verdict_name:
+                    missing_fields.append(f"dynamicTriage.verdictMismatch:{crash_id}")
+                indexed = indexed_crashes.get(crash_id)
+                if not indexed:
+                    missing_fields.append(f"dynamicTriage.indexMissingCrash:{crash_id}")
+                elif (
+                    indexed.get("clusterId") != cluster_id
+                    or indexed.get("verdict") != verdict_name
+                ):
+                    missing_fields.append(f"dynamicTriage.indexMismatch:{crash_id}")
+                if assessment.get("machinePromotionEligible") is not False:
+                    missing_fields.append(f"dynamicTriage.unsafeMachinePromotion:{crash_id}")
+                if recommendation == "reject-crash-only" and not str(
+                    dynamic_triage.get("overrideReason") or ""
+                ).strip():
+                    missing_fields.append("dynamicTriage.overrideReason:crash-only")
+    browser_replay_summary: dict[str, Any] = {"required": False, "replays": []}
+    browser_replay = finding.get("browserReplay")
+    if isinstance(browser_replay, dict) and (
+        browser_replay.get("required") is True or browser_replay.get("replayIds")
+    ):
+        browser_replay_summary["required"] = True
+        replay_ids = browser_replay.get("replayIds")
+        if not isinstance(replay_ids, list) or not replay_ids:
+            missing_fields.append("browserReplay.replayIds")
+            replay_ids = []
+        if browser_replay.get("reviewed") is not True:
+            missing_fields.append("browserReplay.reviewed:true")
+        if not str(browser_replay.get("reviewedBy") or "").strip():
+            missing_fields.append("browserReplay.reviewedBy")
+        if not str(browser_replay.get("reviewNotes") or "").strip():
+            missing_fields.append("browserReplay.reviewNotes")
+        if campaign_root_path is None:
+            missing_fields.append("browserReplay.campaignRoot")
+        else:
+            for replay_id_value in replay_ids:
+                replay_id = str(replay_id_value)
+                if not re.fullmatch(r"[0-9]{8}T[0-9]{12}Z-[0-9a-f]{10}", replay_id):
+                    missing_fields.append(f"browserReplay.replayId:{replay_id}")
+                    continue
+                replay_path = (
+                    campaign_root_path
+                    / "chrome-v8"
+                    / "browser-replays"
+                    / replay_id
+                    / "replay.json"
+                )
+                if not replay_path.is_file():
+                    missing_fields.append(f"browserReplay.missing:{replay_id}")
+                    continue
+                replay = read_json(replay_path)
+                summary = replay.get("summary") if isinstance(replay.get("summary"), dict) else {}
+                build = replay.get("build") if isinstance(replay.get("build"), dict) else {}
+                cases = replay.get("cases") if isinstance(replay.get("cases"), dict) else {}
+                positive = cases.get("positive") if isinstance(cases.get("positive"), dict) else {}
+                control = cases.get("control") if isinstance(cases.get("control"), dict) else {}
+                browser_replay_summary["replays"].append(
+                    {
+                        "replayId": replay_id,
+                        "promotionReady": summary.get("promotionReady"),
+                        "sandboxVerified": summary.get("sandboxVerified"),
+                        "positiveMatched": summary.get("positiveMatched"),
+                        "controlMatched": summary.get("controlMatched"),
+                    }
+                )
+                if replay.get("replayId") != replay_id:
+                    missing_fields.append(f"browserReplay.identityMismatch:{replay_id}")
+                if replay.get("driver") != "direct-cdp":
+                    missing_fields.append(f"browserReplay.driver:{replay_id}")
+                if replay.get("status") != "completed":
+                    missing_fields.append(f"browserReplay.status:{replay_id}")
+                if replay.get("ownedLocalOrigin") is not True:
+                    missing_fields.append(f"browserReplay.ownedOrigin:{replay_id}")
+                if build.get("kind") != "chrome" or build.get("role") != "sandboxed-chrome":
+                    missing_fields.append(f"browserReplay.build:{replay_id}")
+                site = replay.get("site") if isinstance(replay.get("site"), dict) else {}
+                if not isinstance(site.get("files"), list) or not site.get("files"):
+                    missing_fields.append(f"browserReplay.siteManifest:{replay_id}")
+                for case_name, case in (("positive", positive), ("control", control)):
+                    prefix = f"browserReplay.{case_name}:{replay_id}"
+                    if not case:
+                        missing_fields.append(prefix)
+                        continue
+                    if case.get("status") != "completed":
+                        missing_fields.append(prefix + ":status")
+                    if case.get("freshProcess") is not True:
+                        missing_fields.append(prefix + ":freshProcess")
+                    if case.get("profileDisposable") is not True:
+                        missing_fields.append(prefix + ":disposableProfile")
+                    if case.get("finalUrlOwned") is not True:
+                        missing_fields.append(prefix + ":finalUrlOwned")
+                    if case.get("expressionMatched") is not True:
+                        missing_fields.append(prefix + ":expressionMatched")
+                    sandbox = case.get("sandbox") if isinstance(case.get("sandbox"), dict) else {}
+                    if sandbox.get("verified") is not True:
+                        missing_fields.append(prefix + ":sandboxVerified")
+                    if case.get("blockedExternalRequests"):
+                        missing_fields.append(prefix + ":externalRequestAttempt")
+                    if case.get("targetCrashed") is not False:
+                        missing_fields.append(prefix + ":targetCrashed")
+                if summary.get("promotionReady") is not True:
+                    missing_fields.append(f"browserReplay.notPromotionReady:{replay_id}")
     if level == "reportable":
         originator = str(finding.get("originator") or "").strip()
         if not originator:
@@ -1498,6 +4196,9 @@ def gate_result(
         "passed": passed,
         "missingGates": missing_gates,
         "missingFields": missing_fields,
+        "dynamicTriage": triage_summary,
+        "browserReplay": browser_replay_summary,
+        "pathProof": path_proof_summary,
     }
 
 
@@ -1507,6 +4208,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
     result = gate_result(
         finding,
         args.level,
+        campaign_root_path=root,
         replay_verified=(
             replay_is_machine_verified(root, finding) if args.level == "reportable" else False
         ),
@@ -1554,14 +4256,24 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def iter_artifacts(root: Path) -> Iterable[Path]:
-    for dirname in ("evidence", "findings", "reports", "results", "dynamic"):
+    for dirname in ("evidence", "findings", "reports", "results", "dynamic", "chrome-v8"):
         base = root / dirname
         if not base.exists():
             continue
         for path in sorted(base.rglob("*")):
             if path.is_file() and not path.is_symlink() and path.name != "SHA256SUMS":
                 yield path
-    for filename in ("campaign.json", "registry.json", "launch-plan.json", "AUTHORIZATION.md"):
+    for filename in (
+        "campaign.json",
+        "registry.json",
+        "approach-registry.json",
+        "launch-plan.json",
+        "AUTHORIZATION.md",
+        "PROGRAM_GUIDELINES.md",
+        "PROGRAM_SCOPE.md",
+        "onboarding.json",
+        "third_party/manifest.json",
+    ):
         path = root / filename
         if path.is_file():
             yield path
@@ -1602,7 +4314,13 @@ def lint_files(root: Path) -> Iterable[Path]:
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink() or path.suffix.lower() not in TEXT_SUFFIXES:
             continue
-        if any(part in excluded for part in path.relative_to(root).parts):
+        relative_parts = path.relative_to(root).parts
+        if any(part in excluded for part in relative_parts):
+            continue
+        if relative_parts[:1] == ("third_party",) and relative_parts != (
+            "third_party",
+            "manifest.json",
+        ):
             continue
         yield path
 
@@ -1651,14 +4369,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional local Git checkout used to provision isolated worker worktrees",
     )
     init.add_argument("--commit", required=True)
+    init.add_argument(
+        "--profile",
+        choices=PROFILE_NAMES,
+        default="critical-rce",
+        help="campaign lane and evidence profile",
+    )
     init.add_argument("--mode", choices=("source", "local-lab", "testnet", "authorized-live"), default="source")
     init.add_argument("--program-url")
     init.set_defaults(func=cmd_init)
 
+    dependency_add = sub.add_parser(
+        "dependency-add",
+        help="clone and pin an exact target-used dependency under campaign third_party",
+    )
+    dependency_add.add_argument("campaign_dir")
+    dependency_add.add_argument("name", type=validate_dependency_name)
+    dependency_add.add_argument("--repo", required=True)
+    dependency_add.add_argument(
+        "--commit",
+        required=True,
+        help="exact dependency tag, object ID, or lock-resolved revision to pin",
+    )
+    dependency_add.add_argument(
+        "--relationship",
+        required=True,
+        choices=("runtime", "bundled", "native", "build", "optional", "transitive"),
+    )
+    dependency_add.add_argument(
+        "--scope-status",
+        choices=("target-in-scope", "dependency-in-scope", "supporting-context"),
+        default="supporting-context",
+        help="classification only; does not expand program authorization",
+    )
+    dependency_add.add_argument(
+        "--lock-evidence",
+        action="append",
+        required=True,
+        help="pinned-target file/symbol proving this exact dependency is used; repeatable",
+    )
+    dependency_add.add_argument("--reason", required=True)
+    dependency_add.set_defaults(func=cmd_dependency_add)
+
+    dependency_status = sub.add_parser(
+        "dependency-status", help="show pinned campaign dependencies and scope classification"
+    )
+    dependency_status.add_argument("campaign_dir")
+    dependency_status.add_argument("--json", action="store_true")
+    dependency_status.set_defaults(func=cmd_dependency_status)
+
     plan = sub.add_parser("plan", help="write wave-based agent task packets")
     plan.add_argument("campaign_dir")
     plan.add_argument("--lane", action="append", help="limit to a lane ID; repeatable")
-    plan.add_argument("--max-concurrency", type=int, default=3)
+    plan.add_argument("--max-concurrency", type=parse_max_concurrency, default="auto")
     plan.add_argument("--lease-seconds", type=int, default=900)
     plan.add_argument("--task-timeout-seconds", type=int, default=7200)
     plan.add_argument("--max-attempts", type=int, default=2)
@@ -1711,10 +4474,61 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--lease-token", required=True)
     submit.add_argument("--result", required=True)
     submit.add_argument("--idempotency-key", required=True)
-    submit.add_argument("--outcome", choices=("completed", "failed"), default="completed")
+    submit.add_argument(
+        "--outcome",
+        choices=("completed", "failed", "blocked"),
+        default="completed",
+    )
     submit.add_argument("--finding-id", type=validate_finding_id)
     submit.add_argument("--replay-of", type=validate_finding_id)
     submit.set_defaults(func=cmd_submit)
+
+    task_add = sub.add_parser(
+        "task-add", help="add a new evidence-driven exploration task at runtime"
+    )
+    task_add.add_argument("campaign_dir")
+    task_add.add_argument("task_id", type=validate_task_id)
+    task_add.add_argument("--title", required=True)
+    task_add.add_argument("--lane", required=True)
+    task_add.add_argument("--objective", required=True)
+    task_add.add_argument(
+        "--approach-family",
+        action="append",
+        required=True,
+        help="stable semantic family ID from approach-registry.json; repeatable",
+    )
+    task_add.add_argument("--success-criterion", action="append", required=True)
+    task_add.add_argument("--depends-on", action="append")
+    task_add.add_argument("--exclude-worker", action="append", type=validate_identity)
+    task_add.add_argument("--wave", type=int, default=2)
+    task_add.add_argument("--priority", type=int, default=50)
+    task_add.add_argument("--max-attempts", type=int, default=2)
+    task_add.add_argument("--timeout-seconds", type=int, default=7200)
+    task_add.set_defaults(func=cmd_task_add)
+
+    round_plan = sub.add_parser(
+        "round-plan",
+        help="launch independent route development, adversarial review, and root synthesis",
+    )
+    round_plan.add_argument("campaign_dir")
+    round_plan.add_argument("worker_id", type=validate_identity)
+    round_plan.add_argument("--plan", required=True, help="round plan JSON")
+    round_plan.set_defaults(func=cmd_round_plan)
+
+    schedule_unblock = sub.add_parser(
+        "schedule-unblock", help="schedule a focused task to resolve a recorded blocker"
+    )
+    schedule_unblock.add_argument("campaign_dir")
+    schedule_unblock.add_argument("blocked_task_id", type=validate_task_id)
+    schedule_unblock.add_argument("--task-id", type=validate_task_id)
+    schedule_unblock.add_argument("--title", required=True)
+    schedule_unblock.add_argument("--strategy", required=True)
+    schedule_unblock.add_argument("--success-criterion", required=True)
+    schedule_unblock.add_argument("--exclude-worker", action="append", type=validate_identity)
+    schedule_unblock.add_argument("--priority", type=int, default=2000)
+    schedule_unblock.add_argument("--max-attempts", type=int, default=2)
+    schedule_unblock.add_argument("--timeout-seconds", type=int, default=7200)
+    schedule_unblock.set_defaults(func=cmd_schedule_unblock)
 
     schedule_replay = sub.add_parser(
         "schedule-replay", help="create a finding-specific task that excludes its originator"
@@ -1733,7 +4547,7 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("--reason", required=True)
     cancel.set_defaults(func=cmd_cancel)
 
-    retry = sub.add_parser("retry", help="requeue a failed, timed-out, cancelled, or blocked task")
+    retry = sub.add_parser("retry", help="requeue a failed, timed-out, or cancelled task")
     retry.add_argument("campaign_dir")
     retry.add_argument("task_id")
     retry.add_argument("--reason", required=True)
@@ -1751,6 +4565,14 @@ def build_parser() -> argparse.ArgumentParser:
     orchestration_status.add_argument("campaign_dir")
     orchestration_status.add_argument("--json", action="store_true")
     orchestration_status.set_defaults(func=cmd_orchestration_status)
+
+    approach_status = sub.add_parser(
+        "approach-status",
+        help="show semantic approach-family coverage, convergence, and underexplored areas",
+    )
+    approach_status.add_argument("campaign_dir")
+    approach_status.add_argument("--json", action="store_true")
+    approach_status.set_defaults(func=cmd_approach_status)
 
     register = sub.add_parser("register", help="register a stable candidate ID")
     register.add_argument("campaign_dir")

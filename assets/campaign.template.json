@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "profile": "critical-rce",
   "target": "replace-with-target",
   "repository": "replace-with-repository",
   "localCheckout": "",
@@ -7,6 +8,31 @@
   "mode": "source",
   "programUrl": "",
   "createdAt": "",
+  "dependencyManifest": "third_party/manifest.json",
+  "mission": "critical-rce-chain",
+  "orchestrationPolicy": {
+    "allocation": "dynamic-evidence-driven",
+    "capacity": "runtime-advertised",
+    "fixedWorkersPerLane": false,
+    "allowRuntimeExpansion": true,
+    "preferFourOrMoreWorkersWhenAvailable": true
+  },
+  "discoveryPolicy": {
+    "firstPrinciplesOnly": true,
+    "prohibitedDiscoveryInputs": [
+      "changelogs",
+      "git-history",
+      "advisories",
+      "patched-version-comparisons",
+      "internet-patch-diffing"
+    ],
+    "allowedDiscoveryBasis": [
+      "pinned-source",
+      "checked-in-tests-and-docs",
+      "exact-revision-builds",
+      "runtime-behavior"
+    ]
+  },
   "authorization": {
     "confirmed": false,
     "basis": "",

@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 1,
+  "name": "critical-rce",
+  "description": "Aggressive first-principles source analysis that composes public ingress, a violated invariant, an exploitation primitive, and a stock execution terminal into a complete Critical/RCE chain.",
+  "schedulingPolicy": {
+    "allocation": "dynamic-evidence-driven",
+    "capacity": "runtime-advertised",
+    "fixedWorkersPerLane": false,
+    "allowRuntimeExpansion": true,
+    "preferFourOrMoreWorkersWhenAvailable": true,
+    "approachFamilyBalancing": "active-load-then-coverage-before-priority",
+    "allowPromiseBasedDominance": false,
+    "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link"
+  },
+  "lanes": [
+    {
+      "wave": 0,
+      "id": "coordinator-setup",
+      "title": "Pinned-source and authority coordinator",
+      "objective": "Freeze one authorized source revision, build it without vulnerability-oriented source changes, record supported runtime configurations and program Critical criteria, and enforce the no-history discovery boundary. Do not consult changelogs, git history or blame, advisories, patched versions, later or earlier revisions, or internet-derived code comparisons.",
+      "deliverables": [
+        "exact source, dependency, build, and runtime identities",
+        "authorization and Critical-impact contract",
+        "stock-build and disposable-lab plan",
+        "recorded no-history and no-patch-diff discovery provenance"
+      ],
+      "priority": 1000,
+      "dependsOn": []
+    },
+    {
+      "wave": 1,
+      "id": "static-analysis-lead-generation",
+      "title": "Executable static-analysis lead generator",
+      "objective": "Run scripts/static_analysis_pipeline.py against the pinned checkout with every available relevant analyzer. Execute the bundled Joern reachability and missing-validation queries, produce a Tree-sitter syntax census, retain Trailmark entrypoints, and derive explicit Z3 specs from implementation constraints. Ingest normalized results into durable static-lead-validation tasks with commit, command, tool-output, and artifact provenance. Do not treat analyzer output as a finding.",
+      "deliverables": [
+        "retained tools/static run record with command, stdout, stderr, and status for every selected analyzer",
+        "Joern CPG query TSVs and Tree-sitter or Trailmark census artifacts",
+        "concrete Z3 payloads for source-derived constraints where applicable",
+        "idempotent provenance-bound validation tasks in tools/static-leads.json and orchestration.db"
+      ],
+      "priority": 90,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "public-ingress-map",
+      "title": "Attacker ingress and authority mapper",
+      "objective": "Derive externally reachable parsers, handlers, message boundaries, authentication states, attacker-controlled fields, and security principals directly from the pinned code and its checked-in configuration. Identify the shortest unauthenticated or low-privilege paths capable of reaching privileged state.",
+      "deliverables": [
+        "public entry-point inventory with exact source references",
+        "attacker-control and privilege table",
+        "trust-boundary and authority map",
+        "candidate ingress-to-boundary hypotheses with falsification conditions"
+      ],
+      "priority": 120,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "execution-sink-backtrace",
+      "title": "Execution and native-sink backtracer",
+      "objective": "Work backward from process creation, shell invocation, dynamic module or library loading, executable memory, unsafe native calls, deserialization dispatch, write-then-load, template compilation, and callback or function construction. Record every guard and the attacker-controlled values required to cross it.",
+      "deliverables": [
+        "execution and native-sink census",
+        "backward call and data-flow slices",
+        "guard, dominance, and capability requirements",
+        "shortest source-supported routes from a public boundary"
+      ],
+      "priority": 115,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "memory-lifetime-invariants",
+      "title": "Memory, ownership, and lifetime invariant auditor",
+      "objective": "Analyze allocation sizes, integer domains, object ownership, pooling, recycling, async completion, error cleanup, cross-thread state, stale views, native handles, and type confusion directly in the pinned source. Prefer primitives that can become controlled read, write, call, or code-loading capability over crash-only outcomes.",
+      "deliverables": [
+        "ownership and lifetime model",
+        "allocation and numeric-domain constraints",
+        "candidate read, write, type-confusion, and control-flow primitives",
+        "crash-only paths explicitly deprioritized"
+      ],
+      "priority": 100,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "parser-representation-invariants",
+      "title": "Parser, serializer, and representation invariant auditor",
+      "objective": "Compare producers and consumers inside the pinned tree for lengths, encodings, duplicate fields, normalization, object shape, signedness, framing, methods, paths, and type domains. Seek disagreements that can manufacture executable objects, references, modules, callbacks, native structures, or attacker-directed memory effects.",
+      "deliverables": [
+        "producer-consumer invariant table",
+        "implementation-matched boundary inputs",
+        "minimal differential harnesses",
+        "representation-to-execution composition candidates"
+      ],
+      "priority": 105,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "capability-code-loading-invariants",
+      "title": "Capability, manifest, and code-loading authority auditor",
+      "objective": "Trace how the current source authorizes functions, modules, chunks, plugins, templates, paths, callbacks, manifests, RPC methods, and privileged native objects. Identify missing identity, provenance, namespace, or containment checks that could turn data authority into execution authority.",
+      "deliverables": [
+        "capability and code-loading authority graph",
+        "manifest, namespace, and provenance constraints",
+        "public acquisition requirements for identifiers",
+        "authority-confusion hypotheses with exact blockers"
+      ],
+      "priority": 110,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 1,
+      "id": "dependency-boundary-audit",
+      "title": "Pinned dependency and integration-boundary auditor",
+      "objective": "Use only the target revision's lockfiles, manifests, generated bundles, build graph, and runtime loading evidence to identify exact high-leverage dependencies. Pin selected source under campaign third_party with dependency-add. Audit cross-library trust, representation, lifetime, callback, native, and code-loading boundaries, and preserve dependency primitives for composition with target-owned ingress and sinks. Do not browse history or compare patched versions.",
+      "deliverables": [
+        "exact dependency revisions and target-side lock evidence",
+        "cross-library attacker-control and authority map",
+        "dependency primitives with target integration paths",
+        "focused chain tasks joining target and dependency bugs"
+      ],
+      "priority": 108,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 2,
+      "id": "cross-lane-chain-composition",
+      "title": "Cross-lane Critical/RCE chain composer",
+      "objective": "Continuously combine ingress, invariant violation, primitive, acquisition, and execution-sink evidence from independent workers. Create focused tasks for missing links. Reject chains that end only in denial of service, debug assertions, synthetic callbacks, application-authored command sinks, or unsupported configurations.",
+      "deliverables": [
+        "ranked end-to-end chain graph",
+        "per-link proof and missing-link table",
+        "new focused tasks for the highest-value gaps",
+        "discarded partial chains and exact rejection reasons"
+      ],
+      "priority": 95,
+      "dependsOn": ["static-analysis-lead-generation", "public-ingress-map", "execution-sink-backtrace", "dependency-boundary-audit"]
+    },
+    {
+      "wave": 2,
+      "id": "attacker-acquisition",
+      "title": "Remote coordinate and precondition acquisition",
+      "objective": "Prove how an attacker obtains every address, identifier, token, module coordinate, heap fact, build value, timing condition, and carrier used by the candidate without private target artifacts. Replace local-build secrets and harness constants with public protocol output, deterministic derivation, bounded search, or remove the dependency.",
+      "deliverables": [
+        "origin record for every exploit coordinate",
+        "network- or input-only acquisition harness",
+        "secret and local-inspection dependencies removed",
+        "measured search, timing, and resource costs"
+      ],
+      "dependsOn": ["public-ingress-map", "capability-code-loading-invariants"]
+    },
+    {
+      "wave": 2,
+      "id": "primitive-escalation",
+      "title": "Primitive-to-execution escalation",
+      "objective": "Turn the strongest source-confirmed primitive into controlled execution using only functionality naturally present in the stock supported target. Demonstrate attacker-controlled arguments and remove test-only hooks, direct state injection, debugger mutation, forced scheduling, synthetic command callbacks, and application-authored unsafe sinks from the primary chain.",
+      "deliverables": [
+        "primitive capability measurements",
+        "stock-target escalation chain",
+        "attacker-controlled argument proof",
+        "bounded real execution terminal or evidence-backed blocker"
+      ],
+      "dependsOn": [
+        "execution-sink-backtrace",
+        "memory-lifetime-invariants",
+        "parser-representation-invariants",
+        "capability-code-loading-invariants"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "stock-deployment-reachability",
+      "title": "Stock and supported deployment reachability",
+      "objective": "Reproduce the candidate in an unmodified production-equivalent or release build using defaults or a documented supported configuration derived from the pinned tree. Development servers, development builds, hot-reload paths, test or fixture servers, preview-only runtimes, and debug-only paths can generate leads but cannot satisfy this lane. Remove bespoke vulnerable callbacks, insecure consumer configuration, local manifest inspection, and unrealistic resource or interaction assumptions.",
+      "deliverables": [
+        "stock-build reachability result",
+        "default and supported-configuration matrix",
+        "realistic attacker and victim sequence",
+        "explicit remaining platform, topology, resource, and interaction conditions"
+      ],
+      "dependsOn": ["public-ingress-map", "capability-code-loading-invariants"]
+    },
+    {
+      "wave": 2,
+      "id": "blocker-breakout",
+      "title": "Critical-chain blocker breakout",
+      "objective": "For each blocked chain, classify the missing link as observability, attacker control, reachability, acquisition, reliability, environment, or genuine falsification. Run the smallest first-principles experiment that can remove it, and explore alternative source-derived routes to the same execution boundary. Never route around missing authorization.",
+      "deliverables": [
+        "structured blocker diagnoses",
+        "parallel unblocking experiments",
+        "resumed chains or preserved falsifications",
+        "highest-value next composition tasks"
+      ],
+      "priority": 90,
+      "dependsOn": ["cross-lane-chain-composition"]
+    },
+    {
+      "wave": 3,
+      "id": "safe-rce-validation",
+      "title": "Safe stock-target RCE validation",
+      "objective": "Execute the complete chain in a disposable owned environment against the unmodified supported production-equivalent or release target, never a development server or development build. Use a bounded real command such as id, whoami, uname, or a timestamp, capture its exact output, prove the process boundary crossed, and avoid credentials, third-party data, persistence, shells beyond the bounded terminal, or destructive effects.",
+      "deliverables": [
+        "complete ingress-to-command reproduction",
+        "retained real command output and process evidence",
+        "cleanup and containment record",
+        "exact chain conditions and absent artificial mechanisms"
+      ],
+      "dependsOn": ["attacker-acquisition", "primitive-escalation", "stock-deployment-reachability"]
+    },
+    {
+      "wave": 3,
+      "id": "critical-controls-reliability",
+      "title": "Critical controls and fresh-process reliability",
+      "objective": "Build a truth table whose positive case differs only in the disputed invariant. Run baseline, enforcing negative, copied or sanitized carrier, restarted-process, and relevant configuration controls. Measure N/M across fresh processes whenever races, allocation, ASLR, retries, or timing affect the result.",
+      "deliverables": [
+        "baseline, negative, and positive truth table",
+        "fresh-process N/M success rate",
+        "alternate-explanation controls",
+        "raw outputs, artifact hashes, and cleanup evidence"
+      ],
+      "dependsOn": ["safe-rce-validation"]
+    },
+    {
+      "wave": 3,
+      "id": "finding-scoped-replay-scheduler",
+      "title": "Finding-scoped independent replay scheduler",
+      "objective": "For every surviving chain, register a stable finding and its originating worker, then use schedule-replay twice to create finding-specific tasks that exclude every alias of the originating agent and every prior reviewer agent. Do not complete this campaign task until two distinct agents' accepted replays pass machine verification; list every verified finding in taskResult.replayFindings.",
+      "deliverables": [
+        "stable finding IDs and originator identities",
+        "finding-scoped replay task IDs",
+        "originator-agent alias exclusions",
+        "self-contained reviewer packages",
+        "accepted independent replay digests and passing machine gates"
+      ],
+      "dependsOn": ["critical-controls-reliability"]
+    },
+    {
+      "wave": 4,
+      "id": "critical-adversarial-falsification",
+      "title": "Critical/RCE claim falsification",
+      "objective": "Have fresh workers try to reduce the result to application misuse, insecure configuration, unavailable attacker coordinates, resource exhaustion, a crash-only primitive, unsupported code, synthetic evidence, or an unproven boundary. Independently walk the exact source-to-sink path, enumerate every conditional and concrete attacker-selected outcome, search for contradictions, and refuse unresolved assumptions. Re-run source and runtime evidence but do not use history, patch diffs, advisories, or internet-derived code comparisons.",
+      "deliverables": [
+        "strongest evidence-based rejection arguments",
+        "per-condition necessity measurements",
+        "machine-audited path proof with zero unresolved assumptions",
+        "narrow surviving Critical/RCE claim",
+        "unresolved objections that block filing"
+      ],
+      "dependsOn": ["finding-scoped-replay-scheduler"]
+    },
+    {
+      "wave": 4,
+      "id": "critical-rce-synthesis",
+      "title": "Critical/RCE chain synthesis and package",
+      "objective": "Package only a chain that proves attacker input through the violated invariant and stock primitive to bounded real code execution, or another program-defined Critical boundary with equivalent concrete impact. Require a passing linked path proof whose ordered steps, complete branch inventory, attacker mechanisms, retained evidence, contradiction checks, empty assumptions list, and independent registered reviewer are revalidated by the candidate gate. If the chain does not meet that bar, retain it as blocked or disproved rather than produce a lower-severity report.",
+      "deliverables": [
+        "root-cause-first Critical/RCE report",
+        "one-command safe reproducer",
+        "exact-version build and replay manifest",
+        "passing evidence/path-proofs finding record",
+        "complete hashes, conditions, controls, and cleanup record"
+      ],
+      "dependsOn": ["critical-adversarial-falsification"]
+    }
+  ]
+}

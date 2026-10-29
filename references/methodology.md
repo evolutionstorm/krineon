@@ -1,176 +1,182 @@
-# Research Methodology
+# Critical/RCE research methodology
 
 ## Objective
 
-Find violations of a security boundary, not merely unusual behavior. A useful
-campaign connects five layers:
+Derive one complete chain from the pinned code:
 
-1. **Root cause:** the framework or library violates one of its own invariants.
-2. **Ingress:** attacker-controlled data reaches that defect through a supported
-   or realistically deployed interface.
-3. **Carrier:** ordinary application or protocol data transports the malicious
-   state without requiring an already vulnerable callback.
-4. **Terminal:** the defect produces an independently meaningful effect such as
-   unauthorized data access, policy mutation, cross-user integrity loss, or
-   bounded code execution.
-5. **Conditions:** every platform, version, configuration, ordering, memory,
-   and interaction requirement is explicit and measured.
+```text
+attacker-controlled ingress
+  -> target-owned invariant violation
+  -> useful read/write/call/load/authority primitive
+  -> public acquisition of every required coordinate
+  -> stock or supported privileged sink
+  -> bounded real execution or program-defined Critical impact
+```
 
-This decomposition prevents a strong primitive from being presented as a weak
-deployment story, and prevents an impressive terminal from hiding an
-application-authored vulnerability.
+An assertion, crash, denial of service, parser discrepancy, memory corruption,
+or callable gadget is not a finding by itself. Preserve it as a chain link and
+assign the missing links to other workers. Do not prepare lower-severity
+reports.
 
-## Phase 0: freeze the target
+## Discovery boundary
 
-Record before analysis:
+Use only the pinned source tree, checked-in generated code, dependency locks,
+tests and documentation present at that revision, exact-revision builds, and
+runtime behavior. During discovery and chain construction, do not use:
 
-- exact repository, commit, release, dependency lock, compiler, and runtime;
-- program asset, severity floor, exclusions, and safe-harbor terms;
-- supported deployment modes and defaults;
-- authorization and test-data ownership;
-- known advisories and recently changed security code;
-- cleanup and stopping conditions.
+- changelogs, release notes, advisories, CVEs, issue trackers, or security PRs;
+- `git log`, `git blame`, historical commits, or commit messages;
+- diffs against earlier, later, fixed, canary, or patched versions;
+- internet searches intended to reveal fixes or vulnerable locations; or
+- known PoCs as maps to defects in the target.
 
-Hash binaries and generated artifacts. Preserve the commands that produced
-them. Do not describe a moving branch as the tested revision.
+Ordinary worktree diffs for changes to Krineon are unrelated. Scope and
+duplicate checks may occur after independent validation, but cannot supply the
+root cause or missing exploit links.
 
-## Phase 1: model promises and boundaries
+## Phase 0: pin authority and artifacts
 
-Inventory externally reachable entry points and write the promise each one is
-supposed to enforce. Examples include:
+Record the exact repository, commit, dependency lock, compiler, runtime,
+program asset, Critical eligibility rule, authorization, owned environment,
+cleanup, and stop conditions. Build the unmodified target and hash every
+load-bearing artifact.
 
-- unauthenticated versus authenticated requests;
-- public versus internal headers or protocol records;
-- manifest-authorized versus arbitrary modules;
-- tenant, route, project, build, account, or cache-key isolation;
-- immutable versus mutable state;
-- owner thread, request, process, or realm;
-- parser success versus parser failure state;
-- producer and consumer agreement on lengths and types.
+## Phase 1: map both ends of the chain
 
-Then enumerate privileged sinks: module loading, process execution, file and
-network access, authorization decisions, cache writes, key use, native parser
-entry, deserialization, memory copying, and lifecycle destruction.
+In parallel, map:
 
-The first useful artifact is a map from attacker-controlled entry points to
-security promises and privileged sinks. Do not start by asking only for RCE.
+- unauthenticated and low-privilege entry points and attacker-controlled data;
+- process creation, function construction, executable memory, dynamic module
+  loading, native calls, unsafe deserialization, write-then-load, and equivalent
+  program-defined Critical sinks;
+- memory, ownership, lifetime, integer, parser, serializer, capability,
+  manifest, and namespace invariants between those ends.
 
-## Phase 2: generate falsifiable hypotheses
+Work forward from ingress and backward from sinks. Record guard dominance,
+identity, provenance, and every required state transition.
 
-Prioritize structural bug families that have repeatedly produced high-impact
-results:
+Execute `scripts/static_analysis_pipeline.py` during this phase. Its Trailmark
+entrypoints, Tree-sitter census, Joern CPG queries, and explicit Z3 models must
+be retained under the campaign and ingested as durable validation tasks. A
+machine lead never satisfies this phase by itself: a worker must inspect the
+source semantics and confirm or falsify the path at runtime. This turns static
+coverage into experiments while keeping tool output distinct from evidence of
+impact.
 
-- producer and consumer parse the same value differently;
-- validation occurs before a later merge, normalization, redirect, or decode;
-- a key omits identity or has a non-injective encoding;
-- state is process-global when ownership should be per project or request;
-- case, locale, path, method, or header classification differs between layers;
-- the success path enforces an invariant that an async or error path omits;
-- discriminators or ownership metadata are committed before payload validation;
-- pooled or recycled objects outlive their transaction, realm, or process;
-- a patch covers one representation, transport, or branch but leaves a sibling;
-- a public serializer emits values its paired decoder cannot represent safely;
-- a generated or vendored runtime differs from the source reviewers normally
-  inspect.
+For fuzzing, use `scripts/fuzzer_orchestrator.py` with verified compiler or
+REPRL instrumentation. Harvest source tests and fixtures, preserve structured
+generators, use the engine's native parallel/corpus-sharing model, and rebuild
+coverage from the canonical corpus. The deterministic byte mutator is only a
+smoke test. Forward external crash artifacts through bounded stock-target
+replay before first-fault triage.
+
+## Phase 2: formulate chain-link hypotheses
 
 Write each hypothesis as:
 
-> If input X crosses boundary Y, component A validates interpretation P while
-> component B consumes interpretation Q, so attacker capability Z becomes
-> possible. The hypothesis is false if control C behaves the same as the attack.
+> Input X reaches boundary Y. Component A establishes invariant P, but
+> component B consumes state Q. This yields primitive Z, which can reach sink S
+> if acquisition condition R is satisfied. Control C falsifies the link.
 
-Assign a hypothesis a stable ID immediately. Preserve it when disproved.
+Assign a stable ID. Record exact source references, expected primitive,
+falsification condition, and missing predecessor and successor links.
 
-## Phase 3: analyze in complementary lanes
+## Phase 3: compose aggressively
 
-Run separate lanes for:
+Keep every safe runtime slot active; four or more agents may work concurrently
+when capacity permits. Do not assign a fixed number of agents to any method or
+lane. Workers claim the highest-value ready task from the shared queue while
+the coordinator combines ingress, invariant, primitive, acquisition, and sink
+evidence continuously. Create, split, merge, reprioritize, or cancel focused
+tasks as the chain changes rather than waiting for every broad seed lane to
+finish. When a path blocks, classify the blocker and test the smallest
+first-principles experiment that can remove it.
 
-- **boundary mapping:** ingress, provenance, identity, authorization, manifests;
-- **sink-first tracing:** work backward from privileged operations;
-- **state and lifecycle:** ownership, pooling, globals, async completion, errors;
-- **protocol differential:** compare producer/consumer and layer classifications;
-- **variant analysis:** patches, sibling functions, generated bundles, platforms;
-- **deployment composition:** defaults, documentation, adapters, proxies, hosts;
+Reject primary chains that require an application-authored command callback,
+an unrelated downstream system the target neither ships nor invokes,
+undocumented insecure configuration, private target artifacts, direct state
+injection, debugger mutation, forced sleeps, or unrealistic resources. Do not
+reject a chain merely because a bug is inside an exact bundled or runtime
+dependency. Instead prove the target-selected revision, supported integration,
+attacker reachability, cross-library transformations, and scope ownership. See
+[dependencies.md](dependencies.md).
 
-Parallelism is useful only when the lanes produce different evidence. Three
-agents repeating keyword searches is not a three-agent audit.
-
-## Phase 4: build the proof ladder
+## Phase 4: prove the ladder
 
 Promote incrementally:
 
-1. Source contradiction or invariant mismatch.
-2. Minimal deterministic unit harness.
-3. Unmodified component or production bundle.
-4. Supported application fixture.
-5. Real protocol ingress with attacker-controlled values.
-6. Concrete harmless security effect.
-7. Fresh-process reliability and independent replay.
+1. Source invariant contradiction.
+2. Minimal deterministic harness at the same revision.
+3. Automated first-fault classification, normalized stack clustering, and
+   reviewed controllability assessment for any crash-backed primitive.
+4. Unmodified shipped component or bundle.
+5. Supported production-equivalent or release entrypoint; development servers
+   and development builds remain lead-only.
+6. Supported application or protocol ingress.
+7. Attacker acquisition of every ID, address, module, path, and timing fact.
+8. Useful primitive with attacker-controlled arguments.
+9. Bounded real execution or explicit program-defined Critical effect.
+10. Fresh-process controls and independent replay.
 
-At every step, identify which artificial mechanism was removed. A result that
-requires patched source, forced sleeps, direct heap mutation, private build
-inspection, or a test-only callback has not yet reached a production claim.
+At each step, state which artificial mechanism was removed.
 
-## Phase 5: construct differential controls
+## Phase 5: isolate causality
 
-The minimum matrix is:
+Use the same pinned revision for the minimum truth table:
 
-| Case | Security condition | Attacker input | Expected result |
-| --- | --- | --- | --- |
-| Baseline | normal supported path | benign | feature works |
-| Negative control | enforcement present | exploit-shaped | effect blocked |
-| Positive case | only disputed condition differs | same payload | effect occurs |
+| Case | Input/state | Expected result |
+| --- | --- | --- |
+| Baseline | legitimate input | feature works |
+| Enforcing control | exploit-shaped input with the disputed invariant preserved | no terminal |
+| Positive | only the disputed invariant differs | bounded terminal occurs |
+| Invariant-restored | copied, sanitized, or structurally safe carrier | no terminal |
 
-Add copied-value, wrong-ID, wrong-origin, clean-header, patched-version, and
-restarted-process controls when relevant. The positive case should differ by
-one fact that directly identifies the root cause.
+Do not require a patched-version control. For races, allocator effects, ASLR,
+or retries, measure `N/M` across fresh processes. Assisted scheduling may
+explain consequence but cannot replace unassisted reachability.
 
-For races and allocator-dependent behavior, report `N/M` across fresh
-processes. A forced-schedule reproduction explains consequence; an unassisted
-rate establishes reachability. Preserve both and label them separately.
+## Phase 6: prove attacker acquisition and deployment
 
-## Phase 6: prove attacker acquisition
+Classify every coordinate as attacker-supplied, public protocol output,
+deterministic from the public version, boundedly searched, private, or obtained
+only by target-local inspection. A remote claim cannot depend on the last two.
 
-For every coordinate used by the exploit, record its origin:
+Measure platform, topology, memory, storage, timing, interaction, and request
+affinity conditions. Confirm they fit a stock default or documented supported
+deployment. Configuration flexibility is not proof of realistic exposure.
 
-- supplied by the attacker;
-- public protocol output;
-- reproducible from the public version;
-- guessed with a measured search;
-- obtained only by local build inspection;
-- private or secret.
+## Phase 7: validate a safe terminal
 
-Remote acquisition is part of the exploit. A harness secret, locally scraped
-manifest, or hard-coded address must not be described as remotely available.
+Use a disposable owned environment and an unmodified target. Prefer a bounded
+command such as `id`, `whoami`, `uname`, or a timestamp, with exact stdout and
+process evidence. For program-defined Critical non-RCE impact, quote the scope
+rule and demonstrate the exact forbidden operation with owned data.
 
-## Phase 7: adversarial falsification
+Never read real credentials, contact third parties, persist access, move
+unowned funds, or degrade a shared service.
 
-Assign a different agent to disprove the candidate. The agent should attempt:
+## Phase 8: prove the complete path and eliminate assumptions
 
-- stock defaults and current stable/canary releases;
-- removal of every suspicious fixture dependency;
-- clean-process and copied-value controls;
-- official documented patterns instead of researcher-created ones;
-- prior-art and duplicate-root-cause matching;
-- alternate explanations for every observed marker;
-- direct measurement of the claimed unauthorized outcome;
-- exact source-link and patch-status verification.
+Create the finding's structured path proof. Walk from the exact attacker entry
+point to the exact sink in execution order. Record every transition and every
+conditional statement encountered. For each condition, state the required
+outcome, the exact attacker-controlled input or state that produces it, and the
+retained runtime observation. Hash the reviewed source ranges, retain negative
+controls, and list observations that would disprove the claim.
 
-Promote only the narrowest claim that survives.
+The proof must contain no unresolved assumptions. A different worker must try
+to contradict the entry point, attacker control, each transition, each branch,
+the sink, and the impact. Candidate promotion remains blocked until all
+contradictions are resolved with evidence and `scripts/path_proof.py audit`
+passes. See [false-positive-control.md](false-positive-control.md).
 
-## Phase 8: package the result
+## Phase 9: independent falsification
 
-Retain:
+Two workers with distinct runtime-agent identities that did not originate the
+chain rebuild and replay it from the pinned source and public prerequisites.
+Separate adversarial workers throughout the research rounds try to reduce the
+claim to crash-only behavior, application misuse, unsupported configuration,
+unavailable coordinates, synthetic evidence, or an unproven boundary.
 
-- exact commands and environment metadata;
-- raw request, response, stdout, stderr, and exit status;
-- source and binary hashes;
-- baseline, negative, positive, and patched controls;
-- cleanup and before/after state;
-- a one-command local verifier where safe;
-- a report whose title names root cause and consequence.
-
-Do not substitute a synthetic marker for a real terminal when a harmless real
-effect is available. For code execution, bounded commands such as `id`,
-`whoami`, `uname`, or a timestamp are clearer than a harness-created boolean.
-Never read credentials or third-party data merely to strengthen a proof.
+If the complete Critical/RCE chain does not survive, retain the primitive and
+blocker evidence. Do not emit a lower-severity bounty report.

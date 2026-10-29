@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "profile": "chrome-v8",
+  "createdAt": "",
+  "builds": [],
+  "requiredRoles": [
+    "release",
+    "asan",
+    "debug"
+  ],
+  "browserPromotion": {
+    "required": true,
+    "sandboxEnabled": true,
+    "ownedLocalOriginOnly": true,
+    "internalV8FlagsAllowedInFinalProof": false,
+    "chromeBuild": ""
+  },
+  "notes": "Register exact local binaries with scripts/chrome_v8_harness.py register-build. A crash is a lead until minimized and independently replayed."
+}

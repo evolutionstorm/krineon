@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "families": [
+    {
+      "id": "campaign-foundation",
+      "title": "Pinned build and authority foundation",
+      "boundary": "campaign evidence and authorization boundary",
+      "mechanism": "artifact pinning, supported-build selection, and authority modeling",
+      "invariant": "all later claims use one authorized, reproducible source and runtime identity",
+      "exploration": false
+    },
+    {
+      "id": "ingress-authority",
+      "title": "External ingress and authority transitions",
+      "boundary": "untrusted input to privileged parser, handler, or principal",
+      "mechanism": "reachability, authentication-state, and attacker-control tracing",
+      "invariant": "untrusted input must not acquire authority absent the required gate",
+      "exploration": true
+    },
+    {
+      "id": "execution-sink-backtrace",
+      "title": "Execution sink backtracing",
+      "boundary": "privileged execution or native effect back to attacker-controlled data",
+      "mechanism": "backward control-flow, data-flow, guard, and capability analysis",
+      "invariant": "execution sinks must be dominated by complete authorization and type checks",
+      "exploration": true
+    },
+    {
+      "id": "memory-lifetime",
+      "title": "Memory ownership and lifetime corruption",
+      "boundary": "allocation, ownership, lifetime, and concurrent object reuse",
+      "mechanism": "integer-domain, use-after-free, stale-view, race, and type-confusion analysis",
+      "invariant": "live typed references must describe valid storage with exclusive expected ownership",
+      "exploration": true
+    },
+    {
+      "id": "representation-parser",
+      "title": "Producer-consumer representation mismatch",
+      "boundary": "serialized, normalized, or framed data crossing between producers and consumers",
+      "mechanism": "length, signedness, duplicate-field, encoding, framing, and object-shape differentials",
+      "invariant": "all producers and consumers must agree on the domain and identity of one value",
+      "exploration": true
+    },
+    {
+      "id": "capability-code-loading",
+      "title": "Capability and code-loading confusion",
+      "boundary": "data authority becoming function, module, path, manifest, or callback authority",
+      "mechanism": "identity, provenance, namespace, containment, and manifest validation",
+      "invariant": "attacker-controlled data must not select or manufacture executable authority",
+      "exploration": true
+    },
+    {
+      "id": "attacker-acquisition",
+      "title": "Remote coordinate acquisition",
+      "boundary": "private build or runtime coordinates becoming remotely obtainable",
+      "mechanism": "public-protocol disclosure, deterministic derivation, bounded oracle, and leak analysis",
+      "invariant": "an exploit may depend only on coordinates an attacker can actually obtain",
+      "exploration": true
+    },
+    {
+      "id": "stock-reachability",
+      "title": "Stock deployment reachability",
+      "boundary": "diagnostic primitive crossing into an unmodified supported deployment",
+      "mechanism": "configuration, topology, platform, resource, and request-sequence validation",
+      "invariant": "the claimed chain must survive without test-only hooks or vulnerable consumer code",
+      "exploration": true
+    },
+    {
+      "id": "jit-optimization",
+      "title": "JIT optimization invariant failure",
+      "boundary": "language semantics crossing speculative optimization and generated machine code",
+      "mechanism": "feedback, representation, lowering, deoptimization, and alias invariant analysis",
+      "invariant": "optimized code must preserve language and heap semantics for every accepted input",
+      "exploration": true
+    },
+    {
+      "id": "wasm-validation-compiler",
+      "title": "WebAssembly validation and compiler mismatch",
+      "boundary": "validated Wasm modules crossing decoder, compiler, and runtime tiers",
+      "mechanism": "type, bounds, canonicalization, tiering, and module-lifecycle differentials",
+      "invariant": "compiled behavior must remain within the capabilities established by validation",
+      "exploration": true
+    },
+    {
+      "id": "sandbox-capability",
+      "title": "V8 sandbox capability escape",
+      "boundary": "sandboxed heap references crossing into trusted process memory or control flow",
+      "mechanism": "external-pointer, trusted-pointer, code-pointer, handle, and table validation",
+      "invariant": "sandbox-controlled indices and objects must not address unsandboxed capabilities",
+      "exploration": true
+    },
+    {
+      "id": "structured-generation",
+      "title": "Structure-aware state-space generation",
+      "boundary": "valid high-level programs reaching rare engine state transitions",
+      "mechanism": "grammar, AST, stateful mutation, differential execution, and coverage feedback",
+      "invariant": "semantically related executions must not expose memory-unsafe divergence",
+      "exploration": true
+    },
+    {
+      "id": "browser-integration",
+      "title": "Browser-process integration and renderer reachability",
+      "boundary": "web content crossing renderer, engine, sandbox, and browser integration layers",
+      "mechanism": "owned-page reachability, process-boundary validation, and sandbox-enabled replay",
+      "invariant": "engine primitives must not cross the browser security boundary unexpectedly",
+      "exploration": true
+    },
+    {
+      "id": "dependency-integration",
+      "title": "Pinned dependency and integration-boundary analysis",
+      "boundary": "target-owned input and state crossing into exact bundled, runtime, native, build, or transitive dependency code",
+      "mechanism": "lockfile provenance, cross-library data flow, parser and lifetime assumptions, callback authority, native boundaries, and primitive composition",
+      "invariant": "a target must preserve its security guarantees across every dependency boundary exercised by the supported build",
+      "exploration": true
+    },
+    {
+      "id": "static-lead-generation",
+      "title": "Executable static-analysis lead generation",
+      "boundary": "pinned source crossing from machine analysis into the durable research queue",
+      "mechanism": "single-revision syntax census, CPG queries, structural entrypoint mapping, constraint solving, and provenance-bound task ingestion",
+      "invariant": "static hypotheses must retain their tool provenance and receive manual plus runtime validation before promotion",
+      "exploration": false
+    },
+    {
+      "id": "blocker-alternative-route",
+      "title": "Blocked-link alternative route analysis",
+      "boundary": "a falsified chain link and adjacent routes to the same security boundary",
+      "mechanism": "guard analysis, cheapest discriminators, sibling representations, and alternate state transitions",
+      "invariant": "one blocked mechanism does not imply that every route to the target boundary is closed",
+      "exploration": false
+    },
+    {
+      "id": "chain-composition",
+      "title": "Cross-family exploit composition",
+      "boundary": "independent primitives composing into a complete Critical or RCE chain",
+      "mechanism": "missing-link graphs, carrier compatibility, and end-to-end constraint solving",
+      "invariant": "every chain link must have compatible attacker control and supported deployment state",
+      "exploration": false
+    },
+    {
+      "id": "validation-replay",
+      "title": "Controls and independent replay",
+      "boundary": "research claim crossing into reportable evidence",
+      "mechanism": "positive and negative controls, clean replay, adversarial review, and synthesis",
+      "invariant": "only independently reproducible stock-build effects with an exhaustive contradiction-free source-to-sink path proof may be promoted",
+      "exploration": false
+    }
+  ],
+  "profileMappings": {
+    "critical-rce": {
+      "coordinator-setup": ["campaign-foundation"],
+      "static-analysis-lead-generation": ["static-lead-generation"],
+      "public-ingress-map": ["ingress-authority"],
+      "execution-sink-backtrace": ["execution-sink-backtrace"],
+      "memory-lifetime-invariants": ["memory-lifetime"],
+      "parser-representation-invariants": ["representation-parser"],
+      "capability-code-loading-invariants": ["capability-code-loading"],
+      "dependency-boundary-audit": ["dependency-integration"],
+      "cross-lane-chain-composition": ["chain-composition"],
+      "attacker-acquisition": ["attacker-acquisition"],
+      "primitive-escalation": ["memory-lifetime", "representation-parser", "capability-code-loading"],
+      "stock-deployment-reachability": ["stock-reachability"],
+      "blocker-breakout": ["blocker-alternative-route"],
+      "safe-rce-validation": ["validation-replay"],
+      "critical-controls-reliability": ["validation-replay"],
+      "finding-scoped-replay-scheduler": ["validation-replay"],
+      "critical-adversarial-falsification": ["validation-replay"],
+      "critical-rce-synthesis": ["chain-composition", "validation-replay"]
+    },
+    "chrome-v8": {
+      "chrome-v8-setup": ["campaign-foundation"],
+      "v8-static-analysis-lead-generation": ["static-lead-generation"],
+      "jit-compiler-invariants": ["jit-optimization"],
+      "gc-object-lifetime": ["memory-lifetime"],
+      "wasm-parser-compiler": ["wasm-validation-compiler"],
+      "v8-sandbox-boundaries": ["sandbox-capability"],
+      "v8-execution-sink-backtrace": ["execution-sink-backtrace"],
+      "v8-dependency-boundary-audit": ["dependency-integration"],
+      "open-ended-variant-expansion": ["blocker-alternative-route"],
+      "structured-js-fuzzing": ["structured-generation"],
+      "v8-differential-fuzzing": ["structured-generation"],
+      "v8-crash-triage": ["memory-lifetime", "jit-optimization", "wasm-validation-compiler"],
+      "v8-primitive-escalation": ["sandbox-capability", "execution-sink-backtrace"],
+      "chromium-integration": ["browser-integration", "stock-reachability"],
+      "v8-finding-scoped-replay-scheduler": ["validation-replay"],
+      "v8-adversarial-review": ["validation-replay"],
+      "v8-root-synthesis": ["chain-composition", "validation-replay"]
+    }
+  }
+}

@@ -248,6 +248,118 @@ class DynamicHarnessTests(unittest.TestCase):
         crash_dirs = list((self.campaign / "dynamic" / "crashes").iterdir())
         self.assertEqual(len(crash_dirs), 4)
 
+    def test_first_fault_scoring_and_stack_clusters_grow_with_corpus(self) -> None:
+        self.run_input(b"UAFWRITE-one")
+        self.run_input(b"OOBREAD-two")
+        records = []
+        for crash_dir in (self.campaign / "dynamic" / "crashes").iterdir():
+            triage = json.loads((crash_dir / "triage.json").read_text())
+            records.append(triage)
+        self.assertEqual(len(records), 2)
+        by_class = {item["firstFault"]["class"]: item for item in records}
+        uaf = by_class["heap-use-after-free"]
+        oob = by_class["heap-buffer-overflow"]
+        self.assertEqual(uaf["firstFault"]["access"], "write")
+        self.assertEqual(oob["firstFault"]["access"], "read")
+        self.assertEqual(
+            uaf["automatedExploitability"]["verdict"],
+            "potential-lifetime-write-primitive",
+        )
+        self.assertEqual(
+            oob["automatedExploitability"]["verdict"],
+            "potential-read-primitive",
+        )
+        self.assertFalse(uaf["automatedExploitability"]["machinePromotionEligible"])
+        self.assertEqual(uaf["stack"]["clusterId"], oob["stack"]["clusterId"])
+        index = json.loads(
+            (self.campaign / "dynamic" / "triage" / "index.json").read_text()
+        )
+        self.assertEqual(index["crashCount"], 2)
+        self.assertEqual(index["clusterCount"], 1)
+        self.assertEqual(len(index["clusters"][0]["crashIds"]), 2)
+
+    def test_control_flow_evidence_is_prioritized_but_never_auto_promoted(self) -> None:
+        _, result = self.run_input(b"PCCTRL")
+        crash_dir = self.campaign / "dynamic" / "crashes" / result["fingerprint"]
+        triage = json.loads((crash_dir / "triage.json").read_text())
+        self.assertEqual(triage["firstFault"]["class"], "control-flow-corruption")
+        self.assertEqual(triage["firstFault"]["access"], "execute")
+        self.assertGreaterEqual(triage["controllability"]["score"], 85)
+        self.assertEqual(
+            triage["automatedExploitability"]["verdict"],
+            "potential-control-flow-corruption",
+        )
+        self.assertFalse(triage["automatedExploitability"]["machinePromotionEligible"])
+
+    def test_triage_cli_links_machine_verdict_to_finding_gate(self) -> None:
+        _, result = self.run_input(b"UAFWRITE-link")
+        registered = subprocess.run(
+            [
+                sys.executable,
+                str(HARNESS),
+                "register",
+                str(self.campaign),
+                "F900",
+                "--title",
+                "Triage linkage fixture",
+                "--lane",
+                "v8-crash-triage",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        self.run_dynamic(
+            "triage",
+            str(self.campaign),
+            "--crash-id",
+            result["fingerprint"][:16],
+            "--finding-id",
+            "F900",
+            "--reviewed-by",
+            "reviewer-a",
+            "--review-note",
+            "The sanitizer establishes a reproducible write-oriented lifetime lead, not RCE.",
+            "--json",
+        )
+        finding = json.loads(
+            (self.campaign / "findings" / "F900.json").read_text()
+        )
+        linked = finding["dynamicTriage"]
+        self.assertTrue(linked["required"])
+        self.assertTrue(linked["reviewed"])
+        self.assertEqual(linked["crashIds"], [result["fingerprint"]])
+        self.assertEqual(
+            linked["machineVerdicts"][result["fingerprint"]],
+            "potential-lifetime-write-primitive",
+        )
+        self.assertTrue(finding["gates"]["automated_triage_reviewed"])
+        gate = subprocess.run(
+            [
+                sys.executable,
+                str(HARNESS),
+                "gate",
+                str(self.campaign),
+                "F900",
+                "--level",
+                "candidate",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(gate.returncode, 1)
+        gate_result = json.loads(gate.stdout)
+        self.assertFalse(
+            any(
+                field.startswith("dynamicTriage.")
+                for field in gate_result["missingFields"]
+            ),
+            gate_result,
+        )
+
     def test_case_replay_compares_the_recorded_result(self) -> None:
         run_id, original = self.run_input(b"AA")
         self.assertEqual(original["outcome"], "ok")

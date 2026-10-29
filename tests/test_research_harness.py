@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import shutil
 import sqlite3
@@ -9,10 +10,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.path_proof_fixture import complete_path_proof
+
 
 PROJECT = Path(__file__).resolve().parents[1]
 HARNESS = PROJECT / "scripts" / "research_harness.py"
 PROBE = PROJECT / "scripts" / "tool_probe.py"
+PATH_PROOF = PROJECT / "scripts" / "path_proof.py"
 
 
 class HarnessTests(unittest.TestCase):
@@ -44,14 +48,322 @@ class HarnessTests(unittest.TestCase):
         )
         return campaign
 
+    def install_valid_path_proof(
+        self, campaign: Path, finding_id: str, originator: str, reviewer: str
+    ) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(PATH_PROOF), "init", str(campaign), finding_id],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        artifact = campaign / "evidence" / "path-proof" / "trace.json"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('{"observed": true}\n', encoding="utf-8")
+        proof = complete_path_proof()
+        proof["findingId"] = finding_id
+        proof["review"]["originator"] = originator
+        proof["review"]["reviewer"] = reviewer
+        proof_path = campaign / "evidence" / "path-proofs" / f"{finding_id}.json"
+        proof_path.write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(PATH_PROOF),
+                "audit",
+                str(campaign),
+                finding_id,
+                "--update-gate",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    @staticmethod
+    def valid_task_result(task_id: str) -> dict[str, object]:
+        return {
+            "taskResult": {
+                "taskId": task_id,
+                "summary": "Completed the assigned first-principles analysis.",
+                "conclusion": "The retained evidence supports the recorded conclusion.",
+                "searchedSurface": ["pinned/source/example.cc:1"],
+                "sourceReferences": ["pinned/source/example.cc:1"],
+                "evidence": ["evidence/example.json"],
+                "hypotheses": [],
+                "nextTasks": [],
+                "analysisProvenance": {
+                    "firstPrinciplesOnly": True,
+                    "changelogUsed": False,
+                    "gitHistoryUsed": False,
+                    "advisoryMiningUsed": False,
+                    "patchedVersionDiffUsed": False,
+                    "internetPatchDiffUsed": False,
+                },
+            }
+        }
+
+    @classmethod
+    def valid_replay_result(
+        cls, task_id: str, finding_id: str, originator: str, reviewer: str
+    ) -> dict[str, object]:
+        result = cls.valid_task_result(task_id)
+        result["independentReplay"] = {
+            "findingId": finding_id,
+            "originator": originator,
+            "reviewer": reviewer,
+            "passed": True,
+        }
+        return result
+
+    @staticmethod
+    def valid_blocker_result(blocked_link: str) -> dict[str, object]:
+        return {
+            "blocker": {
+                "category": "technical-chain-blocker",
+                "reason": "The current route cannot cross the observed guard.",
+                "blockedLink": blocked_link,
+                "guardOrFailure": "the consumer rejects the current representation",
+                "mechanismFingerprint": "representation-consumer-guard-v1",
+                "whyBlocked": "the input does not satisfy the consumer's alternate state",
+                "cheapestDiscriminator": "exercise the sibling representation in the same build",
+                "evidence": ["evidence/blocker.json"],
+                "attempts": ["baseline", "boundary input"],
+                "nextExperiments": ["derive a sibling representation from source constraints"],
+                "bypassHypotheses": ["the sibling decoder reaches the same sink without the guard"],
+                "alternativeRoutes": ["enter through the sibling producer"],
+                "canSelfResolve": True,
+                "authorityRequired": "none",
+                "analysisProvenance": {
+                    "firstPrinciplesOnly": True,
+                    "changelogUsed": False,
+                    "gitHistoryUsed": False,
+                    "advisoryMiningUsed": False,
+                    "patchedVersionDiffUsed": False,
+                    "internetPatchDiffUsed": False,
+                },
+            }
+        }
+
     def test_init_and_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaign = self.create_campaign(Path(tmp))
+            self.assertTrue((campaign / "third_party").is_dir())
+            self.assertTrue((campaign / "third_party" / "manifest.json").is_file())
             self.run_cli("plan", str(campaign))
             launch = json.loads((campaign / "launch-plan.json").read_text())
-            self.assertEqual(len(launch["tasks"]), 10)
-            self.assertTrue((campaign / "tasks" / "wave-1-boundary-map.md").is_file())
+            self.assertEqual(len(launch["tasks"]), 18)
+            self.assertTrue((campaign / "tasks" / "wave-1-public-ingress-map.md").is_file())
             self.assertTrue((campaign / "AUTHORIZATION.md").is_file())
+
+    @unittest.skipUnless(shutil.which("git"), "Git is required for dependency pinning")
+    def test_dependency_add_pins_and_provisions_isolated_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dependency = root / "dependency-source"
+            dependency.mkdir()
+            subprocess.run(["git", "init", "-q", str(dependency)], check=True)
+            subprocess.run(
+                ["git", "-C", str(dependency), "config", "user.email", "test@example.invalid"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(dependency), "config", "user.name", "Krineon Test"],
+                check=True,
+            )
+            (dependency / "dep.txt").write_text("pinned dependency\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(dependency), "add", "dep.txt"], check=True)
+            subprocess.run(
+                ["git", "-C", str(dependency), "commit", "-q", "-m", "fixture"],
+                check=True,
+            )
+            revision = subprocess.run(
+                ["git", "-C", str(dependency), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            campaign = self.create_campaign(root)
+            self.run_cli(
+                "dependency-add",
+                str(campaign),
+                "example-lib",
+                "--repo",
+                str(dependency),
+                "--commit",
+                revision,
+                "--relationship",
+                "runtime",
+                "--scope-status",
+                "supporting-context",
+                "--lock-evidence",
+                "package-lock.json:42",
+                "--reason",
+                "Audit the parser reached by the target's public request path.",
+            )
+            status = json.loads(
+                self.run_cli("dependency-status", str(campaign), "--json").stdout
+            )
+            self.assertEqual(status["dependencies"][0]["resolvedCommit"], revision)
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "dependency-worker",
+                "--agent",
+                "codex:dependency-worker",
+            )
+            claim = json.loads(
+                self.run_cli("claim", str(campaign), "dependency-worker", "--json").stdout
+            )
+            workspace = Path(claim["workspace"])
+            self.assertEqual(
+                (workspace / "KRINEON_THIRD_PARTY" / "example-lib" / "dep.txt").read_text(),
+                "pinned dependency\n",
+            )
+            assignment = json.loads((workspace / "KRINEON_ASSIGNMENT.json").read_text())
+            self.assertEqual(
+                assignment["dependencyWorktrees"][0]["resolvedCommit"], revision
+            )
+            self.run_cli("hash", str(campaign))
+            self.assertIn(
+                "third_party/manifest.json",
+                (campaign / "SHA256SUMS").read_text(encoding="utf-8"),
+            )
+
+    def test_chrome_v8_profile_generates_specialized_dependency_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / "chrome-v8-campaign"
+            self.run_cli(
+                "init",
+                str(campaign),
+                "--target",
+                "v8",
+                "--repo",
+                "https://chromium.googlesource.com/v8/v8",
+                "--commit",
+                "0123456789abcdef",
+                "--profile",
+                "chrome-v8",
+            )
+            self.run_cli("plan", str(campaign))
+            launch = json.loads((campaign / "launch-plan.json").read_text())
+            self.assertEqual(launch["profile"], "chrome-v8")
+            self.assertEqual(len(launch["tasks"]), 17)
+            tasks = {item["taskId"]: item for item in launch["tasks"]}
+            self.assertEqual(
+                tasks["structured-js-fuzzing"]["dependsOn"],
+                ["jit-compiler-invariants", "gc-object-lifetime"],
+            )
+            self.assertEqual(
+                tasks["v8-primitive-escalation"]["dependsOn"],
+                ["v8-crash-triage", "v8-execution-sink-backtrace", "v8-sandbox-boundaries"],
+            )
+            self.assertEqual(
+                tasks["chromium-integration"]["dependsOn"],
+                ["v8-primitive-escalation"],
+            )
+            self.assertEqual(
+                tasks["v8-finding-scoped-replay-scheduler"]["dependsOn"],
+                ["chromium-integration"],
+            )
+            self.assertTrue((campaign / "chrome-v8" / "builds.json").is_file())
+
+    def test_candidate_gate_verifies_linked_owned_page_browser_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli(
+                "register",
+                str(campaign),
+                "FBR1",
+                "--title",
+                "Browser replay gate fixture",
+                "--lane",
+                "browser-integration",
+            )
+            replay_id = "20261029T010203123456Z-0123456789"
+            finding_path = campaign / "findings" / "FBR1.json"
+            finding = json.loads(finding_path.read_text())
+            finding["browserReplay"] = {
+                "required": True,
+                "replayIds": [replay_id],
+                "reviewed": True,
+                "reviewedBy": "reviewer-browser",
+                "reviewNotes": "The retained positive and control establish owned-page reachability.",
+            }
+            finding_path.write_text(json.dumps(finding, indent=2) + "\n")
+            replay_path = (
+                campaign
+                / "chrome-v8"
+                / "browser-replays"
+                / replay_id
+                / "replay.json"
+            )
+            replay_path.parent.mkdir(parents=True)
+            case = {
+                "status": "completed",
+                "freshProcess": True,
+                "profileDisposable": True,
+                "finalUrlOwned": True,
+                "expressionMatched": True,
+                "sandbox": {"verified": True},
+                "blockedExternalRequests": [],
+                "targetCrashed": False,
+            }
+            replay = {
+                "replayId": replay_id,
+                "driver": "direct-cdp",
+                "status": "completed",
+                "ownedLocalOrigin": True,
+                "build": {"kind": "chrome", "role": "sandboxed-chrome"},
+                "site": {"files": [{"path": "index.html", "sha256": "a", "size": 1}]},
+                "cases": {"positive": case, "control": dict(case)},
+                "summary": {
+                    "promotionReady": True,
+                    "sandboxVerified": True,
+                    "positiveMatched": True,
+                    "controlMatched": True,
+                },
+            }
+            replay_path.write_text(json.dumps(replay, indent=2) + "\n")
+            result = json.loads(
+                self.run_cli(
+                    "gate",
+                    str(campaign),
+                    "FBR1",
+                    "--level",
+                    "candidate",
+                    "--json",
+                    expected=1,
+                ).stdout
+            )
+            self.assertFalse(
+                any(
+                    field.startswith("browserReplay.")
+                    for field in result["missingFields"]
+                ),
+                result,
+            )
+            self.assertTrue(result["browserReplay"]["required"])
+            replay["summary"]["promotionReady"] = False
+            replay_path.write_text(json.dumps(replay, indent=2) + "\n")
+            failed = json.loads(
+                self.run_cli(
+                    "gate",
+                    str(campaign),
+                    "FBR1",
+                    "--level",
+                    "candidate",
+                    "--json",
+                    expected=1,
+                ).stdout
+            )
+            self.assertIn(
+                f"browserReplay.notPromotionReady:{replay_id}", failed["missingFields"]
+            )
 
     def test_gate_failure_then_reportable_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -74,11 +386,32 @@ class HarnessTests(unittest.TestCase):
             self.run_cli(
                 "worker-register",
                 str(campaign),
+                "worker-origin",
+                "--agent",
+                "codex:gate-origin",
+                "--role",
+                "originator",
+            )
+            self.run_cli(
+                "worker-register",
+                str(campaign),
                 "worker-review",
                 "--agent",
                 "codex:gate-review",
                 "--role",
                 "reviewer",
+            )
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "worker-review-2",
+                "--agent",
+                "codex:gate-review-2",
+                "--role",
+                "reviewer",
+            )
+            self.install_valid_path_proof(
+                campaign, "F001", "worker-origin", "worker-review"
             )
             self.run_cli(
                 "schedule-replay",
@@ -93,14 +426,9 @@ class HarnessTests(unittest.TestCase):
             replay_result = campaign / "gate-replay.json"
             replay_result.write_text(
                 json.dumps(
-                    {
-                        "independentReplay": {
-                            "findingId": "F001",
-                            "originator": "worker-origin",
-                            "reviewer": "worker-review",
-                            "passed": True,
-                        }
-                    }
+                    self.valid_replay_result(
+                        "replay-F001-gate", "F001", "worker-origin", "worker-review"
+                    )
                 )
                 + "\n"
             )
@@ -118,21 +446,125 @@ class HarnessTests(unittest.TestCase):
                 "--replay-of",
                 "F001",
             )
+            self.run_cli(
+                "schedule-replay",
+                str(campaign),
+                "F001",
+                "--task-id",
+                "replay-F001-gate-2",
+            )
+            replay_claim_2 = json.loads(
+                self.run_cli(
+                    "claim", str(campaign), "worker-review-2", "--json"
+                ).stdout
+            )
+            replay_result_2 = campaign / "gate-replay-2.json"
+            replay_result_2.write_text(
+                json.dumps(
+                    self.valid_replay_result(
+                        "replay-F001-gate-2",
+                        "F001",
+                        "worker-origin",
+                        "worker-review-2",
+                    )
+                )
+                + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "worker-review-2",
+                replay_claim_2["taskId"],
+                "--lease-token",
+                replay_claim_2["leaseToken"],
+                "--result",
+                str(replay_result_2),
+                "--idempotency-key",
+                "gate-replay-F001-2",
+                "--replay-of",
+                "F001",
+            )
 
             path = campaign / "findings" / "F001.json"
             finding = json.loads(path.read_text())
             finding["rootCause"] = "Producer and consumer disagree about the encoded length domain."
-            finding["impact"] = "Owned test identity crosses an authorization boundary."
+            finding["impactClass"] = "rce"
+            finding["impact"] = "Attacker-controlled code executes in the owned target process."
             finding["preconditions"] = ["supported configuration"]
             finding["evidence"] = ["evidence/verification-results.json"]
+            finding["chain"] = {
+                "attacker": "unauthenticated remote client",
+                "ingress": "supported public request handler",
+                "attackerControl": "request body and public coordinates",
+                "transformations": ["decode", "object construction"],
+                "brokenInvariant": "producer and consumer disagree about the length domain",
+                "primitive": "attacker-directed callable selection",
+                "executionOrCriticalSink": "stock runtime function invocation",
+                "terminal": "bounded identity command",
+                "remoteAcquisition": "public protocol output",
+                "deployment": "unmodified supported build",
+                "applicationAuthoredSink": False,
+            }
+            finding["terminalEvidence"] = {
+                "type": "bounded-command-execution",
+                "commandOrEffect": "id output from the owned target process",
+                "synthetic": False,
+            }
+            finding["executionEnvironment"] = {
+                "environmentClass": "production-equivalent",
+                "developmentServer": False,
+                "developmentBuild": False,
+                "supportedConfiguration": True,
+                "primaryTerminalObserved": True,
+                "commandOrEntrypoint": "production server entrypoint",
+                "evidence": ["evidence/production-environment.json"],
+            }
+            finding["analysisProvenance"] = {
+                "firstPrinciplesOnly": True,
+                "changelogUsed": False,
+                "gitHistoryUsed": False,
+                "advisoryMiningUsed": False,
+                "patchedVersionDiffUsed": False,
+                "internetPatchDiffUsed": False,
+            }
             finding["controls"] = {
                 "baseline": "ordinary request succeeds",
                 "negative": "enforcing guard rejects the payload",
                 "positive": "only the disputed representation crosses the guard",
-                "patched": "patched version rejects it",
+                "invariantRestored": "sanitized same-revision carrier is rejected",
             }
             for key in finding["gates"]:
                 finding["gates"][key] = True
+            path.write_text(json.dumps(finding, indent=2) + "\n")
+            self.run_cli("gate", str(campaign), "F001", "--level", "reportable")
+            finding["dynamicTriage"] = {
+                "required": True,
+                "crashIds": ["a" * 64],
+                "index": "dynamic/triage/index.json",
+                "acceptedClusterIds": ["SC-missing"],
+                "machineVerdicts": {"a" * 64: "potential-write-primitive"},
+                "reviewed": True,
+                "reviewedBy": "worker-review",
+                "reviewNotes": "Reviewed the machine classification.",
+                "overrideReason": "",
+            }
+            path.write_text(json.dumps(finding, indent=2) + "\n")
+            triage_gate = self.run_cli(
+                "gate", str(campaign), "F001", "--level", "reportable", "--json", expected=1
+            )
+            self.assertIn("dynamicTriage.index:missing", triage_gate.stdout)
+            self.assertIn("dynamicTriage.missing:", triage_gate.stdout)
+            finding["dynamicTriage"] = {
+                "required": False,
+                "crashIds": [],
+                "index": "",
+                "acceptedClusterIds": [],
+                "machineVerdicts": {},
+                "reviewed": False,
+                "reviewedBy": "",
+                "reviewNotes": "",
+                "overrideReason": "",
+            }
             path.write_text(json.dumps(finding, indent=2) + "\n")
             self.run_cli("gate", str(campaign), "F001", "--level", "reportable")
             finding["independentReplays"][0]["sha256"] = "0" * 64
@@ -167,6 +599,18 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(assignment["taskId"], "coordinator-setup")
             self.assertTrue(Path(assignment["workspace"]).is_dir())
             self.assertTrue((Path(assignment["workspace"]) / "KRINEON_ASSIGNMENT.json").is_file())
+            self.assertTrue((Path(assignment["workspace"]) / "KRINEON_CAMPAIGN.json").is_file())
+            self.assertTrue((Path(assignment["workspace"]) / "AUTHORIZATION.md").is_file())
+            self.assertTrue(
+                (Path(assignment["workspace"]) / "KRINEON_TASK_RESULT.template.json").is_file()
+            )
+            self.assertTrue(
+                (
+                    Path(assignment["workspace"])
+                    / "KRINEON_REFERENCES"
+                    / "critical-rce.md"
+                ).is_file()
+            )
 
             no_second = self.run_cli(
                 "claim", str(campaign), "worker-a", "--json", expected=3
@@ -174,7 +618,9 @@ class HarnessTests(unittest.TestCase):
             self.assertFalse(json.loads(no_second.stdout)["claimed"])
 
             result = campaign / "coordinator-result.json"
-            result.write_text(json.dumps({"summary": "setup complete"}) + "\n")
+            result.write_text(
+                json.dumps(self.valid_task_result("coordinator-setup")) + "\n"
+            )
             submit_args = (
                 "submit",
                 str(campaign),
@@ -191,7 +637,9 @@ class HarnessTests(unittest.TestCase):
             self.run_cli(*submit_args)
 
             wave_one = self.run_cli("claim", str(campaign), "worker-a", "--json")
-            self.assertEqual(json.loads(wave_one.stdout)["lane"], "boundary-map")
+            self.assertEqual(
+                json.loads(wave_one.stdout)["lane"], "public-ingress-map"
+            )
 
     @unittest.skipUnless(shutil.which("git"), "Git is required for worktree provisioning")
     def test_claim_provisions_detached_git_worktree(self) -> None:
@@ -382,7 +830,11 @@ class HarnessTests(unittest.TestCase):
             campaign = self.create_campaign(Path(tmp))
             self.run_cli("plan", str(campaign))
             self.run_cli("queue", str(campaign))
-            for worker, role in (("origin", "originator"), ("review", "reviewer")):
+            for worker, role in (
+                ("origin", "originator"),
+                ("review", "reviewer"),
+                ("review-2", "reviewer"),
+            ):
                 self.run_cli(
                     "worker-register",
                     str(campaign),
@@ -424,14 +876,9 @@ class HarnessTests(unittest.TestCase):
             replay_result = campaign / "replay.json"
             replay_result.write_text(
                 json.dumps(
-                    {
-                        "independentReplay": {
-                            "findingId": "F001",
-                            "originator": "origin",
-                            "reviewer": "review",
-                            "passed": True,
-                        }
-                    }
+                    self.valid_replay_result(
+                        "replay-F001", "F001", "origin", "review"
+                    )
                 )
                 + "\n"
             )
@@ -450,8 +897,1296 @@ class HarnessTests(unittest.TestCase):
                 "F001",
             )
             finding = json.loads((campaign / "findings" / "F001.json").read_text())
-            self.assertTrue(finding["gates"]["independent_replay"])
+            self.assertFalse(finding["gates"]["independent_replay"])
             self.assertEqual(finding["independentReplays"][0]["reviewer"], "review")
+            self.assertEqual(
+                finding["independentReplays"][0]["originatorAgent"], "codex:origin"
+            )
+            self.assertEqual(
+                finding["independentReplays"][0]["reviewerAgent"], "codex:review"
+            )
+            self.run_cli(
+                "schedule-replay",
+                str(campaign),
+                "F001",
+                "--task-id",
+                "replay-F001-2",
+            )
+            second_claim = json.loads(
+                self.run_cli("claim", str(campaign), "review-2", "--json").stdout
+            )
+            self.assertEqual(second_claim["taskId"], "replay-F001-2")
+            second_result = campaign / "replay-2.json"
+            second_result.write_text(
+                json.dumps(
+                    self.valid_replay_result(
+                        "replay-F001-2", "F001", "origin", "review-2"
+                    )
+                )
+                + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "review-2",
+                "replay-F001-2",
+                "--lease-token",
+                second_claim["leaseToken"],
+                "--result",
+                str(second_result),
+                "--idempotency-key",
+                "replay-F001-review-2",
+                "--replay-of",
+                "F001",
+            )
+            finding = json.loads((campaign / "findings" / "F001.json").read_text())
+            self.assertTrue(finding["gates"]["independent_replay"])
+            self.assertEqual(
+                {item["reviewerAgent"] for item in finding["independentReplays"]},
+                {"codex:review", "codex:review-2"},
+            )
+
+    def test_replay_excludes_agent_aliases_and_worker_identity_is_immutable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register", str(campaign), "origin", "--agent", "codex:same"
+            )
+            self.run_cli(
+                "worker-register", str(campaign), "review", "--agent", "codex:other"
+            )
+            self.run_cli(
+                "worker-register", str(campaign), "review-2", "--agent", "codex:third"
+            )
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "origin",
+                "--agent",
+                "codex:changed",
+                expected=1,
+            )
+            self.run_cli(
+                "register",
+                str(campaign),
+                "FALIAS",
+                "--title",
+                "Alias replay candidate",
+                "--lane",
+                "cross-lane-chain-composition",
+                "--originator",
+                "origin",
+            )
+            self.run_cli(
+                "schedule-replay",
+                str(campaign),
+                "FALIAS",
+                "--task-id",
+                "replay-FALIAS",
+            )
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "late-origin-alias",
+                "--agent",
+                "codex:same",
+            )
+            database = sqlite3.connect(campaign / "orchestration.db")
+            row = database.execute(
+                "SELECT excluded_workers_json,excluded_agents_json FROM tasks WHERE task_id=?",
+                ("replay-FALIAS",),
+            ).fetchone()
+            database.close()
+            self.assertEqual(json.loads(row[0]), ["origin"])
+            self.assertEqual(json.loads(row[1]), ["codex:same"])
+            alias_claim = json.loads(
+                self.run_cli("claim", str(campaign), "late-origin-alias", "--json").stdout
+            )
+            self.assertNotEqual(alias_claim["taskId"], "replay-FALIAS")
+            review_claim = json.loads(
+                self.run_cli("claim", str(campaign), "review", "--json").stdout
+            )
+            self.assertEqual(review_claim["taskId"], "replay-FALIAS")
+            replay_result = campaign / "alias-replay.json"
+            replay_result.write_text(
+                json.dumps(
+                    self.valid_replay_result(
+                        "replay-FALIAS", "FALIAS", "origin", "review"
+                    )
+                )
+                + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "review",
+                "replay-FALIAS",
+                "--lease-token",
+                review_claim["leaseToken"],
+                "--result",
+                str(replay_result),
+                "--idempotency-key",
+                "alias-replay-1",
+                "--replay-of",
+                "FALIAS",
+            )
+            finding = json.loads((campaign / "findings" / "FALIAS.json").read_text())
+            from scripts.research_harness import replay_is_machine_verified
+
+            self.assertFalse(replay_is_machine_verified(campaign, finding))
+            self.run_cli(
+                "schedule-replay",
+                str(campaign),
+                "FALIAS",
+                "--task-id",
+                "replay-FALIAS-2",
+            )
+            second_claim = json.loads(
+                self.run_cli("claim", str(campaign), "review-2", "--json").stdout
+            )
+            self.assertEqual(second_claim["taskId"], "replay-FALIAS-2")
+            second_result = campaign / "alias-replay-2.json"
+            second_result.write_text(
+                json.dumps(
+                    self.valid_replay_result(
+                        "replay-FALIAS-2", "FALIAS", "origin", "review-2"
+                    )
+                )
+                + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "review-2",
+                "replay-FALIAS-2",
+                "--lease-token",
+                second_claim["leaseToken"],
+                "--result",
+                str(second_result),
+                "--idempotency-key",
+                "alias-replay-2",
+                "--replay-of",
+                "FALIAS",
+            )
+            finding = json.loads((campaign / "findings" / "FALIAS.json").read_text())
+            self.assertTrue(replay_is_machine_verified(campaign, finding))
+
+    def test_dynamic_task_blocker_unblock_and_automatic_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            for worker in ("explorer", "unblocker"):
+                self.run_cli(
+                    "worker-register",
+                    str(campaign),
+                    worker,
+                    "--agent",
+                    f"codex:{worker}",
+                )
+            self.run_cli(
+                "task-add",
+                str(campaign),
+                "adjacent-jit-path",
+                "--title",
+                "Explore adjacent JIT state transition",
+                "--lane",
+                "open-ended-expansion",
+                "--approach-family",
+                "blocker-alternative-route",
+                "--objective",
+                "Follow the producer and consumer disagreement beyond the initial reducer.",
+                "--success-criterion",
+                "Confirm or disprove the adjacent lowering path with runtime evidence.",
+                "--priority",
+                "1500",
+            )
+            claimed = json.loads(
+                self.run_cli("claim", str(campaign), "explorer", "--json").stdout
+            )
+            self.assertEqual(claimed["taskId"], "adjacent-jit-path")
+            blocked_result = campaign / "blocked.json"
+            blocked_result.write_text(
+                json.dumps(
+                    {
+                        "blocker": {
+                            "category": "missing-build-observability",
+                            "reason": "The release build lacks the required trace evidence.",
+                            "blockedLink": "primitive-to-execution state transition",
+                            "guardOrFailure": "release build omits the diagnostic state signal",
+                            "mechanismFingerprint": "release-observability-v1",
+                            "whyBlocked": "the transition cannot be distinguished from the control",
+                            "cheapestDiscriminator": "derive one release-visible output from a diagnostic build",
+                            "evidence": ["logs/release-no-trace.txt"],
+                            "attempts": ["release replay", "debug replay"],
+                            "nextExperiments": [
+                                "Build an instrumentation-only diagnostic binary",
+                                "Derive an observable state discriminator",
+                            ],
+                            "bypassHypotheses": [
+                                "A sibling output path exposes the same state without instrumentation"
+                            ],
+                            "alternativeRoutes": [
+                                "Reach the execution boundary through the sibling consumer"
+                            ],
+                            "canSelfResolve": True,
+                            "authorityRequired": "none",
+                            "analysisProvenance": {
+                                "firstPrinciplesOnly": True,
+                                "changelogUsed": False,
+                                "gitHistoryUsed": False,
+                                "advisoryMiningUsed": False,
+                                "patchedVersionDiffUsed": False,
+                                "internetPatchDiffUsed": False,
+                            },
+                        }
+                    }
+                )
+                + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "explorer",
+                "adjacent-jit-path",
+                "--lease-token",
+                claimed["leaseToken"],
+                "--result",
+                str(blocked_result),
+                "--idempotency-key",
+                "adjacent-jit-path-blocked-1",
+                "--outcome",
+                "blocked",
+            )
+            self.run_cli(
+                "retry",
+                str(campaign),
+                "adjacent-jit-path",
+                "--reason",
+                "same blocked mechanism with new wording",
+                expected=1,
+            )
+            unblock_claim = json.loads(
+                self.run_cli("claim", str(campaign), "unblocker", "--json").stdout
+            )
+            self.assertTrue(unblock_claim["taskId"].startswith("unblock-adjacent-jit-path"))
+            self.assertEqual(unblock_claim["lane"], "automatic-blocker-breakout")
+            unblock_result = campaign / "unblocked.json"
+            unblock_payload = self.valid_task_result(unblock_claim["taskId"])
+            unblock_payload["unblock"] = {
+                "blockedTaskId": "adjacent-jit-path",
+                "blockerAddressed": True,
+                "evidence": ["evidence/state-discriminator.json"],
+                "resumeStrategy": "Replay the original release build using the discriminator.",
+                "newMechanism": {
+                    "fingerprint": "release-visible-discriminator-v2",
+                    "differsFrom": "release-observability-v1",
+                    "mechanism": "derive a discriminator from stock release output",
+                    "difference": "uses production output instead of the unavailable trace signal",
+                    "evidence": ["evidence/state-discriminator.json"],
+                },
+            }
+            same_mechanism = json.loads(json.dumps(unblock_payload))
+            same_mechanism["unblock"]["newMechanism"]["fingerprint"] = (
+                "release-observability-v1"
+            )
+            same_mechanism_result = campaign / "same-mechanism.json"
+            same_mechanism_result.write_text(json.dumps(same_mechanism) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "unblocker",
+                unblock_claim["taskId"],
+                "--lease-token",
+                unblock_claim["leaseToken"],
+                "--result",
+                str(same_mechanism_result),
+                "--idempotency-key",
+                "same-mechanism-rejected",
+                expected=1,
+            )
+            unblock_result.write_text(json.dumps(unblock_payload) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "unblocker",
+                unblock_claim["taskId"],
+                "--lease-token",
+                unblock_claim["leaseToken"],
+                "--result",
+                str(unblock_result),
+                "--idempotency-key",
+                "unblock-adjacent-jit-path-1",
+            )
+            resumed = json.loads(
+                self.run_cli("claim", str(campaign), "explorer", "--json").stdout
+            )
+            self.assertEqual(resumed["taskId"], "adjacent-jit-path")
+            self.assertEqual(resumed["attempt"], 2)
+
+    def test_one_active_task_per_agent_and_priority_ordering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign), "--max-concurrency", "3")
+            self.run_cli("queue", str(campaign))
+            for worker, agent in (
+                ("worker-a", "codex:a"),
+                ("worker-a-alias", "codex:a"),
+                ("worker-b", "codex:b"),
+                ("worker-c", "codex:c"),
+                ("worker-d", "codex:d"),
+            ):
+                self.run_cli("worker-register", str(campaign), worker, "--agent", agent)
+            setup = json.loads(
+                self.run_cli("claim", str(campaign), "worker-a", "--json").stdout
+            )
+            result = campaign / "setup.json"
+            result.write_text(
+                json.dumps(self.valid_task_result("coordinator-setup")) + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "worker-a",
+                setup["taskId"],
+                "--lease-token",
+                setup["leaseToken"],
+                "--result",
+                str(result),
+                "--idempotency-key",
+                "setup-priority-test",
+            )
+            first = json.loads(
+                self.run_cli("claim", str(campaign), "worker-a", "--json").stdout
+            )
+            self.assertEqual(first["taskId"], "public-ingress-map")
+            refused = json.loads(
+                self.run_cli(
+                    "claim", str(campaign), "worker-a-alias", "--json", expected=3
+                ).stdout
+            )
+            self.assertFalse(refused["claimed"])
+            self.assertEqual(refused["reason"], "agent-already-holds-running-task")
+            self.assertEqual(refused["taskId"], "public-ingress-map")
+            second = json.loads(
+                self.run_cli("claim", str(campaign), "worker-b", "--json").stdout
+            )
+            self.assertEqual(second["taskId"], "execution-sink-backtrace")
+            third = json.loads(
+                self.run_cli("claim", str(campaign), "worker-c", "--json").stdout
+            )
+            self.assertEqual(third["taskId"], "capability-code-loading-invariants")
+            self.run_cli("claim", str(campaign), "worker-d", "--json", expected=3)
+            capped = json.loads(
+                self.run_cli("orchestration-status", str(campaign), "--json").stdout
+            )["schedulerDemand"]
+            self.assertTrue(capped["hardCapReached"])
+            self.assertFalse(capped["scaleOutOpportunity"])
+
+    def test_auto_capacity_runs_five_distinct_agents_without_lane_quotas(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "setup-agent",
+                "--agent",
+                "codex:setup",
+                "--role",
+                "coordinator",
+            )
+            setup = json.loads(
+                self.run_cli("claim", str(campaign), "setup-agent", "--json").stdout
+            )
+            result = campaign / "auto-setup.json"
+            result.write_text(
+                json.dumps(self.valid_task_result("coordinator-setup")) + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "setup-agent",
+                setup["taskId"],
+                "--lease-token",
+                setup["leaseToken"],
+                "--result",
+                str(result),
+                "--idempotency-key",
+                "auto-setup-1",
+            )
+            workers = []
+            for index in range(5):
+                worker = f"parallel-{index}"
+                workers.append(worker)
+                self.run_cli(
+                    "worker-register",
+                    str(campaign),
+                    worker,
+                    "--agent",
+                    f"codex:parallel-{index}",
+                )
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "parallel-0-alias",
+                "--agent",
+                "codex:parallel-0",
+            )
+            def concurrent_claim(worker: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        sys.executable,
+                        str(HARNESS),
+                        "claim",
+                        str(campaign),
+                        worker,
+                        "--json",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                completed = list(executor.map(concurrent_claim, workers))
+            for item in completed:
+                self.assertEqual(item.returncode, 0, msg=item.stderr)
+            claimed = [json.loads(item.stdout) for item in completed]
+            self.assertEqual(
+                {item["taskId"] for item in claimed},
+                {
+                    "public-ingress-map",
+                    "execution-sink-backtrace",
+                    "capability-code-loading-invariants",
+                    "parser-representation-invariants",
+                    "dependency-boundary-audit",
+                },
+            )
+            self.assertEqual(len({item["taskId"] for item in claimed}), 5)
+            status = json.loads(
+                self.run_cli("orchestration-status", str(campaign), "--json").stdout
+            )
+            demand = status["schedulerDemand"]
+            self.assertEqual(demand["configuredConcurrency"], "auto")
+            self.assertEqual(demand["activeAgentIdentities"], 6)
+            self.assertEqual(demand["running"], 5)
+
+    def test_scheduler_prevents_priority_driven_approach_family_dominance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            for worker in ("setup", "agent-a", "agent-b", "agent-c"):
+                self.run_cli(
+                    "worker-register",
+                    str(campaign),
+                    worker,
+                    "--agent",
+                    f"codex:{worker}",
+                )
+            setup = json.loads(
+                self.run_cli("claim", str(campaign), "setup", "--json").stdout
+            )
+            setup_result = campaign / "approach-setup.json"
+            setup_result.write_text(
+                json.dumps(self.valid_task_result("coordinator-setup")) + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "setup",
+                setup["taskId"],
+                "--lease-token",
+                setup["leaseToken"],
+                "--result",
+                str(setup_result),
+                "--idempotency-key",
+                "approach-setup-1",
+            )
+            for suffix in ("one", "two", "three"):
+                self.run_cli(
+                    "task-add",
+                    str(campaign),
+                    f"same-family-{suffix}",
+                    "--title",
+                    f"Representation experiment {suffix}",
+                    "--lane",
+                    "representation-experiment",
+                    "--approach-family",
+                    "representation-parser",
+                    "--objective",
+                    "Test the same producer-consumer invariant family.",
+                    "--success-criterion",
+                    "Retain a source-derived result.",
+                    "--priority",
+                    "4000",
+                )
+            first = json.loads(
+                self.run_cli("claim", str(campaign), "agent-a", "--json").stdout
+            )
+            redirected = json.loads(
+                self.run_cli("claim", str(campaign), "agent-b", "--json").stdout
+            )
+            self.assertEqual(first["approachFamilies"], ["representation-parser"])
+            self.assertNotIn("representation-parser", redirected["approachFamilies"])
+            self.assertIsNotNone(redirected["approachRedirect"])
+            self.assertIn(
+                "representation-parser",
+                redirected["approachRedirect"]["dominatedFamilies"],
+            )
+            self.assertIn("raw task priority", redirected["approachRedirect"]["reason"])
+            third = json.loads(
+                self.run_cli("claim", str(campaign), "agent-c", "--json").stdout
+            )
+            self.assertNotIn("representation-parser", third["approachFamilies"])
+            status = json.loads(
+                self.run_cli("approach-status", str(campaign), "--json").stdout
+            )
+            family = next(
+                item for item in status["families"] if item["id"] == "representation-parser"
+            )
+            self.assertEqual(family["activeAgents"], 1)
+            self.assertIn("producer", family["boundary"])
+            self.assertIn("domain", family["invariant"])
+
+    def test_rounds_keep_incompatible_routes_independent_and_adversarial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "root",
+                "--agent",
+                "codex:root",
+                "--role",
+                "coordinator",
+            )
+            for worker in (
+                "dev-a",
+                "dev-b",
+                "dev-c",
+                "review-a",
+                "review-b",
+                "review-c",
+                "chain-worker",
+            ):
+                self.run_cli(
+                    "worker-register",
+                    str(campaign),
+                    worker,
+                    "--agent",
+                    f"codex:{worker}",
+                )
+
+            def round_plan(number: int, *, cross: bool = False) -> Path:
+                payload: dict[str, object] = {
+                    "round": number,
+                    "routes": [
+                        {
+                            "id": "route-ingress",
+                            "family": "ingress-authority",
+                            "title": "Ingress authority route",
+                            "objective": "Test a missing authority transition.",
+                            "successCriteria": ["Retain exact reachability evidence."],
+                            "incompatibleWith": ["route-parser", "route-memory"],
+                        },
+                        {
+                            "id": "route-parser",
+                            "family": "representation-parser",
+                            "title": "Representation route",
+                            "objective": "Test a producer-consumer disagreement.",
+                            "successCriteria": ["Retain a differential result."],
+                            "incompatibleWith": ["route-ingress", "route-memory"],
+                        },
+                        {
+                            "id": "route-memory",
+                            "family": "memory-lifetime",
+                            "title": "Lifetime route",
+                            "objective": "Test an ownership invariant.",
+                            "successCriteria": ["Retain lifetime evidence."],
+                            "incompatibleWith": ["route-ingress", "route-parser"],
+                        },
+                    ],
+                    "crossPollinations": [],
+                }
+                if cross:
+                    payload["crossPollinations"] = [
+                        {
+                            "id": "early-composition",
+                            "leftRoute": "route-ingress",
+                            "rightRoute": "route-parser",
+                            "title": "Premature composition",
+                            "objective": "Combine the routes.",
+                            "successCriteria": ["Reach a composed primitive."],
+                        }
+                    ]
+                path = campaign / f"round-{number}{'-cross' if cross else ''}.json"
+                path.write_text(json.dumps(payload) + "\n")
+                return path
+
+            self.run_cli(
+                "round-plan",
+                str(campaign),
+                "root",
+                "--plan",
+                str(round_plan(1)),
+            )
+            development_claims = []
+            for worker in ("dev-a", "dev-b", "dev-c"):
+                claim = json.loads(
+                    self.run_cli("claim", str(campaign), worker, "--json").stdout
+                )
+                self.assertEqual(claim["taskKind"], "route-development")
+                development_claims.append((worker, claim))
+            self.assertEqual(
+                len({claim["routeId"] for _, claim in development_claims}), 3
+            )
+            for worker, claim in development_claims:
+                payload = self.valid_task_result(claim["taskId"])
+                has_intermediate = claim["routeId"] == "route-ingress"
+                payload["routeDevelopment"] = {
+                    "routeId": claim["routeId"],
+                    "round": 1,
+                    "strengths": ["One source-derived invariant is testable."],
+                    "gaps": ["The terminal is not yet established."],
+                    "evidence": [f"evidence/{claim['routeId']}.json"],
+                    "nextExperiment": "Exercise the cheapest runtime discriminator.",
+                    "freshIdeas": ["Trace a sibling consumer with a different guard."],
+                    "intermediateBugs": (
+                        [
+                            {
+                                "id": "IB-INGRESS-1",
+                                "rootCause": "An authority check observes a different representation.",
+                                "primitive": "attacker-controlled privileged state transition",
+                                "evidence": ["evidence/ingress-intermediate.json"],
+                            }
+                        ]
+                        if has_intermediate
+                        else []
+                    ),
+                    "chainHypotheses": (
+                        ["Compose the authority transition with a retained execution sink."]
+                        if has_intermediate
+                        else []
+                    ),
+                }
+                result_path = campaign / f"{claim['taskId']}.json"
+                result_path.write_text(json.dumps(payload) + "\n")
+                self.run_cli(
+                    "submit",
+                    str(campaign),
+                    worker,
+                    claim["taskId"],
+                    "--lease-token",
+                    claim["leaseToken"],
+                    "--result",
+                    str(result_path),
+                    "--idempotency-key",
+                    f"{claim['taskId']}-1",
+                )
+
+            review_claims = []
+            for worker in ("review-a", "review-b", "review-c"):
+                claim = json.loads(
+                    self.run_cli("claim", str(campaign), worker, "--json").stdout
+                )
+                self.assertEqual(claim["taskKind"], "adversarial-route-review")
+                review_claims.append((worker, claim))
+            for worker, claim in review_claims:
+                payload = self.valid_task_result(claim["taskId"])
+                payload["adversarialReview"] = {
+                    "reviewedTaskId": claim["reviewsTaskId"],
+                    "routeId": claim["routeId"],
+                    "round": 1,
+                    "sanityPassed": True,
+                    "strongestCounterargument": "The observed effect may stop before impact.",
+                    "evidence": [f"evidence/{claim['routeId']}-review.json"],
+                    "unresolvedGaps": ["Prove the terminal independently."],
+                }
+                result_path = campaign / f"{claim['taskId']}.json"
+                result_path.write_text(json.dumps(payload) + "\n")
+                self.run_cli(
+                    "submit",
+                    str(campaign),
+                    worker,
+                    claim["taskId"],
+                    "--lease-token",
+                    claim["leaseToken"],
+                    "--result",
+                    str(result_path),
+                    "--idempotency-key",
+                    f"{claim['taskId']}-1",
+                )
+
+            chain_claim = json.loads(
+                self.run_cli("claim", str(campaign), "chain-worker", "--json").stdout
+            )
+            self.assertEqual(chain_claim["taskKind"], "intermediate-chain-composition")
+            chain_payload = self.valid_task_result(chain_claim["taskId"])
+            chain_payload["chainComposition"] = {
+                "sourceIntermediateBugs": ["IB-INGRESS-1"],
+                "attemptedChains": ["authority transition -> stock execution sink"],
+                "outcome": "The first composition remains blocked at argument adaptation.",
+                "freshIdeas": ["Try the sibling sink with compatible argument shape."],
+                "evidence": ["evidence/intermediate-chain.json"],
+            }
+            chain_result = campaign / "intermediate-chain.json"
+            chain_result.write_text(json.dumps(chain_payload) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "chain-worker",
+                chain_claim["taskId"],
+                "--lease-token",
+                chain_claim["leaseToken"],
+                "--result",
+                str(chain_result),
+                "--idempotency-key",
+                "intermediate-chain-1",
+            )
+
+            synthesis = json.loads(
+                self.run_cli("claim", str(campaign), "root", "--json").stdout
+            )
+            self.assertEqual(synthesis["taskKind"], "root-round-synthesis")
+            synthesis_payload = self.valid_task_result(synthesis["taskId"])
+            synthesis_payload["roundSynthesis"] = {
+                "round": 1,
+                "routes": [
+                    {
+                        "routeId": route_id,
+                        "strengths": ["The route has independent evidence."],
+                        "gaps": ["The terminal remains open."],
+                        "decision": "continue",
+                        "nextExperiment": "Run the next bounded discriminator.",
+                    }
+                    for route_id in ("route-ingress", "route-parser", "route-memory")
+                ],
+                "challenges": ["Challenge reachability and attacker control again."],
+                "redirects": [],
+                "freshIdeas": [
+                    "Test a sibling parser.",
+                    "Backtrace an alternate sink.",
+                    "Measure another acquisition path.",
+                ],
+                "intermediateChains": [
+                    {
+                        "sourceIntermediateBugs": ["IB-INGRESS-1"],
+                        "outcome": "Argument adaptation still blocks the stock sink.",
+                        "nextExperiment": "Try the sibling sink with compatible arguments.",
+                    }
+                ],
+                "launchNextRound": True,
+                "nextRoundDirections": [
+                    "Retain all routes and test their cheapest missing links."
+                ],
+            }
+            synthesis_result = campaign / "round-1-synthesis.json"
+            synthesis_result.write_text(json.dumps(synthesis_payload) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "root",
+                synthesis["taskId"],
+                "--lease-token",
+                synthesis["leaseToken"],
+                "--result",
+                str(synthesis_result),
+                "--idempotency-key",
+                "round-1-synthesis-1",
+            )
+
+            next_round_planning = json.loads(
+                self.run_cli("claim", str(campaign), "root", "--json").stdout
+            )
+            self.assertEqual(next_round_planning["taskKind"], "next-round-planning")
+
+            self.run_cli(
+                "round-plan",
+                str(campaign),
+                "root",
+                "--plan",
+                str(round_plan(2, cross=True)),
+                expected=1,
+            )
+            self.run_cli(
+                "round-plan",
+                str(campaign),
+                "root",
+                "--plan",
+                str(round_plan(2)),
+            )
+            planning_payload = self.valid_task_result(next_round_planning["taskId"])
+            planning_payload["nextRoundPlanning"] = {
+                "fromRound": 1,
+                "launchedRound": 2,
+                "planPath": "round-2.json",
+                "launchedTaskIds": [
+                    "round-2-route-ingress-develop",
+                    "round-2-route-parser-develop",
+                    "round-2-route-memory-develop",
+                    "round-2-root-synthesis",
+                ],
+            }
+            planning_result = campaign / "round-2-planning-result.json"
+            planning_result.write_text(json.dumps(planning_payload) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "root",
+                next_round_planning["taskId"],
+                "--lease-token",
+                next_round_planning["leaseToken"],
+                "--result",
+                str(planning_result),
+                "--idempotency-key",
+                "round-2-planning-1",
+            )
+            database = sqlite3.connect(campaign / "orchestration.db")
+            rounds = database.execute(
+                "SELECT COUNT(DISTINCT research_round) FROM tasks "
+                "WHERE task_kind='route-development'"
+            ).fetchone()[0]
+            review_count = database.execute(
+                "SELECT COUNT(*) FROM tasks WHERE task_kind='adversarial-route-review'"
+            ).fetchone()[0]
+            database.close()
+            self.assertEqual(rounds, 2)
+            self.assertEqual(review_count, 6)
+
+    def test_no_findings_is_not_a_valid_round_stop(self) -> None:
+        from scripts.research_harness import validate_round_synthesis_result
+
+        result = {
+            "roundSynthesis": {
+                "round": 1,
+                "routes": [
+                    {
+                        "routeId": route_id,
+                        "strengths": ["The route was examined."],
+                        "gaps": ["No terminal was found."],
+                        "decision": "no finding",
+                        "nextExperiment": "Search an adjacent mechanism.",
+                    }
+                    for route_id in ("a", "b", "c")
+                ],
+                "challenges": ["Challenge the current search boundary."],
+                "redirects": [],
+                "freshIdeas": ["idea-a", "idea-b", "idea-c"],
+                "intermediateChains": [],
+                "launchNextRound": False,
+            }
+        }
+        with self.assertRaises(SystemExit):
+            validate_round_synthesis_result(result, 1)
+
+    def test_scheduler_demand_requests_new_agent_for_excluded_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register", str(campaign), "origin", "--agent", "codex:origin"
+            )
+            self.run_cli(
+                "register",
+                str(campaign),
+                "FDEMAND",
+                "--title",
+                "Replay demand",
+                "--lane",
+                "cross-lane-chain-composition",
+                "--originator",
+                "origin",
+            )
+            self.run_cli(
+                "schedule-replay",
+                str(campaign),
+                "FDEMAND",
+                "--task-id",
+                "replay-FDEMAND",
+            )
+            demand = json.loads(
+                self.run_cli("orchestration-status", str(campaign), "--json").stdout
+            )["schedulerDemand"]
+            self.assertEqual(demand["resolvedConcurrency"], 1)
+            self.assertEqual(demand["runnableTasks"], 2)
+            self.assertEqual(demand["claimableByActiveAgents"], 1)
+            self.assertEqual(demand["recommendedClaims"], 1)
+            self.assertTrue(demand["scaleOutOpportunity"])
+
+    def test_transitive_dependency_block_requires_root_unblock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register", str(campaign), "worker", "--agent", "codex:worker"
+            )
+            self.run_cli(
+                "task-add",
+                str(campaign),
+                "root-failure",
+                "--title",
+                "Root blocker",
+                "--lane",
+                "blocker-test",
+                "--approach-family",
+                "blocker-alternative-route",
+                "--objective",
+                "Prove the root blocker.",
+                "--success-criterion",
+                "Retain root evidence.",
+                "--priority",
+                "3000",
+            )
+            self.run_cli(
+                "task-add",
+                str(campaign),
+                "dependent-task",
+                "--title",
+                "Dependent",
+                "--lane",
+                "blocker-test",
+                "--approach-family",
+                "blocker-alternative-route",
+                "--objective",
+                "Consume the root result.",
+                "--success-criterion",
+                "Reach the dependent path.",
+                "--depends-on",
+                "root-failure",
+                "--priority",
+                "2900",
+            )
+            claimed = json.loads(
+                self.run_cli("claim", str(campaign), "worker", "--json").stdout
+            )
+            failure = campaign / "failure.json"
+            failure.write_text(
+                json.dumps(
+                    {
+                        "failure": {
+                            "category": "source-level-falsification",
+                            "reason": "The root hypothesis was disproved.",
+                            "evidence": ["evidence/root-failure.json"],
+                            "analysisProvenance": {
+                                "firstPrinciplesOnly": True,
+                                "changelogUsed": False,
+                                "gitHistoryUsed": False,
+                                "advisoryMiningUsed": False,
+                                "patchedVersionDiffUsed": False,
+                                "internetPatchDiffUsed": False,
+                            },
+                        }
+                    }
+                )
+                + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "worker",
+                claimed["taskId"],
+                "--lease-token",
+                claimed["leaseToken"],
+                "--result",
+                str(failure),
+                "--idempotency-key",
+                "root-failure-1",
+                "--outcome",
+                "failed",
+            )
+            self.run_cli("recover", str(campaign))
+            rejected = self.run_cli(
+                "schedule-unblock",
+                str(campaign),
+                "dependent-task",
+                "--title",
+                "Wrong level",
+                "--strategy",
+                "Resolve the propagated block.",
+                "--success-criterion",
+                "Dependent becomes runnable.",
+                expected=1,
+            )
+            self.assertIn("root-failure", rejected.stderr)
+            self.run_cli(
+                "schedule-unblock",
+                str(campaign),
+                "root-failure",
+                "--title",
+                "Resolve root",
+                "--strategy",
+                "Resolve the real blocker.",
+                "--success-criterion",
+                "Root can resume.",
+                "--priority",
+                "4000",
+            )
+            unblock = json.loads(
+                self.run_cli("claim", str(campaign), "worker", "--json").stdout
+            )
+            self.assertTrue(unblock["taskId"].startswith("unblock-root-failure"))
+            unblock_payload = self.valid_task_result(unblock["taskId"])
+            unblock_payload["unblock"] = {
+                "blockedTaskId": "root-failure",
+                "blockerAddressed": True,
+                "evidence": ["evidence/root-unblocked.json"],
+                "resumeStrategy": "Resume the root task with the recovered prerequisite.",
+                "newMechanism": {
+                    "fingerprint": "root-alternate-proof-v2",
+                    "differsFrom": "failure:source-level-falsification",
+                    "mechanism": "test an alternate source-derived proof route",
+                    "difference": "does not reuse the falsified root hypothesis",
+                    "evidence": ["evidence/root-alternate-proof.json"],
+                },
+            }
+            unblock_result = campaign / "root-unblock.json"
+            unblock_result.write_text(json.dumps(unblock_payload) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "worker",
+                unblock["taskId"],
+                "--lease-token",
+                unblock["leaseToken"],
+                "--result",
+                str(unblock_result),
+                "--idempotency-key",
+                "root-unblock-1",
+            )
+            resumed_root = json.loads(
+                self.run_cli("claim", str(campaign), "worker", "--json").stdout
+            )
+            self.assertEqual(resumed_root["taskId"], "root-failure")
+            root_result = campaign / "root-completed.json"
+            root_result.write_text(
+                json.dumps(self.valid_task_result("root-failure")) + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "worker",
+                "root-failure",
+                "--lease-token",
+                resumed_root["leaseToken"],
+                "--result",
+                str(root_result),
+                "--idempotency-key",
+                "root-resumed-2",
+            )
+            dependent = json.loads(
+                self.run_cli("claim", str(campaign), "worker", "--json").stdout
+            )
+            self.assertEqual(dependent["taskId"], "dependent-task")
+
+    def test_automatic_blocker_breakout_recurses_on_new_technical_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            for worker in ("origin", "fresh-one", "fresh-two"):
+                self.run_cli(
+                    "worker-register",
+                    str(campaign),
+                    worker,
+                    "--agent",
+                    f"codex:{worker}",
+                )
+            self.run_cli(
+                "task-add",
+                str(campaign),
+                "blocked-chain",
+                "--title",
+                "Blocked chain",
+                "--lane",
+                "blocker-loop-test",
+                "--approach-family",
+                "blocker-alternative-route",
+                "--objective",
+                "Reach the execution boundary.",
+                "--success-criterion",
+                "Resolve or precisely classify the guard.",
+                "--priority",
+                "3000",
+            )
+            original = json.loads(
+                self.run_cli("claim", str(campaign), "origin", "--json").stdout
+            )
+            first_blocker = campaign / "first-blocker.json"
+            first_blocker.write_text(
+                json.dumps(self.valid_blocker_result("ingress-to-primitive")) + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "origin",
+                original["taskId"],
+                "--lease-token",
+                original["leaseToken"],
+                "--result",
+                str(first_blocker),
+                "--idempotency-key",
+                "first-blocker-1",
+                "--outcome",
+                "blocked",
+            )
+            first_breakout = json.loads(
+                self.run_cli("claim", str(campaign), "fresh-one", "--json").stdout
+            )
+            self.assertEqual(first_breakout["lane"], "automatic-blocker-breakout")
+            second_blocker = campaign / "second-blocker.json"
+            second_blocker.write_text(
+                json.dumps(self.valid_blocker_result("primitive-to-execution")) + "\n"
+            )
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "fresh-one",
+                first_breakout["taskId"],
+                "--lease-token",
+                first_breakout["leaseToken"],
+                "--result",
+                str(second_blocker),
+                "--idempotency-key",
+                "second-blocker-1",
+                "--outcome",
+                "blocked",
+            )
+            second_breakout = json.loads(
+                self.run_cli("claim", str(campaign), "fresh-two", "--json").stdout
+            )
+            self.assertEqual(second_breakout["lane"], "automatic-blocker-breakout")
+            self.assertNotEqual(first_breakout["taskId"], second_breakout["taskId"])
+
+    def test_automatic_blocker_breakout_does_not_bypass_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register", str(campaign), "origin", "--agent", "codex:origin"
+            )
+            self.run_cli(
+                "task-add",
+                str(campaign),
+                "authority-blocked-chain",
+                "--title",
+                "Authority-blocked chain",
+                "--lane",
+                "blocker-loop-test",
+                "--approach-family",
+                "blocker-alternative-route",
+                "--objective",
+                "Exercise only the authorized boundary.",
+                "--success-criterion",
+                "Identify whether additional authority is required.",
+                "--priority",
+                "3000",
+            )
+            claimed = json.loads(
+                self.run_cli("claim", str(campaign), "origin", "--json").stdout
+            )
+            result = self.valid_blocker_result("owned-lab-to-shared-testnet")
+            result["blocker"]["canSelfResolve"] = False
+            result["blocker"]["authorityRequired"] = "explicit testnet permission"
+            blocker_path = campaign / "authority-blocker.json"
+            blocker_path.write_text(json.dumps(result) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "origin",
+                claimed["taskId"],
+                "--lease-token",
+                claimed["leaseToken"],
+                "--result",
+                str(blocker_path),
+                "--idempotency-key",
+                "authority-blocker-1",
+                "--outcome",
+                "blocked",
+            )
+            database = sqlite3.connect(campaign / "orchestration.db")
+            child_count = database.execute(
+                "SELECT COUNT(*) FROM tasks WHERE unblocks_task_id=?",
+                ("authority-blocked-chain",),
+            ).fetchone()[0]
+            database.close()
+            self.assertEqual(child_count, 0)
+
+    def test_replay_scheduler_cannot_complete_before_machine_verified_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "scheduler",
+                "--agent",
+                "codex:scheduler",
+            )
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "origin",
+                "--agent",
+                "codex:origin",
+            )
+            self.run_cli(
+                "register",
+                str(campaign),
+                "FNOREPLAY",
+                "--title",
+                "Unverified chain",
+                "--lane",
+                "cross-lane-chain-composition",
+                "--originator",
+                "origin",
+            )
+            database = sqlite3.connect(campaign / "orchestration.db")
+            database.execute(
+                "UPDATE tasks SET state='completed' WHERE task_id='critical-controls-reliability'"
+            )
+            database.execute(
+                "UPDATE tasks SET priority=5000 WHERE task_id='finding-scoped-replay-scheduler'"
+            )
+            database.commit()
+            database.close()
+            claimed = json.loads(
+                self.run_cli("claim", str(campaign), "scheduler", "--json").stdout
+            )
+            self.assertEqual(claimed["taskId"], "finding-scoped-replay-scheduler")
+            payload = self.valid_task_result("finding-scoped-replay-scheduler")
+            payload["taskResult"]["replayFindings"] = ["FNOREPLAY"]
+            result = campaign / "unverified-scheduler.json"
+            result.write_text(json.dumps(payload) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "scheduler",
+                claimed["taskId"],
+                "--lease-token",
+                claimed["leaseToken"],
+                "--result",
+                str(result),
+                "--idempotency-key",
+                "unverified-scheduler-1",
+                expected=1,
+            )
+            database = sqlite3.connect(campaign / "orchestration.db")
+            state = database.execute(
+                "SELECT state FROM tasks WHERE task_id='finding-scoped-replay-scheduler'"
+            ).fetchone()[0]
+            database.close()
+            self.assertEqual(state, "running")
 
     def test_hash_and_lint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -478,6 +2213,10 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("joern", payload["commands"])
         self.assertIn("tree-sitter", payload["commands"])
         self.assertIn("z3", payload["commands"])
+        self.assertIn("gn", payload["commands"])
+        self.assertIn("autoninja", payload["commands"])
+        self.assertIn("llvm-symbolizer", payload["commands"])
+        self.assertIn("swift", payload["commands"])
         self.assertIn("z3", payload["pythonModules"])
 
 

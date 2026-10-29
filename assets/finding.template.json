@@ -8,10 +8,47 @@
   "reviewers": [],
   "independentReplays": [],
   "testedVersion": "",
+  "impactClass": "",
+  "criticalScopeRule": "",
   "rootCause": "",
   "ingress": "",
   "carrier": "",
   "terminal": "",
+  "chain": {
+    "attacker": "",
+    "ingress": "",
+    "attackerControl": "",
+    "transformations": [],
+    "brokenInvariant": "",
+    "primitive": "",
+    "executionOrCriticalSink": "",
+    "terminal": "",
+    "remoteAcquisition": "",
+    "deployment": "",
+    "applicationAuthoredSink": false
+  },
+  "terminalEvidence": {
+    "type": "",
+    "commandOrEffect": "",
+    "synthetic": true
+  },
+  "executionEnvironment": {
+    "environmentClass": "",
+    "developmentServer": true,
+    "developmentBuild": true,
+    "supportedConfiguration": false,
+    "primaryTerminalObserved": false,
+    "commandOrEntrypoint": "",
+    "evidence": []
+  },
+  "analysisProvenance": {
+    "firstPrinciplesOnly": false,
+    "changelogUsed": false,
+    "gitHistoryUsed": false,
+    "advisoryMiningUsed": false,
+    "patchedVersionDiffUsed": false,
+    "internetPatchDiffUsed": false
+  },
   "impact": "",
   "preconditions": [],
   "attackerAcquisition": [],
@@ -20,12 +57,34 @@
     "baseline": "",
     "negative": "",
     "positive": "",
-    "patched": ""
+    "invariantRestored": ""
   },
   "reliability": {
     "successes": null,
     "attempts": null,
     "freshProcesses": false
+  },
+  "dynamicTriage": {
+    "required": false,
+    "crashIds": [],
+    "index": "",
+    "acceptedClusterIds": [],
+    "machineVerdicts": {},
+    "reviewed": false,
+    "reviewedBy": "",
+    "reviewNotes": "",
+    "overrideReason": ""
+  },
+  "browserReplay": {
+    "required": false,
+    "replayIds": [],
+    "reviewed": false,
+    "reviewedBy": "",
+    "reviewNotes": ""
+  },
+  "pathProof": {
+    "required": true,
+    "path": ""
   },
   "gates": {
     "authorization_confirmed": false,
@@ -33,16 +92,25 @@
     "exact_version_pinned": false,
     "root_cause_identified": false,
     "attacker_control_proven": false,
+    "critical_chain_complete": false,
+    "stock_or_supported_reachability": false,
+    "rce_or_critical_impact": false,
+    "no_app_authored_sink": false,
+    "harmless_real_terminal": false,
+    "deployment_feasible": false,
+    "production_equivalent_environment": false,
     "baseline_control": false,
     "negative_control": false,
     "positive_case": false,
     "concrete_impact": false,
+    "automated_triage_reviewed": false,
+    "path_proof_complete": false,
     "reproduction_complete": false,
     "independent_replay": false,
     "prior_art_checked": false,
     "official_docs_checked": false,
     "upstream_tests_checked": false,
-    "patch_status_checked": false,
+    "current_version_checked": false,
     "source_refs_verified": false,
     "cleanup_verified": false,
     "secrets_removed": false

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "workerId": "replace-with-worker-id",
+  "profile": "chrome-v8",
+  "status": "completed",
+  "taskResult": {
+    "taskId": "replace-with-leased-task-id",
+    "summary": "Concise result of the assigned Chrome/V8 question.",
+    "conclusion": "Confirmed, disproved, or blocked conclusion.",
+    "searchedSurface": ["Exact files, components, and runtime boundaries examined"],
+    "sourceReferences": ["Pinned V8 or Chromium source references"],
+    "evidence": ["Retained matrix, log, testcase, or source proof"],
+    "hypotheses": [],
+    "nextTasks": [],
+    "replayFindings": [],
+    "analysisProvenance": {
+      "firstPrinciplesOnly": true,
+      "changelogUsed": false,
+      "gitHistoryUsed": false,
+      "advisoryMiningUsed": false,
+      "patchedVersionDiffUsed": false,
+      "internetPatchDiffUsed": false
+    }
+  },
+  "revisions": {
+    "v8": "replace-with-v8-commit",
+    "chromium": "not-tested"
+  },
+  "registeredBuilds": [],
+  "testcase": {
+    "path": "",
+    "sha256": ""
+  },
+  "matrix": {
+    "path": "",
+    "buildOutcomes": []
+  },
+  "externalFuzzing": {
+    "profile": "",
+    "engine": "fuzzilli",
+    "instrumentationRecord": "",
+    "runRecords": [],
+    "initialCorpusDigest": "",
+    "finalCorpusDigest": "",
+    "workers": 0,
+    "replayConfirmedCrashIds": [],
+    "coverageRebuildRecord": ""
+  },
+  "controls": {
+    "baseline": "",
+    "negative": "",
+    "positive": ""
+  },
+  "requiredFlags": [],
+  "webReachableWithoutInternalFlags": false,
+  "firstFault": "",
+  "dynamicTriage": {
+    "crashIds": [],
+    "firstFaultClass": "",
+    "access": "unknown",
+    "stackClusterIds": [],
+    "controllabilityScore": 0,
+    "machineVerdict": "",
+    "reviewedInterpretation": ""
+  },
+  "reliability": {
+    "successes": 0,
+    "attempts": 0,
+    "freshProcesses": true
+  },
+  "classification": "lead",
+  "criticalRceChain": {
+    "complete": false,
+    "ingress": "",
+    "brokenInvariant": "",
+    "primitive": "",
+    "executionOrCriticalSink": "",
+    "attackerAcquisition": "",
+    "terminal": ""
+  },
+  "browserReplay": {
+    "attempted": false,
+    "driver": "direct-cdp",
+    "replayId": "",
+    "recordPath": "",
+    "ownedLocalOrigin": false,
+    "sandboxEnabled": false,
+    "positiveMatched": false,
+    "controlMatched": false,
+    "externalRequestAttempts": [],
+    "promotionReady": false,
+    "result": "not-tested"
+  },
+  "sandboxEscapeClaimed": false,
+  "blockers": [],
+  "artifacts": [],
+  "cleanup": ""
+}

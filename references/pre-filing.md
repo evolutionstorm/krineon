@@ -16,55 +16,54 @@ Run this review on the day of submission.
 Quote the rule that supports eligibility. Do not assume a GitHub repository is
 covered merely because a product vendors it.
 
+This review begins only after a complete chain has passed independent replay.
+It must not become a vulnerability-discovery or patch-diff phase.
+
 ## 2. Current-version validation
 
 - Re-run on the latest stable release.
-- Check current canary/main where useful, but distinguish released from inferred.
 - State exact versions tested by execution.
-- Label a broader affected range as source-inferred, with the load-bearing
-  constructions compared across tags.
 - Re-pin links and line numbers whenever the tested commit changes.
+- Do not diff the candidate against patched, later, earlier, canary, or
+  internet-derived source. Test the selected current release on its own.
 
 ## 3. Intended behavior
 
-Search primary sources:
+Read primary documentation and tests for the pinned/current tested revision:
 
 - official documentation and examples;
 - threat model and security architecture;
 - upstream regression and conformance tests;
 - comments attached to the invariant;
-- public issues and maintainer statements;
-- release notes and migration guides.
 
 If behavior is documented, identify the separate violated promise. If no such
 promise exists, avoid presenting working-as-documented behavior as a bypass.
 
-## 4. Prior art and duplicate risk
+## 4. Post-validation duplicate risk
 
-Search advisories, CVEs, security releases, issue trackers, pull requests,
-commits, mailing lists, and downstream patches. Compare:
+Only after the chain is complete, check titles and public descriptions for a
+likely duplicate. Do not inspect patches, security commits, vulnerable-line
+diffs, or prior PoCs to derive or extend the chain. Compare:
 
 - root cause;
 - input and parser path;
 - affected endpoint or feature;
 - bypass mechanism;
-- fix location;
 - consequence.
 
 New variants with the same root and fix are usually duplicates. A new ingress
 or stronger terminal helps only when the underlying security defect and
 remediation are materially distinct.
 
-## 5. Ownership and incomplete fixes
+## 5. Ownership
 
 Identify who can close exposure immediately. A report to a downstream project
 should lead with the downstream-owned trust boundary or configuration decision,
 not a remediation list directed entirely at an upstream dependency.
 
-When prior fixes exist, inspect sibling functions, generated bundles,
-alternative transports, async/error paths, and version backports. Explain why
-the current issue is a different root cause or an incomplete fix, with exact
-code and control evidence.
+Establish ownership from the current target's trust boundary and ability to
+remove exposure. Do not frame the report as an incomplete-fix or patch-bypass
+claim derived from history.
 
 ## 6. Realistic attack story
 
@@ -77,6 +76,8 @@ Answer in one paragraph:
 - Which framework-owned boundary is crossed?
 - What exact unauthorized result occurs?
 - Which deployment conditions are required?
+- Which supported production-equivalent or release entrypoint reproduced it,
+  and what evidence proves development server/build behavior was absent?
 
 If the story needs “the application deliberately exposes a dangerous function”
 or “the operator disables two safety limits,” expect the reviewer to treat it

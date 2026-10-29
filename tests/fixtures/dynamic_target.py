@@ -37,6 +37,33 @@ def main() -> int:
         os.kill(os.getpid(), signal.SIGSEGV)
     if data.startswith(b"EXIT"):
         return 7
+    if data.startswith(b"UAFWRITE"):
+        sys.stderr.write(
+            "ERROR: AddressSanitizer: heap-use-after-free on address 0x11112222\n"
+            "WRITE of size 8 at 0x11112222 thread T0\n"
+            "#0 0x11112222 in fixture_parse tests/fixtures/dynamic_target.py:55\n"
+            "SUMMARY: AddressSanitizer: heap-use-after-free in fixture_parse\n"
+        )
+        sys.stderr.flush()
+        os.kill(os.getpid(), signal.SIGABRT)
+    if data.startswith(b"OOBREAD"):
+        sys.stderr.write(
+            "ERROR: AddressSanitizer: heap-buffer-overflow on address 0x33334444\n"
+            "READ of size 16 at 0x33334444 thread T0\n"
+            "#0 0x33334444 in fixture_parse tests/fixtures/dynamic_target.py:65\n"
+            "SUMMARY: AddressSanitizer: heap-buffer-overflow in fixture_parse\n"
+        )
+        sys.stderr.flush()
+        os.kill(os.getpid(), signal.SIGABRT)
+    if data.startswith(b"PCCTRL"):
+        sys.stderr.write(
+            "ERROR: AddressSanitizer: SEGV on unknown address 0x41414141 pc 0x41414141\n"
+            "wild jump through attacker-shaped instruction pointer\n"
+            "EXECUTE of size 8 at 0x41414141 thread T0\n"
+            "#0 0x41414141 in controlled_target tests/fixtures/dynamic_target.py:75\n"
+        )
+        sys.stderr.flush()
+        os.kill(os.getpid(), signal.SIGSEGV)
     if data.startswith(b"\xff"):
         sys.stderr.write(
             "ERROR: AddressSanitizer: heap-buffer-overflow on address 0x12345678\n"

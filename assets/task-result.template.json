@@ -1,0 +1,69 @@
+{
+  "taskResult": {
+    "taskId": "replace-with-leased-task-id",
+    "summary": "Concise result of the assigned source-analysis question.",
+    "conclusion": "Confirmed, disproved, or blocked conclusion without severity inflation.",
+    "searchedSurface": [
+      "Exact files, functions, interfaces, or runtime boundaries examined"
+    ],
+    "sourceReferences": [
+      "Pinned-revision file and line or symbol references"
+    ],
+    "dependenciesAnalyzed": [],
+    "evidence": [
+      "Retained artifact, log, harness, or exact source proof"
+    ],
+    "dynamicTriage": {
+      "crashIds": [],
+      "stackClusterIds": [],
+      "firstFaultClasses": [],
+      "machineVerdicts": [],
+      "reviewedInterpretation": ""
+    },
+    "browserReplay": {
+      "replayIds": [],
+      "driver": "direct-cdp",
+      "positiveMatched": false,
+      "controlMatched": false,
+      "sandboxVerified": false,
+      "promotionReady": false,
+      "reviewedInterpretation": ""
+    },
+    "externalFuzzing": {
+      "profile": "",
+      "engine": "",
+      "instrumentationRecord": "",
+      "runRecords": [],
+      "initialCorpusDigest": "",
+      "finalCorpusDigest": "",
+      "workers": 0,
+      "replayConfirmedCrashIds": [],
+      "coverageRebuildRecord": ""
+    },
+    "pathProofContribution": {
+      "findingId": "",
+      "entryPoint": "",
+      "sink": "",
+      "stepOrdinalsReviewed": [],
+      "conditionIdsReviewed": [],
+      "contradictionsTested": [],
+      "unresolvedAssumptions": [],
+      "retainedEvidence": [],
+      "reviewConclusion": ""
+    },
+    "approachFamiliesExercised": [
+      "Stable family IDs from KRINEON_APPROACH_REGISTRY.json"
+    ],
+    "hypotheses": [],
+    "nextTasks": [],
+    "replayFindings": [],
+    "analysisProvenance": {
+      "firstPrinciplesOnly": true,
+      "changelogUsed": false,
+      "gitHistoryUsed": false,
+      "advisoryMiningUsed": false,
+      "patchedVersionDiffUsed": false,
+      "internetPatchDiffUsed": false
+    }
+  }
+}

@@ -27,14 +27,29 @@ COMMANDS: dict[str, list[list[str]]] = {
     "opengrep": [["opengrep", "--version"]],
     "codeql": [["codeql", "version"]],
     "clang": [["clang", "--version"]],
+    "llvm-symbolizer": [["llvm-symbolizer", "--version"]],
+    "gn": [["gn", "--version"]],
+    "ninja": [["ninja", "--version"]],
+    "autoninja": [["autoninja", "--version"]],
+    "gclient": [["gclient", "--version"]],
+    "swift": [["swift", "--version"]],
+    "minidump_stackwalk": [["minidump_stackwalk", "--version"]],
     "cargo": [["cargo", "--version"]],
     "node": [["node", "--version"]],
+    "chromium": [["chromium", "--version"]],
+    "google-chrome": [["google-chrome", "--version"]],
+    "afl-fuzz": [["afl-fuzz", "-V"]],
+    "afl-showmap": [["afl-showmap", "-h"]],
+    "llvm-profdata": [["llvm-profdata", "--version"]],
+    "llvm-cov": [["llvm-cov", "--version"]],
+    "FuzzilliCli": [["FuzzilliCli", "--help"]],
 }
 
 PYTHON_MODULES = (
     "tree_sitter",
     "tree_sitter_languages",
     "z3",
+    "playwright",
 )
 
 
@@ -97,10 +112,14 @@ def build_inventory() -> dict[str, Any]:
             for name in PYTHON_MODULES
         },
         "guidance": {
-            "treeSitter": "Use for syntax-aware census and ordering; absence is a recorded limitation.",
-            "joern": "Use for bounded flow and dominance questions; empty graphs are not proof of absence.",
-            "z3": "Use for implementation-matched constraints and candidate inputs; a model is not runtime proof.",
-            "trailmark": "Use for rapid structure, entrypoints, call graphs, and diffs; verify manually and at runtime.",
+            "staticPipeline": "Run scripts/static_analysis_pipeline.py; it retains raw outputs and creates provenance-bound validation tasks.",
+            "treeSitter": "scripts/tree_sitter_census.py emits a syntax-aware source census; absence is a recorded limitation.",
+            "joern": "queries/joern contains runnable sink-reachability and missing-validation CPG queries; empty graphs are not proof of absence.",
+            "z3": "scripts/z3_boundary_solver.py emits concrete decimal, hexadecimal, and endian-specific testcase payloads; a model is not runtime proof.",
+            "trailmark": "The static pipeline invokes single-revision structure and entrypoint analysis; diff modes are prohibited.",
+            "chromeV8": "For chrome-v8 campaigns, record GN, Ninja, Clang, symbolizer, Swift/Fuzzilli, and minidump availability without installing them.",
+            "browserReplay": "scripts/chrome_v8_harness.py browser-replay uses direct CDP and does not require Playwright; register an exact sandboxed-chrome binary first.",
+            "externalFuzzing": "scripts/fuzzer_orchestrator.py operates pinned AFL++, libFuzzer, and Fuzzilli targets with verified instrumentation, native parallelism, corpus sync, crash forwarding, and coverage rebuilds.",
             "authority": "Source semantics and controlled runtime evidence decide the security claim.",
         },
     }

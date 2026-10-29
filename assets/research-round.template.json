@@ -1,0 +1,38 @@
+{
+  "round": 1,
+  "routes": [
+    {
+      "id": "route-a",
+      "family": "ingress-authority",
+      "title": "Independent route A",
+      "objective": "Develop one source-derived route without consuming unpublished ideas from the others.",
+      "successCriteria": [
+        "Retain exact source and runtime evidence for strengths and gaps."
+      ],
+      "incompatibleWith": ["route-b", "route-c"]
+    },
+    {
+      "id": "route-b",
+      "family": "representation-parser",
+      "title": "Independent route B",
+      "objective": "Develop a mechanism with assumptions incompatible with route A.",
+      "successCriteria": [
+        "Retain exact source and runtime evidence for strengths and gaps."
+      ],
+      "incompatibleWith": ["route-a", "route-c"]
+    },
+    {
+      "id": "route-c",
+      "family": "memory-lifetime",
+      "title": "Independent route C",
+      "objective": "Develop a third mechanism independently.",
+      "successCriteria": [
+        "Retain exact source and runtime evidence for strengths and gaps."
+      ],
+      "incompatibleWith": ["route-a", "route-b"]
+    }
+  ],
+  "crossPollinations": [],
+  "maxAttempts": 2,
+  "timeoutSeconds": 7200
+}

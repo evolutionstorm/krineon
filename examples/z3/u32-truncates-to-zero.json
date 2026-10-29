@@ -1,0 +1,7 @@
+{
+  "kind": "truncate",
+  "bits": 32,
+  "target": 0,
+  "minX": 1,
+  "maxX": 4294967296
+}

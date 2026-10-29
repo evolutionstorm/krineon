@@ -1,165 +1,143 @@
-# Tool-Assisted Analysis
+# First-principles tool-assisted analysis
 
-Static tools accelerate coverage and produce reviewable inventories. They do
-not prove exploitability. Generated code, runtime dispatch, native boundaries,
-reflection, dependency injection, and protocol state can invalidate any one
-tool's graph.
+Tools accelerate coverage of the pinned tree. They generate source-derived
+leads; runtime evidence decides whether a chain link exists.
 
-## Tool probe first
+## Prohibited discovery inputs
 
-Run:
+Do not use Trailmark diffs, Git history, changelogs, advisories, issue trackers,
+patched versions, or internet-derived code comparisons to locate defects. Use
+one exact revision. Ordinary worktree diffs for Krineon's own edits are not
+vulnerability discovery.
+
+## Tool probe
+
+Run `python3 scripts/tool_probe.py --json` and retain the result. Do not assume
+Trailmark, Tree-sitter, Joern, Z3, language frontends, or build databases are
+installed.
+
+## Executable lead pipeline
+
+Run available analyzers and immediately enqueue the retained leads:
 
 ```bash
-python3 scripts/tool_probe.py --json
+python3 scripts/static_analysis_pipeline.py run CAMPAIGN \
+  --language javascript --ingest
 ```
 
-Record the result in the campaign. Do not assume Trailmark, Tree-sitter, Joern,
-Z3, language frontends, or build databases are present.
+The runner stores the exact command, timestamps, exit status, stdout, stderr,
+CPG, TSV, census, and solver artifacts under `tools/static/RUN_ID/`. It writes
+normalized leads to that run's `run.json`, merges them into
+`tools/static-leads.json`, and creates one idempotent
+`static-lead-validation` task per stable lead ID. The task objective carries
+the campaign commit, actual Git/source-file identity, source location, run
+record, tool output, and approach family. It requires manual source review plus
+a bounded runtime discriminator. It does not register a finding.
+
+Use `--tool` repeatedly to select analyzers. Tree-sitter records an explicit
+failure when the language bindings are unavailable. Joern query failures are
+retained rather than treated as empty results. Trailmark requires
+`--language`. Z3 runs only for explicit source-derived `--z3-spec` inputs.
 
 ## Trailmark
 
-Use Trailmark for fast structure, entry-point, call-graph, and before/after
-comparisons:
+Use a single-revision structural snapshot to enumerate exports, public entry
+points, call edges, privileged sinks, and bounded source neighborhoods:
 
 ```bash
 trailmark analyze SOURCE --language javascript --summary
 trailmark entrypoints SOURCE --language javascript --json
 trailmark diagram --target SOURCE --language javascript \
-  --type call-graph --focus SYMBOL --depth 4
-trailmark diff BEFORE AFTER --language javascript --json
+  --type call-graph --focus SYMBOL --depth 5
 ```
 
-Good uses:
-
-- enumerate exported or externally reachable surfaces;
-- compare a security patch with a surviving sibling path;
-- focus manual review around a sink or validator;
-- retain a machine-readable structural snapshot.
-
-Limitations:
-
-- inherited, generated, dynamic, native, and framework-wired edges may be absent;
-- a call graph shows possible structure, not attacker control;
-- a diff highlights change, not completeness or security intent.
+Do not use Trailmark's before/after or patch-diff modes in a Krineon campaign.
 
 ## Tree-sitter
 
-Use Tree-sitter for syntax-aware census and local transformations:
+Use syntax-aware queries to census:
 
-- find every call to a validator, decoder, allocator, cache-key function, or
-  privileged sink;
-- compare sibling branches without comment/string false positives;
-- enumerate exports, imports, decorators, handler registrations, and option
-  defaults;
-- verify statement ordering around validation, state mutation, and cleanup.
+- public handler and parser registrations;
+- execution, native, module, file-write, unsafe memory, and callback sinks;
+- validators, capability checks, length conversions, object construction, and
+  cleanup ordering;
+- sibling consumers of the same current-revision representation.
 
-Example query shape for JavaScript call sites:
-
-```scheme
-(call_expression
-  function: [
-    (identifier) @callee
-    (member_expression property: (property_identifier) @callee)
-  ]
-  arguments: (arguments) @arguments)
-```
-
-Keep queries in the campaign `tools/` directory and retain their output. If the
-standalone CLI or language binding is unavailable, use Trailmark or the
-repository's existing parser and record the limitation instead of silently
-falling back to regex.
+The bundled `scripts/tree_sitter_census.py` parses syntax nodes and emits
+normalized ingress, guard, execution, code-loading, and memory/native leads.
+It does not fall back to comment-matching regexes when Tree-sitter is missing.
+An empty result means only that the census did not find a path.
 
 ## Joern
 
-Use Joern after the project can be parsed reliably:
+Use a current-revision code property graph for bounded questions:
 
-```bash
-joern-parse SOURCE --output tools/cpg.bin
-joern-scan --cpg tools/cpg.bin --output tools/joern-scan
-joern tools/cpg.bin
-```
+- Which public handlers reach a selected execution/native sink?
+- Which attacker-controlled values reach sizes, paths, modules, function IDs,
+  memory operations, or authority decisions?
+- Which guards dominate the sink, and which same-revision paths avoid them?
+- Where does ownership change before async, error, or concurrent consumption?
 
-High-value queries answer bounded questions:
+Treat graph edges as leads until manual source review and runtime evidence
+confirm dispatch and attacker control.
 
-- Which public handlers can reach this sink?
-- Does untrusted input reach a size, path, module, header, key, or identity?
-- Which validators dominate the sink, and which paths avoid them?
-- Is the same object mutated before an async/error path consumes it?
-- Which sibling callers omit a guard present in the expected path?
+The pipeline builds a CPG with `joern-parse` and executes both bundled queries:
 
-Illustrative Scala query fragments:
+- `queries/joern/critical-sink-reachability.sc`
+- `queries/joern/missing-validation.sc`
 
-```scala
-cpg.method.name(".*handler.*").call.name(".*exec.*|.*require.*|.*write.*").path.l
-cpg.call.name("decode.*").argument.reachableBy(cpg.method.parameter).p
-cpg.call.name("privilegedSink").whereNot(_.controlledBy.isCall.name("validate.*")).l
-```
-
-Adapt names and frontends to the language. Treat an empty result as “not found
-by this graph,” not proof that the path is impossible.
+Each query emits TSV that is retained even when it produces no rows. Query or
+CPG failures remain visible as failed tool records; they are never converted
+to "no vulnerability" conclusions.
 
 ## Z3
 
-Use Z3 after translating a bounded implementation question into the same bit
-widths, signedness, truncation, encoding, and state transitions used by the
-target. High-value models include:
+Model the implementation's exact bit widths, signedness, truncation,
+normalization, encoding, and state transitions. Use it to produce concrete
+inputs for integer wrap, parser/serializer disagreement, non-injective keys,
+object-shape collisions, and capability-state combinations. A satisfiable
+model is a testcase, not an exploit.
 
-- integer wrap, length truncation, and signed-versus-unsigned comparisons;
-- parser and serializer disagreements over the same protocol field;
-- non-injective cache keys, identifiers, or binary encodings;
-- authorization, feature-flag, and lifecycle combinations that make a guarded
-  state reachable;
-- the smallest concrete input satisfying a suspected boundary violation.
-
-Retain the model, solver version, constraints, result, and generated input. A
-satisfiable model produces a candidate test case, not an exploit. An
-unsatisfiable result excludes only the encoded model, not the real program.
-Confirm every useful result against the exact shipped implementation and a
-runtime control matrix.
-
-## Targeted text and history
-
-Use `rg` for exact constants, error messages, header names, option defaults,
-tests, and generated copies. Use version history to establish when and why a
-security invariant was introduced:
+The bundled solver uses the Z3 binary directly and emits concrete payloads:
 
 ```bash
-rg -n "validator|internalHeader|cacheKey|deserialize|exec" SOURCE
-git log -S 'security-relevant-token' -- SOURCE_FILE
-git blame TESTED_COMMIT -- SOURCE_FILE
-git diff OLD_TAG..NEW_TAG -- SECURITY_FILES
+python3 scripts/z3_boundary_solver.py \
+  --kind truncate --bits 32 --target 0 \
+  --min-x 1 --max-x 4294967296 \
+  --emit-dir tools/z3-u32-zero
 ```
 
-Tests and documentation often establish intended behavior more strongly than
-comments. Search regression test names, issue references, threat models, and
-release notes.
+For pipeline use, encode those same bounds as JSON (see
+`examples/z3/u32-truncates-to-zero.json`) and pass `--z3-spec`. Supported
+models are integer truncation, addition wrap, and multiplication wrap. Add new
+models only after deriving their constraints from the pinned implementation.
+
+## Targeted source search
+
+Use `rg` against the pinned tree for handlers, decoders, allocators, loaders,
+function constructors, native boundaries, process APIs, executable memory,
+deserialization, manifest resolution, and checked-in tests. Do not run `git
+log`, `git blame`, historical tag comparisons, or patch-oriented web searches.
 
 ## Runtime verification
 
-Static output becomes evidence only after a runtime experiment answers:
+Ask whether the path is shipped, attacker-controlled, guarded, and capable of
+reaching the next chain link. Use sanitizers, debuggers, packet captures, or
+bounded instrumentation only in owned environments. Return to an unmodified
+stock build before promotion.
 
-- Is the path compiled and shipped?
-- Can attacker-controlled data reach it?
-- Does the expected guard run?
-- Does the stock runtime produce the effect?
-- Does a clean or patched control block it?
+Recommended flow:
 
-Instrument with logs, packet captures, sanitizers, debugger traces, or bounded
-markers only in owned environments. Preserve raw output and avoid changing the
-state transition being tested. For local process targets,
-`scripts/dynamic_harness.py` provides pinned execution, deterministic fuzzing,
-optional file-based coverage feedback, crash minimization, and replay. Its
-resource limits are not a substitute for a disposable VM or container.
+1. The pipeline runs Trailmark against one revision and retains entry points.
+2. Tree-sitter emits a syntax-aware census.
+3. Joern executes sink-reachability and missing-validation queries over a CPG.
+4. Explicit Z3 specs produce implementation-matched concrete payloads.
+5. Normalized leads become durable tasks with immutable provenance.
+6. Manual source reading explains or falsifies the invariant and chain link.
+7. Runtime controls confirm or falsify it before any finding is registered.
 
-## Recommended combined workflow
-
-1. Trailmark creates a rapid surface and diff map.
-2. Tree-sitter produces exact syntax censuses and ordering checks.
-3. Joern investigates data flow, reachability, and missing dominance.
-4. Z3 solves bounded representation and state constraints and generates
-   candidate inputs.
-5. `rg`, tests, docs, and history verify intent and completeness.
-6. Manual source reading explains semantics.
-7. Runtime differential tests decide the claim.
-
-If tools disagree, reduce the question until the discrepancy can be explained.
+For sustained coverage-guided work, read [fuzzing.md](fuzzing.md). Use the
+external-fuzzer orchestrator for instrumentation, AFL++/libFuzzer/Fuzzilli
+parallelism, corpus exchange, structured generation, crash forwarding, and
+coverage rebuilding. The dynamic harness's deterministic byte mutator is only
+a plumbing smoke test.
