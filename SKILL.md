@@ -21,8 +21,11 @@ Initialize a campaign with:
 
 ```bash
 python3 scripts/research_harness.py init CAMPAIGN_DIR \
-  --target TARGET --repo REPOSITORY --commit REVISION --mode source
-python3 scripts/research_harness.py plan CAMPAIGN_DIR
+  --target TARGET --repo REPOSITORY --checkout LOCAL_CHECKOUT \
+  --commit REVISION --mode source
+python3 scripts/research_harness.py plan CAMPAIGN_DIR \
+  --max-concurrency 3 --lease-seconds 900 --task-timeout-seconds 7200
+python3 scripts/research_harness.py queue CAMPAIGN_DIR
 python3 scripts/tool_probe.py --output CAMPAIGN_DIR/tools/tool-probe.json
 ```
 
@@ -47,13 +50,40 @@ python3 scripts/tool_probe.py --output CAMPAIGN_DIR/tools/tool-probe.json
 8. Write a root-cause-first report with measured impact and explicit
    preconditions. Read [references/reporting.md](references/reporting.md).
 
-## Multi-agent rule
+## Operational multi-agent rule
 
 When collaboration tools are available and the user authorized a full
 campaign, keep the root agent as coordinator and run at most the environment's
 safe concurrency limit. Prefer three complementary workers per wave: boundary
 mapping, sink-first tracing, and state/lifecycle analysis. Candidate-specific
 validation must be assigned to an agent that did not originate the hypothesis.
+
+Do not treat `launch-plan.json` as proof that orchestration occurred. Register
+each runtime identity, atomically claim a dependency-ready task, run it in the
+returned isolated workspace, renew long operations, and submit a JSON result
+through the lease:
+
+```bash
+python3 scripts/research_harness.py worker-register CAMPAIGN_DIR worker-a \
+  --agent codex:session-a --role originator
+python3 scripts/research_harness.py claim CAMPAIGN_DIR worker-a --json
+python3 scripts/research_harness.py heartbeat CAMPAIGN_DIR worker-a TASK_ID \
+  --lease-token TOKEN
+python3 scripts/research_harness.py submit CAMPAIGN_DIR worker-a TASK_ID \
+  --lease-token TOKEN --result result.json \
+  --idempotency-key TASK_ID-attempt-1
+```
+
+The SQLite coordinator enforces dependencies, concurrency, attempt and time
+budgets, cancellation, leases, and recovery after worker or coordinator
+failure. A local checkout produces detached per-attempt Git worktrees. Without
+one, the worker still receives a separate directory and assignment manifest.
+
+For independent validation, register the finding with `--originator`, run
+`schedule-replay`, and let a different registered worker claim it. The
+reportable gate requires an accepted replay artifact whose originator,
+reviewer, submitting worker, digest, and finding ID agree. A prose assertion or
+manually set Boolean does not pass this gate.
 
 Do not launch subagents for a narrow review, a single factual check, or when
 their tasks would overlap materially.
@@ -80,15 +110,21 @@ their tasks would overlap materially.
 ## Harness commands
 
 ```bash
+python3 scripts/research_harness.py orchestration-status CAMPAIGN_DIR
+python3 scripts/research_harness.py recover CAMPAIGN_DIR
+python3 scripts/research_harness.py cancel CAMPAIGN_DIR TASK_ID --reason REASON
+python3 scripts/research_harness.py retry CAMPAIGN_DIR TASK_ID --reason REASON
 python3 scripts/research_harness.py status CAMPAIGN_DIR
 python3 scripts/research_harness.py register CAMPAIGN_DIR F001 \
-  --title "Candidate title" --lane protocol-differential
+  --title "Candidate title" --lane protocol-differential \
+  --originator worker-a
+python3 scripts/research_harness.py schedule-replay CAMPAIGN_DIR F001
 python3 scripts/research_harness.py gate CAMPAIGN_DIR F001 --level reportable
 python3 scripts/research_harness.py hash CAMPAIGN_DIR
 python3 scripts/research_harness.py lint CAMPAIGN_DIR
 ```
 
-The harness does not attack targets or submit reports. It creates isolated task
-packets, maintains the registry, evaluates evidence gates, and hashes retained
-artifacts. External actions remain subject to the user's authorization and the
-program rules.
+The harness is an operational cooperative scheduler, not a model-process
+launcher. Codex, Claude Code, OpenCode, CI jobs, and human workers connect by
+using the worker protocol. It does not attack targets or submit reports.
+External actions remain subject to the user's authorization and program rules.

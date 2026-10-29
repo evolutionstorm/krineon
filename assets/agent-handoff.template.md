@@ -2,6 +2,11 @@
 
 ## Assignment
 
+- Worker identity:
+- Agent/runtime identity:
+- Task ID and attempt:
+- Lease token: retain locally; do not include in report artifacts
+- Originator identity, if reviewing:
 - Target and exact revision:
 - Authorization and environment:
 - Primary question:
@@ -41,6 +46,7 @@ Artifacts:
 - Raw output:
 - Environment metadata:
 - Hashes:
+- Idempotency key for result submission:
 
 ## Remaining blockers
 

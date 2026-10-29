@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "target": "replace-with-target",
   "repository": "replace-with-repository",
+  "localCheckout": "",
   "commit": "replace-with-tested-revision",
   "mode": "source",
   "programUrl": "",
