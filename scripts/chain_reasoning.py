@@ -6,10 +6,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import heapq
 import json
 import subprocess
 import sys
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +138,51 @@ def normalize_context(value: Any, field: str) -> dict[str, str]:
     return {
         name: require_text(value.get(name), f"{field}.{name}")
         for name in CONTEXT_FIELDS
+    }
+
+
+def normalize_context_transition(value: Any, field: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    preserves = value.get("preservesCapabilities", "all")
+    if preserves != "all":
+        preserves = require_text_list(
+            preserves, f"{field}.preservesCapabilities", allow_empty=True
+        )
+    return {
+        "from": normalize_context(value.get("from"), f"{field}.from"),
+        "to": normalize_context(value.get("to"), f"{field}.to"),
+        "transport": require_text(value.get("transport"), f"{field}.transport"),
+        "authorityChange": require_text(
+            value.get("authorityChange"), f"{field}.authorityChange"
+        ),
+        "preservesCapabilities": preserves,
+    }
+
+
+def normalize_attempt_model(value: Any, field: str) -> dict[str, Any]:
+    if value is None:
+        return {
+            "attackerCanAttempt": True,
+            "referenceExpected": "allow",
+            "observedOutcome": "allowed",
+        }
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    expected = require_text(value.get("referenceExpected"), f"{field}.referenceExpected")
+    observed = require_text(value.get("observedOutcome"), f"{field}.observedOutcome")
+    if expected not in {"allow", "reject"}:
+        raise RuntimeError(f"{field}.referenceExpected must be allow or reject")
+    if observed not in {"unknown", "allowed", "rejected"}:
+        raise RuntimeError(
+            f"{field}.observedOutcome must be unknown, allowed, or rejected"
+        )
+    return {
+        "attackerCanAttempt": bool(value.get("attackerCanAttempt", True)),
+        "referenceExpected": expected,
+        "observedOutcome": observed,
     }
 
 
@@ -334,6 +379,9 @@ def normalize_primitive(value: Any, field: str = "primitive") -> dict[str, Any]:
         raise RuntimeError(f"{field}.produces must be a non-empty list")
     if not isinstance(requires, list):
         raise RuntimeError(f"{field}.requires must be a list")
+    maximum_executions = int(value.get("maxExecutions", 1))
+    if not 1 <= maximum_executions <= 16:
+        raise RuntimeError(f"{field}.maxExecutions must be between 1 and 16")
     return {
         "id": require_text(value.get("id"), f"{field}.id"),
         "attackerControlledInputs": require_text_list(
@@ -350,6 +398,13 @@ def normalize_primitive(value: Any, field: str = "primitive") -> dict[str, Any]:
             for index, item in enumerate(requires)
         ],
         "context": normalize_context(value.get("context"), f"{field}.context"),
+        "contextTransition": normalize_context_transition(
+            value.get("contextTransition"), f"{field}.contextTransition"
+        ),
+        "attemptModel": normalize_attempt_model(
+            value.get("attemptModel"), f"{field}.attemptModel"
+        ),
+        "maxExecutions": maximum_executions,
         "constraints": normalize_constraints(
             value.get("constraints"), f"{field}.constraints"
         ),
@@ -390,14 +445,31 @@ def capability_match(produced: dict[str, Any], required: dict[str, Any]) -> tupl
     return True, "matched"
 
 
-def context_match(producer: dict[str, Any], consumer: dict[str, Any]) -> tuple[bool, list[str]]:
+def context_match(
+    producer: dict[str, Any], consumer: dict[str, Any]
+) -> tuple[str, list[str]]:
     reasons: list[str] = []
+    unknown: list[str] = []
+    attempt = consumer.get("attemptModel")
+    if isinstance(attempt, dict):
+        if not attempt["attackerCanAttempt"]:
+            reasons.append("operation-not-attacker-attemptable")
+        elif attempt["observedOutcome"] == "rejected":
+            reasons.append("implementation-rejected-operation")
+        elif attempt["observedOutcome"] == "unknown":
+            unknown.append("implementation-outcome-unobserved")
     for field in CONTEXT_FIELDS:
         supplied = producer["context"][field]
         required = consumer["context"][field]
-        if supplied not in {required, "any"} and required != "any":
+        if "any" in {supplied, required}:
+            unknown.append(field)
+        elif supplied != required:
             reasons.append(field)
-    return not reasons, reasons
+    if reasons:
+        return "impossible", reasons
+    if unknown:
+        return "unknown", unknown
+    return "feasible", []
 
 
 def condition_atom(scope: str, value: str) -> tuple[str, str, str]:
@@ -462,9 +534,23 @@ def connection_assessment(
                 )
     reasons: list[str] = []
     unknown: list[str] = []
-    compatible_context, context_reasons = context_match(producer, consumer)
-    if not compatible_context:
+    producer_context = (
+        producer.get("contextTransition", {}).get("to")
+        if producer.get("contextTransition")
+        else producer["context"]
+    )
+    consumer_context = (
+        consumer.get("contextTransition", {}).get("from")
+        if consumer.get("contextTransition")
+        else consumer["context"]
+    )
+    context_status, context_reasons = context_match(
+        {"context": producer_context}, {"context": consumer_context}
+    )
+    if context_status == "impossible":
         reasons.extend(f"context:{value}" for value in context_reasons)
+    elif context_status == "unknown":
+        unknown.extend(f"context-unresolved:{value}" for value in context_reasons)
     conflicts = condition_conflicts(
         condition_atoms(producer["constraints"]),
         condition_atoms(consumer["constraints"]),
@@ -502,7 +588,7 @@ def connection_assessment(
         "reasons": reasons,
         "unknowns": unknown,
         "contextChecks": {
-            field: producer["context"][field] for field in CONTEXT_FIELDS
+            field: producer_context[field] for field in CONTEXT_FIELDS
         },
         "stateChecks": consumer["constraints"]["requiredState"],
     }
@@ -542,12 +628,24 @@ def execution_check(
 ) -> tuple[str, list[str]]:
     impossible: list[str] = []
     unknown: list[str] = []
+    attempt = consumer.get("attemptModel")
+    if isinstance(attempt, dict):
+        if not attempt["attackerCanAttempt"]:
+            impossible.append("operation-not-attacker-attemptable")
+        elif attempt["observedOutcome"] == "rejected":
+            impossible.append("implementation-rejected-operation")
+        elif attempt["observedOutcome"] == "unknown":
+            unknown.append("implementation-outcome-unobserved")
     chain_context = configuration.get("context")
     if chain_context is not None:
+        transition = consumer.get("contextTransition")
+        required_context = transition["from"] if transition else consumer["context"]
         for field in CONTEXT_FIELDS:
             supplied = chain_context[field]
-            required = consumer["context"][field]
-            if supplied not in {required, "any"} and required != "any":
+            required = required_context[field]
+            if "any" in {supplied, required}:
+                unknown.append(f"context-unresolved:{field}")
+            elif supplied != required:
                 impossible.append(f"context:{field}")
     conflicts = condition_conflicts(
         configuration["conditions"], condition_atoms(consumer["constraints"])
@@ -568,7 +666,7 @@ def execution_check(
             impossible.append(
                 f"object:{required['identity']}:generation-or-state-mismatch"
             )
-    used = set(configuration["sequence"])
+    used = set(configuration.get("executed", configuration["sequence"]))
     for ordering in consumer["constraints"]["ordering"]:
         if ordering.startswith("after:") and ordering[6:] not in used:
             unknown.append(f"ordering:{ordering}")
@@ -584,10 +682,13 @@ def execution_check(
 def apply_primitive(
     configuration: dict[str, Any], primitive: dict[str, Any]
 ) -> dict[str, Any]:
+    transition = primitive.get("contextTransition")
+    preserved = transition.get("preservesCapabilities") if transition else "all"
     capabilities = [
         value
         for value in configuration["capabilities"]
         if value["type"] not in primitive["invalidatesCapabilities"]
+        and (preserved == "all" or value["type"] in preserved)
     ]
     capabilities.extend(primitive["produces"])
     capabilities = list(
@@ -595,6 +696,9 @@ def apply_primitive(
             json.dumps(value, sort_keys=True, separators=(",", ":")): value
             for value in capabilities
         }.values()
+    )
+    capabilities.sort(
+        key=lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"))
     )
     state = set(configuration["state"])
     state.difference_update(primitive["constraints"]["invalidatedState"])
@@ -618,26 +722,28 @@ def apply_primitive(
             "generation": generation,
         }
     prior_context = configuration["context"]
-    if prior_context is None:
+    if transition is not None:
+        merged_context = dict(transition["to"])
+    elif prior_context is None:
         merged_context = dict(primitive["context"])
     else:
-        merged_context = {
-            field: (
-                primitive["context"][field]
-                if prior_context[field] == "any"
-                else prior_context[field]
-            )
-            for field in CONTEXT_FIELDS
-        }
+        merged_context = dict(prior_context)
+    counts = dict(configuration.get("counts", {}))
+    counts[primitive["id"]] = int(counts.get(primitive["id"], 0)) + 1
     return {
         "sequence": [*configuration["sequence"], primitive["id"]],
+        "executed": sorted(
+            set(configuration.get("executed", configuration["sequence"]))
+            | {primitive["id"]}
+        ),
+        "counts": counts,
         "capabilities": capabilities,
         "state": sorted(state),
         "objects": objects,
         "conditions": sorted(
             set(
                 [
-                    *configuration["conditions"],
+                    *[tuple(value) for value in configuration["conditions"]],
                     *condition_atoms(primitive["constraints"]),
                 ]
             )
@@ -646,8 +752,56 @@ def apply_primitive(
     }
 
 
-def configuration_key(configuration: dict[str, Any]) -> str:
-    return json.dumps(configuration, sort_keys=True, separators=(",", ":"))
+def configuration_key(
+    configuration: dict[str, Any], ordering_sensitive: set[str] | None = None
+) -> str:
+    """Return a semantic state key, excluding irrelevant execution history."""
+
+    ordering_sensitive = ordering_sensitive or set()
+    semantic = {
+        "capabilities": sorted(
+            configuration["capabilities"],
+            key=lambda value: json.dumps(
+                value, sort_keys=True, separators=(",", ":")
+            ),
+        ),
+        "state": configuration["state"],
+        "objects": configuration["objects"],
+        "conditions": configuration["conditions"],
+        "context": configuration["context"],
+        "orderingProgress": sorted(
+            set(configuration.get("executed", configuration["sequence"]))
+            & ordering_sensitive
+        ),
+    }
+    return json.dumps(semantic, sort_keys=True, separators=(",", ":"))
+
+
+def backward_relevant_primitives(
+    primitives: list[dict[str, Any]], boundaries: list[dict[str, Any]]
+) -> set[str]:
+    """Find primitives that can satisfy a Critical boundary or its prerequisites."""
+
+    needed_capabilities = {
+        capability["type"]
+        for boundary in boundaries
+        for capability in boundary["requiredCapabilities"]
+    }
+    relevant: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for primitive in primitives:
+            if primitive["id"] in relevant:
+                continue
+            produced = {value["type"] for value in primitive["produces"]}
+            if not produced.intersection(needed_capabilities):
+                continue
+            relevant.add(primitive["id"])
+            needed_capabilities.update(value["type"] for value in primitive["requires"])
+            changed = True
+    # Attacker-controlled roots remain relevant if they feed any required type.
+    return relevant
 
 
 def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
@@ -682,8 +836,17 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         row for row in assessments if row["status"] == "impossible"
     ]
 
+    ordering_sensitive = {
+        value.split(":", 1)[1]
+        for consumer in [*primitives, *[boundary_consumer(row) for row in boundaries]]
+        for value in consumer["constraints"]["ordering"]
+        if value.startswith(("after:", "before:")) and ":" in value
+    }
+    relevant_primitives = backward_relevant_primitives(primitives, boundaries)
     empty = {
         "sequence": [],
+        "executed": [],
+        "counts": {},
         "capabilities": [],
         "state": [],
         "objects": {},
@@ -691,34 +854,87 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         "context": None,
     }
     configurations: list[dict[str, Any]] = []
-    queue: deque[dict[str, Any]] = deque()
+    queue: list[tuple[int, int, int, dict[str, Any]]] = []
     seen: set[str] = set()
-    for primitive in primitives:
-        if not primitive["attackerControlledInputs"]:
-            continue
-        status, _ = execution_check(empty, primitive)
-        if status == "feasible":
-            configuration = apply_primitive(empty, primitive)
-            key = configuration_key(configuration)
-            if key not in seen:
-                seen.add(key)
-                queue.append(configuration)
+    partial_order_reductions = 0
+    serial = 0
+
+    def enqueue(configuration: dict[str, Any]) -> None:
+        nonlocal serial, partial_order_reductions
+        key = configuration_key(configuration, ordering_sensitive)
+        if key in seen:
+            partial_order_reductions += 1
+            return
+        seen.add(key)
+        serial += 1
+        relevant_count = sum(
+            1 for value in configuration["sequence"] if value in relevant_primitives
+        )
+        heapq.heappush(
+            queue,
+            (-relevant_count, len(configuration["sequence"]), serial, configuration),
+        )
+
+    normalized_specification = {
+        "primitives": primitives,
+        "boundaries": boundaries,
+        "orderingSensitive": sorted(ordering_sensitive),
+    }
+    search_digest = hashlib.sha256(
+        json.dumps(
+            normalized_specification, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    checkpoint = document.get("resumeCheckpoint")
+    if checkpoint is not None:
+        if not isinstance(checkpoint, dict) or checkpoint.get("specificationSha256") != search_digest:
+            raise RuntimeError("resumeCheckpoint does not match this normalized chain specification")
+        prior_states = checkpoint.get("exploredStates", [])
+        frontier = checkpoint.get("frontier", [])
+        if not isinstance(prior_states, list) or not isinstance(frontier, list):
+            raise RuntimeError("resumeCheckpoint states and frontier must be lists")
+        configurations.extend(prior_states)
+        for configuration in [*prior_states, *frontier]:
+            seen.add(configuration_key(configuration, ordering_sensitive))
+        # Frontier states need to be reinserted after seeding the visited set.
+        for configuration in frontier:
+            serial += 1
+            relevant_count = sum(
+                1
+                for value in configuration["sequence"]
+                if value in relevant_primitives
+            )
+            heapq.heappush(
+                queue,
+                (-relevant_count, len(configuration["sequence"]), serial, configuration),
+            )
+    else:
+        for primitive in sorted(
+            primitives,
+            key=lambda row: (row["id"] not in relevant_primitives, row["id"]),
+        ):
+            if not primitive["attackerControlledInputs"]:
+                continue
+            status, _ = execution_check(empty, primitive)
+            if status == "feasible":
+                enqueue(apply_primitive(empty, primitive))
     maximum_configurations = int(document.get("maximumConfigurations", 10000))
-    while queue and len(configurations) < maximum_configurations:
-        configuration = queue.popleft()
+    explored_this_run = 0
+    while queue and explored_this_run < maximum_configurations:
+        _, _, _, configuration = heapq.heappop(queue)
         configurations.append(configuration)
-        used = set(configuration["sequence"])
-        for primitive in primitives:
-            if primitive["id"] in used:
+        explored_this_run += 1
+        counts = configuration.get("counts", {})
+        for primitive in sorted(
+            primitives,
+            key=lambda row: (row["id"] not in relevant_primitives, row["id"]),
+        ):
+            if int(counts.get(primitive["id"], 0)) >= primitive["maxExecutions"]:
                 continue
             status, _ = execution_check(configuration, primitive)
             if status != "feasible":
                 continue
-            successor = apply_primitive(configuration, primitive)
-            key = configuration_key(successor)
-            if key not in seen:
-                seen.add(key)
-                queue.append(successor)
+            enqueue(apply_primitive(configuration, primitive))
 
     reachable = {
         primitive_id
@@ -954,10 +1170,69 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
                         }
                     )
                     experiment_keys.add(key)
+    search_truncated = bool(queue)
+    continuation_strategy: dict[str, Any] | None = None
+    search_checkpoint: dict[str, Any] | None = None
+    if search_truncated:
+        frontier_states = [item[3] for item in sorted(queue)]
+        search_checkpoint = {
+            "schemaVersion": 1,
+            "specificationSha256": search_digest,
+            "exploredStates": configurations,
+            "frontier": frontier_states,
+        }
+        continuation_id = "CE-" + hashlib.sha256(
+            f"search-continuation:{search_digest}:{len(configurations)}".encode()
+        ).hexdigest()[:16]
+        continuation_experiment = {
+            "id": continuation_id,
+            "kind": "search-continuation",
+            "producer": None,
+            "consumer": "critical-boundary-search",
+            "missingCapability": {
+                "type": "search-continuation",
+                "properties": ["retained-semantic-frontier"],
+                "limitations": [],
+                "forbiddenLimitations": [],
+            },
+            "question": "Continue the retained semantic frontier instead of restarting or abandoning a truncated chain search",
+            "setupSequence": [],
+            "oracle": "the resumed search explores retained frontier states and either reaches a boundary or produces narrower missing links",
+            "falsifier": "the resumed semantic frontier is exhausted without a Critical boundary path",
+            "uncertainty": ["search-budget-exhausted"],
+            "estimatedCost": maximum_configurations,
+            "costBasis": "retained-frontier-size",
+            "measuredCost": None,
+            "ranking": {
+                "criticalBoundaryRelevance": 100,
+                "reachableProducer": 30,
+                "sharedUsefulness": 20,
+                "uncertaintyResolved": 25,
+                "estimatedCostPenalty": 1,
+                "score": 174,
+            },
+            "sourceEvidence": sorted(
+                {
+                    evidence
+                    for row in [*primitives, *boundaries]
+                    for evidence in row["sourceEvidence"]
+                }
+            ),
+        }
+        experiments.append(continuation_experiment)
+        continuation_strategy = {
+            "required": True,
+            "experimentId": continuation_id,
+            "reason": "configuration budget exhausted with an eligible semantic frontier remaining",
+            "resumeInput": "searchCheckpoint",
+            "frontierStates": len(frontier_states),
+            "exploredThisRun": explored_this_run,
+        }
     experiments.sort(key=lambda row: (-int(row["ranking"]["score"]), row["id"]))
     progress = sum(progress_score(row["progress"]) for row in primitives)
     focus_eligible = bool(experiments) and (
-        progress >= 6
+        search_truncated
+        or progress >= 6
         or any(
             edge["producer"] in reachable
             and edge["status"] in {"feasible", "unknown"}
@@ -983,7 +1258,15 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         "reachableFromAttacker": sorted(reachable),
         "completeBoundaryPaths": paths,
         "executionStates": configurations,
-        "searchTruncated": len(configurations) >= maximum_configurations,
+        "searchTruncated": search_truncated,
+        "searchStrategy": {
+            "semanticStateDeduplication": True,
+            "partialOrderReductions": partial_order_reductions,
+            "backwardRelevantPrimitives": sorted(relevant_primitives),
+            "historyRetainedOnlyForWitnessesAndOrdering": True,
+        },
+        "continuationStrategy": continuation_strategy,
+        "searchCheckpoint": search_checkpoint,
         "boundaryRequirementSuppliers": boundary_suppliers,
         "missingLinkExperiments": experiments,
         "scopedNegativeKnowledge": negative,
@@ -1058,6 +1341,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("spec", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--ingest", action="store_true")
+    parser.add_argument(
+        "--resume-from",
+        type=Path,
+        help="prior chain analysis containing a searchCheckpoint",
+    )
     args = parser.parse_args(argv)
     try:
         campaign = args.campaign.expanduser().resolve()
@@ -1065,7 +1353,14 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("not a Krineon campaign")
         output = args.output.expanduser().resolve()
         output.relative_to(campaign)
-        analysis = analyze_chain(read_json(args.spec.expanduser().resolve()))
+        specification = read_json(args.spec.expanduser().resolve())
+        if args.resume_from:
+            prior = read_json(args.resume_from.expanduser().resolve())
+            checkpoint = prior.get("searchCheckpoint")
+            if not isinstance(checkpoint, dict):
+                raise RuntimeError("resume analysis has no searchCheckpoint")
+            specification["resumeCheckpoint"] = checkpoint
+        analysis = analyze_chain(specification)
         write_json(output, analysis)
         task = schedule_focus(campaign, output, analysis) if args.ingest else None
         print(json.dumps({"analysis": str(output), "focusedTask": task}, indent=2))

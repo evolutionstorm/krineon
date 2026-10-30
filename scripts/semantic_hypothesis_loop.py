@@ -131,7 +131,7 @@ def source_derived_mutations(
     values: list[dict[str, Any]] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for flow in transformation_flows:
-        if flow.get("status") != "source-dataflow-proved-runtime-discriminator-required":
+        if flow.get("status") != "scope-aware-def-use-candidate-runtime-trace-required":
             continue
         transformations = flow.get("transformations")
         if not isinstance(transformations, list) or not transformations:
@@ -157,7 +157,7 @@ def source_derived_mutations(
                         {
                             "family": family,
                             "path": candidate,
-                            "origin": "source-transformation",
+                            "origin": "tentative-source-flow",
                             "sourceFact": fact_id,
                             "sourceFacts": composed,
                             "flowId": str(flow.get("id") or ""),
@@ -173,6 +173,48 @@ def source_derived_mutations(
             # exercised, but never call the unknown operation source-derived.
             frontier = next_frontier or frontier
     return values
+
+
+def unknown_transformation_experiments(
+    path: str, transformation_flows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Turn unfamiliar transformations into value-trace experiments."""
+
+    experiments: list[dict[str, Any]] = []
+    for flow in transformation_flows:
+        for transformation in flow.get("transformations", []):
+            callee = str(transformation.get("callee") or "")
+            if transformation_variants(path, callee):
+                continue
+            experiments.append(
+                {
+                    "id": "UT-" + hashlib.sha256(
+                        json.dumps(
+                            [flow.get("id"), transformation.get("fact"), callee],
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest()[:16],
+                    "status": "runtime-value-trace-required",
+                    "flowId": str(flow.get("id") or ""),
+                    "transformationFact": str(transformation.get("fact") or ""),
+                    "callee": callee,
+                    "question": "What semantic equivalence classes does this target-specific transformation create?",
+                    "tracePlan": {
+                        "captureAt": [
+                            str(flow.get("validatedFact") or ""),
+                            str(transformation.get("fact") or ""),
+                            str(flow.get("consumerFact") or ""),
+                        ],
+                        "values": [
+                            "validated input bytes and parsed value",
+                            "transformation result bytes and parsed value",
+                            "consumer-selected resource identity",
+                        ],
+                        "discriminator": "two representations pass the check but select different protected resources",
+                    },
+                }
+            )
+    return experiments
 
 
 def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
@@ -201,7 +243,10 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
             if isinstance(row, dict)
         ]
         source_variants = source_derived_mutations(route, transformation_flows)
-        proved_operation_facts = {
+        unknown_experiments = unknown_transformation_experiments(
+            route, transformation_flows
+        )
+        tentative_operation_facts = {
             str(value)
             for flow in transformation_flows
             for value in flow.get("transformationFacts", [flow.get("transformationFact")])
@@ -212,10 +257,10 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                 "sourceFact": str(item.get("id") or ""),
                 "callee": str(item.get("callee") or ""),
                 "status": "candidate-not-source-derived",
-                "reason": "no validated-value to result-symbol to downstream-consumer flow was proved",
+                "reason": "no same-scope assignment-aware candidate flow reaches this call",
             }
             for item in operation_facts
-            if str(item.get("id") or "") not in proved_operation_facts
+            if str(item.get("id") or "") not in tentative_operation_facts
             and transformation_variants(route, str(item.get("callee") or ""))
         ]
         variants = list(source_variants)
@@ -266,14 +311,14 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                     *[
                         {
                             "component": (
-                                "proved validation-to-consumer transformation"
-                                if str(item.get("id") or "") in proved_operation_facts
+                                "tentative validation-to-consumer transformation"
+                                if str(item.get("id") or "") in tentative_operation_facts
                                 else "source-observed call candidate"
                             ),
                             "operation": str(item.get("callee") or "unknown call"),
                             "evidenceFacts": [str(item.get("id"))],
                             "sourceDerived": str(item.get("id") or "")
-                            in proved_operation_facts,
+                            in tentative_operation_facts,
                         }
                         for item in operation_facts
                     ],
@@ -282,9 +327,11 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                     "validatedProperty": "the authorization consumer accepts or rejects the request-path representation",
                     "transformationAfterCheck": transformation_flows,
                     "transformationCandidates": transformation_candidates,
+                    "unknownTransformationExperiments": unknown_experiments,
                     "consumerAssumption": "route execution receives the same protected resource identity",
                     "executableDiscriminator": "baseline blocked, authenticated control reaches route R, and a transformed anonymous request also reaches R",
                     "sourceDerivedWitnessAvailable": bool(source_variants),
+                    "sourceFlowStatus": "tentative-until-runtime-values-confirmed",
                 },
                 "checks": [
                     {

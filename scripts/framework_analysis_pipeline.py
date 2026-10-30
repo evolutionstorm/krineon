@@ -355,6 +355,100 @@ def assignment_target(tokens: list[Token], call_start: int) -> str | None:
     return None
 
 
+def token_function_scopes(tokens: list[Token]) -> list[str]:
+    """Assign tokens to their nearest lexical function body.
+
+    This deliberately remains a conservative structural parser. Unsupported
+    syntax stays in module scope and therefore cannot be promoted as a proved
+    flow. Tree-sitter or Joern can later replace these candidates with a CPG
+    witness without changing the fact schema.
+    """
+
+    scopes = ["module" for _ in tokens]
+
+    def matching_brace(open_index: int) -> int | None:
+        depth = 0
+        for cursor in range(open_index, len(tokens)):
+            if tokens[cursor].value == "{":
+                depth += 1
+            elif tokens[cursor].value == "}":
+                depth -= 1
+                if depth == 0:
+                    return cursor
+        return None
+
+    ranges: list[tuple[int, int, str]] = []
+    for index, token in enumerate(tokens):
+        if token.value not in {"function", "=>"}:
+            continue
+        open_index = next(
+            (
+                cursor
+                for cursor in range(index + 1, min(len(tokens), index + 160))
+                if tokens[cursor].value in {"{", ";"}
+            ),
+            None,
+        )
+        if open_index is None or tokens[open_index].value != "{":
+            continue
+        close_index = matching_brace(open_index)
+        if close_index is None:
+            continue
+        scope_id = f"function:{token.line}:{token.column}:{index}"
+        ranges.append((open_index + 1, close_index, scope_id))
+    # Outer ranges are applied first, then inner ranges overwrite them.
+    for start, end, scope_id in sorted(ranges, key=lambda row: -(row[1] - row[0])):
+        for index in range(start, end):
+            scopes[index] = scope_id
+    return scopes
+
+
+def token_control_paths(tokens: list[Token]) -> list[list[str]]:
+    """Approximate block dominance without claiming a full CFG."""
+
+    paths: list[list[str]] = []
+    stack: list[str] = []
+    control_words = {"if", "else", "switch", "case", "for", "while", "try", "catch"}
+    for index, token in enumerate(tokens):
+        if token.value == "}":
+            if stack:
+                stack.pop()
+        paths.append(list(stack))
+        if token.value != "{":
+            continue
+        lookback = [
+            tokens[cursor].value
+            for cursor in range(max(0, index - 24), index)
+        ]
+        label = next(
+            (value for value in reversed(lookback) if value in control_words),
+            "block",
+        )
+        stack.append(f"{label}:{index}")
+    return paths
+
+
+def assignment_sources(tokens: list[Token], equals_index: int) -> tuple[list[str], bool]:
+    identifiers: list[str] = []
+    cursor = equals_index + 1
+    depth = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if depth == 0 and token.value in {";", "{", "}"}:
+            break
+        if token.value in {"(", "["}:
+            depth += 1
+        elif token.value in {")", "]"}:
+            depth = max(0, depth - 1)
+        elif token.kind == "identifier" and token.value not in {
+            "true", "false", "null", "undefined", "new", "await"
+        }:
+            if token.value not in identifiers:
+                identifiers.append(token.value)
+        cursor += 1
+    return identifiers, not identifiers
+
+
 def scan_javascript(
     path: Path,
     root: Path,
@@ -369,6 +463,8 @@ def scan_javascript(
         return [], [inventory]
     source = path.read_text(encoding="utf-8", errors="replace")
     tokens = lex_javascript(source)
+    scope_ids = token_function_scopes(tokens)
+    control_paths = token_control_paths(tokens)
     facts: list[dict[str, Any]] = []
     index = 0
     while index < len(tokens) and tokens[index].value == ";":
@@ -380,6 +476,31 @@ def scan_javascript(
             index += 1
 
     for index, token in enumerate(tokens):
+        if (
+            token.value == "="
+            and index > 0
+            and tokens[index - 1].kind == "identifier"
+            and (index < 2 or tokens[index - 2].value not in {".", "?."})
+        ):
+            sources, constant = assignment_sources(tokens, index)
+            facts.append(
+                fact(
+                    path,
+                    root,
+                    "assignment",
+                    tokens[index - 1],
+                    {
+                        "targetSymbol": tokens[index - 1].value,
+                        "sourceIdentifiers": sources,
+                        "constantAssignment": constant,
+                        "scopeId": scope_ids[index],
+                        "tokenIndex": index,
+                        "controlPath": control_paths[index],
+                        "classification": classification,
+                        "snippet": statement_snippet(source, token.line),
+                    },
+                )
+            )
         if token.value == "import":
             if index + 1 < len(tokens) and tokens[index + 1].value == "(":
                 argument = tokens[index + 2] if index + 2 < len(tokens) else None
@@ -448,6 +569,9 @@ def scan_javascript(
                 "literalArguments": call_literal_arguments(tokens, index),
                 "classification": classification,
                 "snippet": statement_snippet(source, tokens[start].line),
+                "scopeId": scope_ids[start],
+                "tokenIndex": start,
+                "controlPath": control_paths[start],
             }
             facts.append(
                 fact(
@@ -780,38 +904,78 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
         auth_rows = [
             row for row in source_facts if row["kind"] == "authentication-signal"
         ]
-        operations = sorted(
-            [row for row in source_facts if row["kind"] == "call-operation"],
-            key=lambda row: (int(row.get("line") or 0), int(row.get("column") or 0)),
-        )
+        operations = [
+            row for row in source_facts if row["kind"] == "call-operation"
+        ]
+        assignments = [row for row in source_facts if row["kind"] == "assignment"]
         for auth in auth_rows:
+            auth_scope = str(auth.get("scopeId") or "module")
+            auth_control = tuple(auth.get("controlPath", []))
             validated_symbols = set(auth.get("argumentIdentifiers", [])) | set(
                 auth.get("receiverSymbols", [])
             )
             if not validated_symbols:
                 continue
-            auth_position = (int(auth.get("line") or 0), int(auth.get("column") or 0))
-            # Track symbols derived from values actually observed by the
-            # validation call. A same-file string such as
-            # logMessage.toLowerCase() is not a witness unless its result is on
-            # this exact ordered data-flow path.
+            auth_position = (
+                int(auth.get("tokenIndex", -1)),
+                int(auth.get("line") or 0),
+                int(auth.get("column") or 0),
+            )
+            # Track def-use versions only within the same lexical function.
+            # Reassignment kills the old value. This is a candidate path, not a
+            # proof of control-flow dominance; runtime tracing must confirm it.
             provenance: dict[str, list[dict[str, Any]]] = {
                 symbol: [] for symbol in validated_symbols
             }
-            derived_at: dict[str, tuple[int, int]] = {
+            derived_at: dict[str, tuple[int, int, int]] = {
                 symbol: auth_position for symbol in validated_symbols
             }
-            for operation in operations:
-                operation_position = (
-                    int(operation.get("line") or 0),
-                    int(operation.get("column") or 0),
+            events = sorted(
+                [
+                    row
+                    for row in [*operations, *assignments]
+                    if str(row.get("scopeId") or "module") == auth_scope
+                    and int(row.get("tokenIndex", -1)) > auth_position[0]
+                    and tuple(row.get("controlPath", []))[: len(auth_control)]
+                    == auth_control
+                ],
+                key=lambda row: (
+                    int(row.get("tokenIndex", -1)),
+                    0 if row["kind"] == "assignment" else 1,
+                ),
+            )
+            for event in events:
+                event_position = (
+                    int(event.get("tokenIndex", -1)),
+                    int(event.get("line") or 0),
+                    int(event.get("column") or 0),
                 )
+                if event["kind"] == "assignment":
+                    target = str(event.get("targetSymbol") or "")
+                    sources = [
+                        value
+                        for value in event.get("sourceIdentifiers", [])
+                        if value in provenance
+                    ]
+                    if not target:
+                        continue
+                    if sources:
+                        source_symbol = min(
+                            sources,
+                            key=lambda symbol: (len(provenance[symbol]), symbol),
+                        )
+                        provenance[target] = list(provenance[source_symbol])
+                        derived_at[target] = event_position
+                    else:
+                        provenance.pop(target, None)
+                        derived_at.pop(target, None)
+                    continue
+
+                operation = event
                 result_symbol = str(operation.get("resultSymbol") or "")
                 operation_inputs = set(operation.get("argumentIdentifiers", [])) | set(
                     operation.get("receiverSymbols", [])
                 )
-                if not result_symbol or operation_position <= auth_position:
-                    continue
                 input_symbols = sorted(operation_inputs.intersection(provenance))
                 if not input_symbols:
                     continue
@@ -819,64 +983,58 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
                     input_symbols,
                     key=lambda symbol: (len(provenance[symbol]), symbol),
                 )
-                provenance[result_symbol] = [
-                    *provenance[source_symbol],
-                    {
-                        "fact": operation["id"],
-                        "callee": operation.get("callee"),
-                        "inputSymbol": source_symbol,
-                        "resultSymbol": result_symbol,
-                        "position": list(operation_position),
-                    },
-                ]
-                derived_at[result_symbol] = operation_position
-
-            for result_symbol, transformations in provenance.items():
+                if result_symbol:
+                    provenance[result_symbol] = [
+                        *provenance[source_symbol],
+                        {
+                            "fact": operation["id"],
+                            "callee": operation.get("callee"),
+                            "inputSymbol": source_symbol,
+                            "resultSymbol": result_symbol,
+                            "position": list(event_position),
+                        },
+                    ]
+                    derived_at[result_symbol] = event_position
+                    continue
+                transformations = provenance[source_symbol]
                 if not transformations:
                     continue
-                for consumer in operations:
-                    consumer_position = (
-                        int(consumer.get("line") or 0),
-                        int(consumer.get("column") or 0),
-                    )
-                    consumer_inputs = set(consumer.get("argumentIdentifiers", [])) | set(
-                        consumer.get("receiverSymbols", [])
-                    )
-                    if (
-                        consumer_position <= derived_at[result_symbol]
-                        or result_symbol not in consumer_inputs
-                        or consumer.get("resultSymbol")
-                    ):
-                        continue
-                    transformation_ids = [row["fact"] for row in transformations]
-                    transformation_flows.append(
-                        {
-                            "id": stable_id(
-                                "FR",
-                                "validated-transformation-consumer",
-                                auth["id"],
-                                transformation_ids,
-                                consumer["id"],
-                            ),
-                            "kind": "validated-transformation-consumer",
-                            "source": source,
-                            "validatedFact": auth["id"],
-                            "validatedSymbols": sorted(validated_symbols),
-                            "transformationFacts": transformation_ids,
-                            "transformations": transformations,
-                            "transformationFact": transformation_ids[0],
-                            "transformationCallee": transformations[0].get("callee"),
-                            "resultSymbol": result_symbol,
-                            "consumerFact": consumer["id"],
-                            "consumerCallee": consumer.get("callee"),
-                            "order": [
-                                list(auth_position),
-                                *[row["position"] for row in transformations],
-                                [consumer.get("line"), consumer.get("column")],
-                            ],
-                            "status": "source-dataflow-proved-runtime-discriminator-required",
-                        }
-                    )
+                transformation_ids = [row["fact"] for row in transformations]
+                transformation_flows.append(
+                    {
+                        "id": stable_id(
+                            "FR",
+                            "validated-transformation-consumer",
+                            auth["id"],
+                            transformation_ids,
+                            operation["id"],
+                        ),
+                        "kind": "validated-transformation-consumer",
+                        "source": source,
+                        "scopeId": auth_scope,
+                        "validatedFact": auth["id"],
+                        "validatedSymbols": sorted(validated_symbols),
+                        "transformationFacts": transformation_ids,
+                        "transformations": transformations,
+                        "transformationFact": transformation_ids[0],
+                        "transformationCallee": transformations[0].get("callee"),
+                        "resultSymbol": source_symbol,
+                        "consumerFact": operation["id"],
+                        "consumerCallee": operation.get("callee"),
+                        "order": [
+                            list(auth_position),
+                            *[row["position"] for row in transformations],
+                            list(event_position),
+                        ],
+                        "defUseChecks": {
+                            "sameLexicalFunction": True,
+                            "assignmentsVersioned": True,
+                            "sourceOrder": True,
+                            "controlFlowDominance": "structural-block-prefix-candidate-runtime-trace-required",
+                        },
+                        "status": "scope-aware-def-use-candidate-runtime-trace-required",
+                    }
+                )
     for row in facts:
         if row["kind"] not in {"static-import", "dynamic-import"}:
             continue
@@ -1026,6 +1184,7 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
             "transformationFlows": route_transformation_flows,
             "dominanceStatus": "runtime-verification-required",
         })
+    relations.extend(transformation_flows)
     return relations
 
 

@@ -6,6 +6,54 @@ from scripts.state_sequence_generator import generate
 
 
 class StateSequenceGeneratorTests(unittest.TestCase):
+    def test_retains_allocate_release_stale_use_as_an_attempt(self) -> None:
+        result = generate(
+            {
+                "schemaVersion": 1,
+                "initialState": "free",
+                "operations": [
+                    {
+                        "id": "allocate",
+                        "from": "free",
+                        "to": "allocated",
+                        "authority": "allocator",
+                        "ownership": "slot generation",
+                        "invariant": "allocated object is live",
+                        "instance": {"identity": "slot", "action": "allocate"},
+                    },
+                    {
+                        "id": "release",
+                        "from": "allocated",
+                        "to": "free",
+                        "authority": "allocator",
+                        "ownership": "released slot",
+                        "invariant": "released object is dead",
+                        "instance": {"identity": "slot", "action": "release"},
+                    },
+                    {
+                        "id": "use",
+                        "from": "allocated",
+                        "to": "allocated",
+                        "authority": "attacker",
+                        "ownership": "stale reference",
+                        "invariant": "released objects reject use",
+                        "instance": {"identity": "slot", "action": "use"},
+                    },
+                ],
+            },
+            3,
+        )
+        stale = next(
+            row
+            for row in result["sequences"]
+            if row["operationIds"] == ["allocate", "release", "use"]
+        )
+        observation = stale["instanceHistory"][-1]
+        self.assertEqual(observation["referenceExpected"], "reject")
+        self.assertEqual(observation["observedOutcome"], "unknown")
+        self.assertTrue(observation["staleReferenceAttempt"])
+        self.assertEqual(stale["states"][-1], "free")
+
     def test_only_emits_state_valid_history_and_marks_required_pairs(self) -> None:
         result = generate(
             {

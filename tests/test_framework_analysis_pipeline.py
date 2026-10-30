@@ -8,12 +8,65 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.framework_analysis_pipeline import build_relations, scan_javascript
 
 PROJECT = Path(__file__).resolve().parents[1]
 PIPELINE = PROJECT / "scripts" / "framework_analysis_pipeline.py"
 
 
 class FrameworkAnalysisPipelineTests(unittest.TestCase):
+    def candidate_flows(self, source: str) -> list[dict[str, object]]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "route.js"
+            path.write_text(source, encoding="utf-8")
+            facts, _ = scan_javascript(
+                path,
+                root,
+                "source",
+                {"requireAuth"},
+                set(),
+                1024 * 1024,
+            )
+            return [
+                row
+                for row in build_relations(root, facts)
+                if row.get("kind") == "validated-transformation-consumer"
+            ]
+
+    def test_flow_does_not_cross_lexical_function_scope(self) -> None:
+        flows = self.candidate_flows(
+            "function checked(request) { requireAuth(request); }\n"
+            "function used(request) { const normalized = request.toLowerCase(); execute(normalized); }\n"
+        )
+        self.assertEqual(flows, [])
+
+    def test_assignment_kills_validated_value_before_transformation(self) -> None:
+        flows = self.candidate_flows(
+            "function route(request) { requireAuth(request); request = '/public'; "
+            "const normalized = request.toLowerCase(); execute(normalized); }\n"
+        )
+        self.assertEqual(flows, [])
+
+    def test_conditional_validation_is_not_treated_as_dominating_consumer(self) -> None:
+        flows = self.candidate_flows(
+            "function route(request, shouldCheck) { if (shouldCheck) { requireAuth(request); } "
+            "const normalized = request.toLowerCase(); execute(normalized); }\n"
+        )
+        self.assertEqual(flows, [])
+
+    def test_same_scope_flow_is_tentative_and_assignment_aware(self) -> None:
+        flows = self.candidate_flows(
+            "function route(request) { requireAuth(request); "
+            "const normalized = customDecode(request); execute(normalized); }\n"
+        )
+        self.assertEqual(len(flows), 1)
+        self.assertEqual(
+            flows[0]["status"],
+            "scope-aware-def-use-candidate-runtime-trace-required",
+        )
+        self.assertTrue(flows[0]["defUseChecks"]["sameLexicalFunction"])
+
     def test_ingest_is_idempotent_and_schedules_runtime_validation_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -280,7 +333,7 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
             self.assertTrue(flows)
             self.assertEqual(
                 flows[0]["status"],
-                "source-dataflow-proved-runtime-discriminator-required",
+                "scope-aware-def-use-candidate-runtime-trace-required",
             )
             self.assertEqual(flows[0]["resultSymbol"], "normalized")
             self.assertIn("request", flows[0]["validatedSymbols"])

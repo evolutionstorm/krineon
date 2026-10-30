@@ -15,6 +15,7 @@ from tests.path_proof_fixture import install_machine_path_evidence
 from scripts.research_harness import (
     connect_orchestration,
     rebuild_campaign_capability_graph,
+    schedule_experiment_frontier,
     validate_research_lead,
 )
 
@@ -27,6 +28,87 @@ REALITY_RUNNER = PROJECT / "scripts" / "reality_runner.py"
 
 
 class HarnessTests(unittest.TestCase):
+    def test_experiment_frontier_advances_past_terminal_top_rank(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            connection = connect_orchestration(campaign)
+
+            def experiment(identifier: str, score: int) -> dict[str, object]:
+                return {
+                    "id": identifier,
+                    "producer": "producer-" + identifier,
+                    "consumer": "boundary:exec",
+                    "missingCapability": {
+                        "type": "capability-" + identifier,
+                        "properties": [],
+                        "limitations": [],
+                        "forbiddenLimitations": [],
+                    },
+                    "question": "Does this exact mechanism connect?",
+                    "setupSequence": [],
+                    "oracle": "consumer reached",
+                    "falsifier": "guard blocks consumer",
+                    "uncertainty": [],
+                    "ranking": {"score": score},
+                    "sourceEvidence": ["src/fixture.js:1"],
+                }
+
+            analysis = {
+                "focusEligible": True,
+                "missingLinkExperiments": [
+                    experiment("first", 100),
+                    experiment("second", 90),
+                    experiment("third", 80),
+                ],
+                "scopedNegativeKnowledge": [],
+            }
+            first_task = schedule_experiment_frontier(
+                campaign,
+                connection,
+                analysis,
+                version=1,
+                graph_path="evidence/chain-graphs/campaign-v1.json",
+            )
+            self.assertIsNotNone(first_task)
+            connection.execute(
+                "UPDATE tasks SET state='completed' WHERE task_id=?", (first_task,)
+            )
+            connection.execute(
+                "UPDATE experiment_frontier SET state='confirmed' WHERE task_id=?",
+                (first_task,),
+            )
+            analysis["scopedNegativeKnowledge"] = [
+                {
+                    "primitive": "producer-second",
+                    "mechanism": "capability-second",
+                    "consumer": "boundary:exec",
+                    "reopeningConditions": ["different producer or guard state"],
+                }
+            ]
+            second_task = schedule_experiment_frontier(
+                campaign,
+                connection,
+                analysis,
+                version=1,
+                graph_path="evidence/chain-graphs/campaign-v1.json",
+            )
+            self.assertIsNotNone(second_task)
+            self.assertNotEqual(first_task, second_task)
+            states = connection.execute(
+                "SELECT experiment_id,state FROM experiment_frontier ORDER BY score DESC"
+            ).fetchall()
+            self.assertEqual(
+                [(row["experiment_id"], row["state"]) for row in states],
+                [
+                    ("first", "confirmed"),
+                    ("second", "refuted"),
+                    ("third", "running"),
+                ],
+            )
+            connection.close()
+
     def run_cli(self, *args: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
         completed = subprocess.run(
             [sys.executable, str(HARNESS), *args],

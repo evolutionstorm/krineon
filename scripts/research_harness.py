@@ -354,12 +354,29 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           FOREIGN KEY(task_id) REFERENCES tasks(task_id),
           FOREIGN KEY(lead_id) REFERENCES research_leads(lead_id)
         );
+        CREATE TABLE IF NOT EXISTS experiment_frontier (
+          frontier_id TEXT PRIMARY KEY,
+          experiment_id TEXT NOT NULL,
+          graph_version INTEGER NOT NULL,
+          state TEXT NOT NULL CHECK(state IN (
+            'pending','running','confirmed','refuted','inconclusive','superseded'
+          )),
+          score INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          task_id TEXT,
+          outcome_json TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        );
         CREATE INDEX IF NOT EXISTS tasks_state_wave_idx ON tasks(state, wave, priority);
         CREATE INDEX IF NOT EXISTS task_approach_family_idx
           ON task_approach_families(family_id, task_id);
         CREATE INDEX IF NOT EXISTS events_task_idx ON events(task_id, event_id);
         CREATE INDEX IF NOT EXISTS research_leads_grade_idx
           ON research_leads(state, evidence_grade, updated_at);
+        CREATE INDEX IF NOT EXISTS experiment_frontier_state_idx
+          ON experiment_frontier(state, score DESC, updated_at);
         """
     )
     task_columns = {
@@ -3384,8 +3401,6 @@ history, security commits, advisories, or other revisions to locate a bug.
                 "scheduledTask": scheduled_task,
             }
         )
-    if leads:
-        rebuild_campaign_capability_graph(root, connection)
     return retained
 
 
@@ -3907,6 +3922,356 @@ def latest_task_submission(connection: sqlite3.Connection, task_id: str) -> sqli
     ).fetchone()
 
 
+EXPERIMENT_FRONTIER_STATES = {
+    "pending",
+    "running",
+    "confirmed",
+    "refuted",
+    "inconclusive",
+    "superseded",
+}
+
+
+def experiment_frontier_identity(experiment: dict[str, Any]) -> str:
+    """Identify a missing-link mechanism independently of its transient rank."""
+
+    identity = {
+        "producer": experiment.get("producer"),
+        "consumer": experiment.get("consumer"),
+        "missingCapability": experiment.get("missingCapability"),
+        "setupSequence": experiment.get("setupSequence", []),
+        "uncertainty": experiment.get("uncertainty", []),
+        "sourceEvidence": experiment.get("sourceEvidence", []),
+        "kind": experiment.get("kind", "missing-link"),
+    }
+    return "EF-" + canonical_digest(identity)[:20]
+
+
+def scoped_negative_matches_experiment(
+    experiment: dict[str, Any], negative: dict[str, Any]
+) -> bool:
+    """Apply a negative only to the exact consumer/mechanism it falsified."""
+
+    consumer = str(negative.get("consumer") or "")
+    if consumer and consumer != str(experiment.get("consumer") or ""):
+        return False
+    mechanism = str(negative.get("mechanism") or "")
+    missing_type = str((experiment.get("missingCapability") or {}).get("type") or "")
+    identities = {
+        str(experiment.get("id") or ""),
+        str(experiment.get("producer") or ""),
+        missing_type,
+    }
+    same_producer = str(negative.get("primitive") or "") == str(
+        experiment.get("producer") or ""
+    )
+    return bool(same_producer or (mechanism and mechanism in identities))
+
+
+def reconcile_experiment_frontier(connection: sqlite3.Connection) -> None:
+    """Turn orphaned running experiments into explicit inconclusive outcomes."""
+
+    now = utc_now()
+    for row in connection.execute(
+        "SELECT frontier_id,task_id FROM experiment_frontier WHERE state='running'"
+    ).fetchall():
+        if not row["task_id"]:
+            continue
+        task = connection.execute(
+            "SELECT state,last_error FROM tasks WHERE task_id=?", (row["task_id"],)
+        ).fetchone()
+        if task is None or task["state"] in {
+            "failed",
+            "blocked",
+            "cancelled",
+            "timed-out",
+        }:
+            connection.execute(
+                "UPDATE experiment_frontier SET state='inconclusive',outcome_json=?,"
+                "updated_at=? WHERE frontier_id=? AND state='running'",
+                (
+                    json.dumps(
+                        {
+                            "reason": "associated task ended without a conclusive observation",
+                            "taskState": task["state"] if task else "missing",
+                            "lastError": task["last_error"] if task else None,
+                        },
+                        sort_keys=True,
+                    ),
+                    now,
+                    row["frontier_id"],
+                ),
+            )
+
+
+def schedule_experiment_frontier(
+    root: Path,
+    connection: sqlite3.Connection,
+    analysis: dict[str, Any],
+    *,
+    version: int,
+    graph_path: str,
+) -> str | None:
+    """Synchronize the durable frontier and schedule its best eligible member."""
+
+    reconcile_experiment_frontier(connection)
+    now = utc_now()
+    current_ids: set[str] = set()
+    negatives = [
+        value
+        for value in analysis.get("scopedNegativeKnowledge", [])
+        if isinstance(value, dict)
+    ]
+    experiments = [
+        value
+        for value in analysis.get("missingLinkExperiments", [])
+        if isinstance(value, dict)
+    ]
+    for experiment in experiments:
+        frontier_id = experiment_frontier_identity(experiment)
+        current_ids.add(frontier_id)
+        score = int((experiment.get("ranking") or {}).get("score", 0))
+        prior = connection.execute(
+            "SELECT * FROM experiment_frontier WHERE frontier_id=?", (frontier_id,)
+        ).fetchone()
+        if prior is None:
+            state = "pending"
+            outcome: dict[str, Any] | None = None
+            matching_negative = next(
+                (
+                    negative
+                    for negative in negatives
+                    if scoped_negative_matches_experiment(experiment, negative)
+                ),
+                None,
+            )
+            if matching_negative is not None:
+                state = "refuted"
+                outcome = {
+                    "reason": "scoped negative knowledge matches this mechanism",
+                    "negativeKnowledge": matching_negative,
+                    "reopeningConditions": matching_negative.get(
+                        "reopeningConditions", []
+                    ),
+                }
+            connection.execute(
+                "INSERT INTO experiment_frontier(frontier_id,experiment_id,graph_version,"
+                "state,score,payload_json,task_id,outcome_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,NULL,?,?,?)",
+                (
+                    frontier_id,
+                    str(experiment.get("id") or frontier_id),
+                    version,
+                    state,
+                    score,
+                    json.dumps(experiment, sort_keys=True),
+                    json.dumps(outcome, sort_keys=True) if outcome else None,
+                    now,
+                    now,
+                ),
+            )
+        else:
+            # A changed mechanism receives a different frontier identity. Terminal
+            # knowledge is never silently reopened merely because ranks changed.
+            matching_negative = next(
+                (
+                    negative
+                    for negative in negatives
+                    if scoped_negative_matches_experiment(experiment, negative)
+                ),
+                None,
+            )
+            next_state = str(prior["state"])
+            next_outcome = prior["outcome_json"]
+            if next_state == "pending" and matching_negative is not None:
+                next_state = "refuted"
+                next_outcome = json.dumps(
+                    {
+                        "reason": "new scoped negative knowledge matches this mechanism",
+                        "negativeKnowledge": matching_negative,
+                        "reopeningConditions": matching_negative.get(
+                            "reopeningConditions", []
+                        ),
+                    },
+                    sort_keys=True,
+                )
+            connection.execute(
+                "UPDATE experiment_frontier SET experiment_id=?,graph_version=?,state=?,"
+                "score=?,payload_json=?,outcome_json=?,updated_at=? WHERE frontier_id=?",
+                (
+                    str(experiment.get("id") or frontier_id),
+                    version,
+                    next_state,
+                    score,
+                    json.dumps(experiment, sort_keys=True),
+                    next_outcome,
+                    now,
+                    frontier_id,
+                ),
+            )
+
+    if current_ids:
+        placeholders = ",".join("?" for _ in current_ids)
+        connection.execute(
+            "UPDATE experiment_frontier SET state='superseded',updated_at=? "
+            f"WHERE state='pending' AND frontier_id NOT IN ({placeholders})",
+            (now, *sorted(current_ids)),
+        )
+    else:
+        connection.execute(
+            "UPDATE experiment_frontier SET state='superseded',updated_at=? "
+            "WHERE state='pending'",
+            (now,),
+        )
+
+    active = connection.execute(
+        "SELECT frontier_id FROM experiment_frontier WHERE state='running' LIMIT 1"
+    ).fetchone()
+    if active is not None or not analysis.get("focusEligible"):
+        return None
+    chosen = connection.execute(
+        "SELECT * FROM experiment_frontier WHERE state='pending' "
+        "ORDER BY score DESC,created_at,frontier_id LIMIT 1"
+    ).fetchone()
+    if chosen is None:
+        return None
+    experiment = json.loads(chosen["payload_json"])
+    task_id = f"campaign-chain-v{version}-{chosen['frontier_id'][3:13].lower()}"
+    suffix = 1
+    base_task_id = task_id
+    while connection.execute(
+        "SELECT 1 FROM tasks WHERE task_id=?", (task_id,)
+    ).fetchone():
+        suffix += 1
+        task_id = f"{base_task_id}-{suffix}"
+    packet = root / "tasks" / f"dynamic-{task_id}.md"
+    packet.write_text(
+        f"""# Campaign-wide missing-link experiment
+
+Frontier ID: `{chosen['frontier_id']}`
+Capability graph version: `{version}`
+Retained graph: `{graph_path}`
+Ranking score: `{chosen['score']}`
+
+## Question
+
+{experiment['question']}
+
+## Joint execution contract
+
+Show whether the capabilities, state, object identity and generation, ordering,
+lifetime, deployment, acquisition, and context transitions occur in one
+feasible execution. Record a `confirmed`, `refuted`, or `inconclusive`
+experiment outcome. A refutation must name the exact mechanism and conditions;
+it does not suppress a different mechanism.
+
+## Oracle
+
+{experiment['oracle']}
+
+## Falsifier
+
+{experiment['falsifier']}
+
+Retain a concrete observation. Do not promote it to a finding unless the filing
+evidence gate independently passes.
+""",
+        encoding="utf-8",
+    )
+    insert_dynamic_task(
+        connection,
+        task_id=task_id,
+        wave=max(1, int(get_metadata(connection, "lastResearchRound", 0))),
+        lane="campaign-chain-experiment",
+        title=f"Resolve frontier experiment {chosen['experiment_id']}",
+        packet=packet.relative_to(root).as_posix(),
+        priority=2200 + min(700, int(chosen["score"])),
+        dependencies=[],
+        excluded_workers=[],
+        max_attempts=2,
+        timeout_seconds=int(
+            get_metadata(connection, "defaultTaskTimeoutSeconds", 7200)
+        ),
+        approach_families=["chain-composition"],
+        task_kind="focused-chain-investigation",
+    )
+    connection.execute(
+        "UPDATE experiment_frontier SET state='running',task_id=?,updated_at=? "
+        "WHERE frontier_id=? AND state='pending'",
+        (task_id, now, chosen["frontier_id"]),
+    )
+    record_event(
+        connection,
+        "experiment-frontier-scheduled",
+        task_id=task_id,
+        payload={
+            "frontierId": chosen["frontier_id"],
+            "experimentId": chosen["experiment_id"],
+            "score": chosen["score"],
+            "graphVersion": version,
+        },
+    )
+    return task_id
+
+
+def complete_experiment_frontier(
+    connection: sqlite3.Connection,
+    *,
+    task: sqlite3.Row,
+    result: dict[str, Any],
+    task_outcome: str,
+    validated_leads: list[dict[str, Any]],
+) -> None:
+    row = connection.execute(
+        "SELECT * FROM experiment_frontier WHERE task_id=? AND state='running'",
+        (task["task_id"],),
+    ).fetchone()
+    if row is None:
+        return
+    explicit = result.get("experimentOutcome")
+    state = "inconclusive"
+    outcome: dict[str, Any] = {
+        "reason": "task ended without an explicit conclusive frontier outcome",
+        "taskOutcome": task_outcome,
+    }
+    if task_outcome == "completed" and isinstance(explicit, dict):
+        requested = str(explicit.get("state") or "")
+        if requested not in {"confirmed", "refuted", "inconclusive"}:
+            raise SystemExit(
+                "experimentOutcome.state must be confirmed, refuted, or inconclusive"
+            )
+        evidence = explicit.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            raise SystemExit("experimentOutcome.evidence must be a non-empty list")
+        state = requested
+        outcome = dict(explicit)
+    elif task_outcome == "completed":
+        milestones = {
+            milestone
+            for lead in validated_leads
+            for milestone in (lead.get("chainProgress") or {}).get("milestones", [])
+        }
+        if milestones.intersection(
+            {"chain-precondition-confirmed", "compatible-primitives-connected"}
+        ):
+            state = "confirmed"
+            outcome = {"derivedFromMilestones": sorted(milestones)}
+        elif "chain-precondition-falsified" in milestones:
+            state = "refuted"
+            outcome = {"derivedFromMilestones": sorted(milestones)}
+    connection.execute(
+        "UPDATE experiment_frontier SET state=?,outcome_json=?,updated_at=? "
+        "WHERE frontier_id=? AND state='running'",
+        (state, json.dumps(outcome, sort_keys=True), utc_now(), row["frontier_id"]),
+    )
+    record_event(
+        connection,
+        "experiment-frontier-completed",
+        task_id=str(task["task_id"]),
+        payload={"frontierId": row["frontier_id"], "state": state},
+    )
+
+
 def rebuild_campaign_capability_graph(
     root: Path,
     connection: sqlite3.Connection,
@@ -4011,10 +4376,24 @@ def rebuild_campaign_capability_graph(
     if specification_digest == prior_digest:
         latest_value = get_metadata(connection, "campaignCapabilityGraphLatest")
         if isinstance(latest_value, str) and (root / latest_value).is_file():
+            analysis = read_json(root / latest_value)
+            version = int(
+                analysis.get(
+                    "graphVersion",
+                    get_metadata(connection, "campaignCapabilityGraphVersion", 0),
+                )
+            )
+            scheduled_task = schedule_experiment_frontier(
+                root,
+                connection,
+                analysis,
+                version=version,
+                graph_path=latest_value,
+            )
             return {
-                "analysis": read_json(root / latest_value),
+                "analysis": analysis,
                 "path": latest_value,
-                "scheduledTask": None,
+                "scheduledTask": scheduled_task,
                 "unchanged": True,
             }
 
@@ -4040,73 +4419,13 @@ def rebuild_campaign_capability_graph(
     set_metadata(connection, "campaignCapabilityGraphSpecDigest", specification_digest)
     set_metadata(connection, "campaignCapabilityGraphLatest", relative)
 
-    scheduled_task: str | None = None
-    experiments = analysis.get("missingLinkExperiments", [])
-    if analysis.get("focusEligible") and experiments:
-        experiment = experiments[0]
-        digest = canonical_digest(experiment)
-        scheduled = set(
-            get_metadata(connection, "campaignChainExperimentDigests", []) or []
-        )
-        if digest not in scheduled:
-            task_id = f"campaign-chain-v{version}-{digest[:10]}"
-            packet = root / "tasks" / f"dynamic-{task_id}.md"
-            packet.write_text(
-                f"""# Campaign-wide missing-link experiment
-
-Capability graph version: `{version}`
-Retained graph: `{relative}`
-Rank: `1` of `{len(experiments)}`
-Ranking score: `{experiment['ranking']['score']}`
-
-## Question
-
-{experiment['question']}
-
-## Joint execution contract
-
-This experiment must show that the capabilities, state, object identity and
-generation, ordering, lifetime, deployment, and acquisition conditions occur
-in one feasible execution. Similar labels in separate runs are not a chain.
-
-## Oracle
-
-{experiment['oracle']}
-
-## Falsifier
-
-{experiment['falsifier']}
-
-Retain a concrete observation and feed it back as an observation, primitive,
-chain hypothesis, or validated connection. Do not promote it to a finding
-unless the filing evidence gate independently passes.
-""",
-                encoding="utf-8",
-            )
-            insert_dynamic_task(
-                connection,
-                task_id=task_id,
-                wave=max(1, int(get_metadata(connection, "lastResearchRound", 0))),
-                lane="campaign-chain-experiment",
-                title=f"Resolve campaign graph v{version} top missing link",
-                packet=packet.relative_to(root).as_posix(),
-                priority=2200 + min(700, int(experiment["ranking"]["score"])),
-                dependencies=[],
-                excluded_workers=[],
-                max_attempts=2,
-                timeout_seconds=int(
-                    get_metadata(connection, "defaultTaskTimeoutSeconds", 7200)
-                ),
-                approach_families=["chain-composition"],
-                task_kind="focused-chain-investigation",
-            )
-            scheduled.add(digest)
-            set_metadata(
-                connection,
-                "campaignChainExperimentDigests",
-                sorted(scheduled),
-            )
-            scheduled_task = task_id
+    scheduled_task = schedule_experiment_frontier(
+        root,
+        connection,
+        analysis,
+        version=version,
+        graph_path=relative,
+    )
     record_event(
         connection,
         "campaign-capability-graph-rebuilt",
@@ -5006,6 +5325,16 @@ def cmd_submit(args: argparse.Namespace) -> int:
             "lease_expires_at=NULL,last_error=?,updated_at=? WHERE task_id=?",
             (next_state, utc_now(), digest, last_error, utc_now(), args.task_id),
         )
+        complete_experiment_frontier(
+            connection,
+            task=task,
+            result=result,
+            task_outcome=args.outcome,
+            validated_leads=validated_leads,
+        )
+        campaign_graph_update = None
+        if validated_leads or task["task_kind"] == "focused-chain-investigation":
+            campaign_graph_update = rebuild_campaign_capability_graph(root, connection)
         automatic_unblock = None
         if blocker is not None:
             automatic_unblock = schedule_automatic_unblock(
@@ -5039,6 +5368,11 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 "nextRoundPlanningTask": next_round_planning_task,
                 "researchLeads": ingested_leads,
                 "coordinatorReplay": coordinator_replay,
+                "campaignGraphScheduledTask": (
+                    campaign_graph_update.get("scheduledTask")
+                    if campaign_graph_update
+                    else None
+                ),
             },
         )
         if task["unblocks_task_id"] and args.outcome == "completed":

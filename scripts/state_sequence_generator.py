@@ -44,6 +44,15 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
         operation["thread"] = require_text(
             item.get("thread", "main"), f"operations[{index}].thread"
         )
+        operation["attackerCanAttempt"] = bool(
+            item.get("attackerCanAttempt", True)
+        )
+        observed = str(item.get("observedOutcome", "unknown"))
+        if observed not in {"unknown", "allowed", "rejected"}:
+            raise RuntimeError(
+                f"operations[{index}].observedOutcome must be unknown, allowed, or rejected"
+            )
+        operation["observedOutcome"] = observed
         happens_after = item.get("happensAfter", [])
         if not isinstance(happens_after, list) or not all(
             isinstance(value, str) and value.strip() for value in happens_after
@@ -73,11 +82,11 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
 
     def apply_instance(
         operation: dict[str, Any], instances: dict[str, dict[str, Any]]
-    ) -> dict[str, dict[str, Any]] | None:
+    ) -> tuple[dict[str, dict[str, Any]], bool, str | None]:
         result = {key: dict(value) for key, value in instances.items()}
         model = operation.get("instance")
         if not isinstance(model, dict):
-            return result
+            return result, True, None
         identity = model["identity"]
         action = model["action"]
         current = result.get(identity)
@@ -85,14 +94,15 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
             generation = int(current["generation"]) + 1 if current else 1
             result[identity] = {"generation": generation, "state": "allocated"}
         elif current is None or current.get("state") != "allocated":
-            return None
+            stale_state = str(current.get("state")) if current else "absent"
+            return result, False, f"{identity} is {stale_state}, not allocated"
         elif action == "use":
             pass
         elif action == "release":
             current["state"] = "released"
         elif action == "invalidate":
             current["state"] = "invalidated"
-        return result
+        return result, True, None
 
     def walk(
         state: str,
@@ -104,8 +114,13 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
             sequences.append(
                 {
                     "operationIds": [item["id"] for item in path],
-                    "states": [initial, *[item["to"] for item in path]],
-                    "transitionPairs": [[item["from"], item["to"]] for item in path],
+                    "states": [initial, *[item["actualTo"] for item in path]],
+                    "transitionPairs": [
+                        [item["actualFrom"], item["actualTo"]] for item in path
+                    ],
+                    "declaredTransitionPairs": [
+                        [item["from"], item["to"]] for item in path
+                    ],
                     "invariants": [item["invariant"] for item in path],
                     "threads": [item["thread"] for item in path],
                     "instanceHistory": instance_history,
@@ -123,7 +138,21 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
             )
         if len(path) >= maximum_length:
             return
-        for operation in by_state.get(state, []):
+        candidates = list(by_state.get(state, []))
+        for operation in operations:
+            model = operation.get("instance")
+            if (
+                operation not in candidates
+                and operation["attackerCanAttempt"]
+                and isinstance(model, dict)
+                and model["action"] == "use"
+                and model["identity"] in instances
+                and instances[model["identity"]].get("state") != "allocated"
+            ):
+                # Deliberately attempt a stale reference. The reference model
+                # expects rejection; only a real observation may say otherwise.
+                candidates.append(operation)
+        for operation in candidates:
             if (
                 sum(item["id"] == operation["id"] for item in path)
                 >= operation["maxRepetitions"]
@@ -133,12 +162,24 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
                 {item["id"] for item in path}
             ):
                 continue
-            next_instances = apply_instance(operation, instances)
-            if next_instances is None:
-                continue
+            next_instances, instance_valid, instance_reason = apply_instance(
+                operation, instances
+            )
+            state_valid = operation["from"] == state
+            reference_expected = "allow" if state_valid and instance_valid else "reject"
+            observed = operation["observedOutcome"]
+            implementation_allowed = observed == "allowed" or (
+                observed == "unknown" and reference_expected == "allow"
+            )
+            next_state = operation["to"] if implementation_allowed else state
+            if reference_expected == "reject" and observed != "allowed":
+                next_instances = {key: dict(value) for key, value in instances.items()}
             walk(
-                operation["to"],
-                [*path, operation],
+                next_state,
+                [
+                    *path,
+                    {**operation, "actualFrom": state, "actualTo": next_state},
+                ],
                 next_instances,
                 [
                     *instance_history,
@@ -147,6 +188,26 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
                         "before": instances,
                         "after": next_instances,
                         "changed": instances != next_instances,
+                        "attempted": True,
+                        "referenceExpected": reference_expected,
+                        "observedOutcome": observed,
+                        "referenceReason": (
+                            instance_reason
+                            if instance_reason
+                            else (
+                                f"operation requires state {operation['from']}"
+                                if not state_valid
+                                else None
+                            )
+                        ),
+                        "staleReferenceAttempt": bool(
+                            isinstance(operation.get("instance"), dict)
+                            and operation["instance"]["action"] == "use"
+                            and not instance_valid
+                        ),
+                        "securityInvariantDisagreement": (
+                            reference_expected == "reject" and observed == "allowed"
+                        ),
                     },
                 ],
             )
@@ -171,8 +232,10 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
         "maximumLength": maximum_length,
         "sequences": sequences,
         "mutationPolicy": {
-            "onlyStateValidSequencesEmitted": True,
-            "historyIsNeverReorderedIntoAnInvalidTransition": True,
+            "attackerAttemptsSeparatedFromReferenceExpectations": True,
+            "implementationObservationsNeverInferredFromTheReferenceModel": True,
+            "staleReferenceAttemptsRetained": True,
+            "historyIsNeverReordered": True,
             "reductionsMustRetainRequiredTransitionPairs": True,
             "boundedOperationRepetition": default_repetitions,
             "instanceGenerationsTracked": True,

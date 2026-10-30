@@ -93,6 +93,184 @@ def boundary(requirement: dict[str, object]) -> dict[str, object]:
 
 
 class ChainReasoningTests(unittest.TestCase):
+    def test_backward_relevance_survives_unrelated_operation_growth(self) -> None:
+        raw = capability("raw", "controlled")
+        one = capability("one")
+        two = capability("two")
+        executable = capability("module-selection", "manifest-valid")
+        chain = [
+            primitive("ingress", [raw], [], inputs=True),
+            primitive("step-one", [one], [raw]),
+            primitive("step-two", [two], [one]),
+            primitive("step-three", [executable], [two]),
+        ]
+        distractors = [
+            primitive(
+                f"unrelated-{index}",
+                [capability(f"noise-{index}")],
+                [],
+                inputs=True,
+            )
+            for index in range(10)
+        ]
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "maximumConfigurations": 200,
+                "primitives": [*distractors, *chain],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertIn(
+            [
+                "ingress",
+                "step-one",
+                "step-two",
+                "step-three",
+                "boundary:critical-exec",
+            ],
+            result["completeBoundaryPaths"],
+        )
+        self.assertEqual(
+            result["searchStrategy"]["backwardRelevantPrimitives"],
+            ["ingress", "step-one", "step-three", "step-two"],
+        )
+
+    def test_explicit_repetition_can_change_object_generation(self) -> None:
+        handle = capability("handle", "controlled")
+        step = primitive("reallocate", [handle], [], inputs=True)
+        step["maxExecutions"] = 2
+        step["objects"] = {
+            "requires": [],
+            "produces": [
+                {"identity": "slot", "generation": "next", "state": "valid"}
+            ],
+            "invalidates": [],
+        }
+        terminal = boundary(handle)
+        terminal["objects"] = {
+            "requires": [
+                {"identity": "slot", "generation": 2, "state": "valid"}
+            ],
+            "produces": [],
+            "invalidates": [],
+        }
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [step],
+                "boundaries": [terminal],
+            }
+        )
+        self.assertIn(
+            ["reallocate", "reallocate", "boundary:critical-exec"],
+            result["completeBoundaryPaths"],
+        )
+
+    def test_explicit_transport_transition_bridges_process_context(self) -> None:
+        raw = capability("attacker-bytes", "controlled")
+        transported = capability("transported-bytes", "controlled")
+        executable = capability("module-selection", "manifest-valid")
+        ingress = primitive("renderer-ingress", [raw], [], inputs=True)
+        bridge = primitive("renderer-browser-transport", [transported], [raw])
+        bridge["contextTransition"] = {
+            "from": context(),
+            "to": {
+                "principal": "attacker",
+                "process": "browser",
+                "namespace": "application",
+                "runtime": "production",
+            },
+            "transport": "authenticated IPC message",
+            "authorityChange": "renderer data becomes browser input without gaining authority",
+            "preservesCapabilities": ["attacker-bytes"],
+        }
+        browser_consumer = primitive("browser-consumer", [executable], [transported])
+        browser_consumer["context"]["process"] = "browser"
+        terminal = boundary(executable)
+        terminal["context"]["process"] = "browser"
+        without_bridge = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [ingress, browser_consumer],
+                "boundaries": [terminal],
+            }
+        )
+        self.assertEqual(without_bridge["completeBoundaryPaths"], [])
+        with_bridge = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [ingress, bridge, browser_consumer],
+                "boundaries": [terminal],
+            }
+        )
+        self.assertIn(
+            [
+                "renderer-ingress",
+                "renderer-browser-transport",
+                "browser-consumer",
+                "boundary:critical-exec",
+            ],
+            with_bridge["completeBoundaryPaths"],
+        )
+
+    def test_reference_rejection_does_not_prejudge_implementation_observation(self) -> None:
+        raw = capability("raw")
+        executable = capability("module-selection", "manifest-valid")
+        ingress = primitive("ingress", [raw], [], inputs=True)
+        stale_use = primitive("stale-use", [executable], [raw])
+        stale_use["attemptModel"] = {
+            "attackerCanAttempt": True,
+            "referenceExpected": "reject",
+            "observedOutcome": "unknown",
+        }
+        unresolved = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [ingress, stale_use],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertNotIn("stale-use", unresolved["reachableFromAttacker"])
+        stale_use["attemptModel"]["observedOutcome"] = "allowed"
+        observed = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [ingress, stale_use],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertIn("stale-use", observed["reachableFromAttacker"])
+
+    def test_truncated_search_retains_resumable_frontier(self) -> None:
+        raw = capability("raw")
+        middle = capability("middle")
+        executable = capability("module-selection", "manifest-valid")
+        specification = {
+            "schemaVersion": 1,
+            "maximumConfigurations": 1,
+            "primitives": [
+                primitive("ingress", [raw], [], inputs=True),
+                primitive("middle", [middle], [raw]),
+                primitive("terminal", [executable], [middle]),
+            ],
+            "boundaries": [boundary(executable)],
+        }
+        first = analyze_chain(specification)
+        self.assertTrue(first["searchTruncated"])
+        self.assertTrue(first["continuationStrategy"]["required"])
+        resumed = analyze_chain(
+            {
+                **specification,
+                "maximumConfigurations": 20,
+                "resumeCheckpoint": first["searchCheckpoint"],
+            }
+        )
+        self.assertIn(
+            ["ingress", "middle", "terminal", "boundary:critical-exec"],
+            resumed["completeBoundaryPaths"],
+        )
+
     def test_compatible_primitives_reach_boundary(self) -> None:
         raw = capability("attacker-bytes", "controlled")
         executable = capability("module-selection", "manifest-valid")
@@ -125,6 +303,28 @@ class ChainReasoningTests(unittest.TestCase):
         )
         self.assertNotIn("decoder", result["reachableFromAttacker"])
         self.assertEqual(result["completeBoundaryPaths"], [])
+
+    def test_any_context_is_unresolved_not_a_cross_boundary_wildcard(self) -> None:
+        raw = capability("attacker-bytes", "controlled")
+        executable = capability("module-selection", "manifest-valid")
+        ingress = primitive("ingress", [raw], [], inputs=True)
+        decoder = primitive("decoder", [executable], [raw])
+        decoder["context"]["process"] = "any"
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [ingress, decoder],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertNotIn("decoder", result["reachableFromAttacker"])
+        assessment = next(
+            row
+            for row in result["connectionAssessments"]
+            if row["producer"] == "ingress" and row["consumer"] == "decoder"
+        )
+        self.assertEqual(assessment["status"], "unknown")
+        self.assertIn("context-unresolved:process", assessment["unknowns"])
 
     def test_connections_require_one_jointly_feasible_execution(self) -> None:
         raw = capability("attacker-bytes", "controlled")

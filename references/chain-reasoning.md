@@ -19,11 +19,15 @@ For every producer/consumer hypothesis, record:
 Call-name proximity is not source derivation. A transformation witness must
 prove an ordered path from a value observed by a validation call, through the
 transformation and its result symbol, to a downstream consumer of that result.
-Krineon records unproved calls as candidates and never lets an unrelated call
-such as `logMessage.toLowerCase()` create a request-path witness. Ordered
-transformations may compose only when the intermediate result symbol connects
-them. Fixed encoding dictionaries are supplemental reconnaissance. A
-dictionary-only negative result cannot eliminate a source mechanism.
+The lightweight extractor separates lexical function scopes, versions simple
+assignments, kills overwritten values, and requires structural block-prefix
+dominance. These are still heuristic def-use candidates, never proved flows.
+Runtime value tracing or a target CPG must confirm the validated value,
+transformation result, and consumer-selected identity. Unknown transformations
+generate targeted value-trace experiments instead of disappearing because no
+mutation dictionary entry exists. Fixed encoding dictionaries remain
+supplemental reconnaissance. A dictionary-only negative result cannot eliminate
+a source mechanism.
 
 ## Compose feasible executions
 
@@ -43,6 +47,15 @@ alias. A Critical boundary is complete only when all required capabilities,
 objects, state, ordering, lifetime, deployment, acquisition, and context
 conditions are jointly satisfied in one execution.
 
+The analyzer deduplicates equivalent semantic states instead of treating every
+operation ordering as distinct. It prioritizes primitives found by backward
+relevance from the Critical boundary while retaining unrelated frontier states.
+Equivalent independent orderings are reduced; histories remain in witnesses
+where ordering changes security-relevant behavior. If the budget ends first,
+the result contains a checkpoint, retained frontier, and mandatory continuation
+experiment. Resume that checkpoint rather than restarting or treating
+truncation as a negative result.
+
 The analyzer never emits a vulnerability verdict. It emits the tri-state
 connection assessment, attacker-reachable configurations, complete boundary
 paths, and ranked missing-link experiments. Ranking considers Critical-boundary
@@ -52,10 +65,13 @@ Without a timing record, the output labels its fallback as a state-sequence
 estimate rather than presenting it as measurement.
 
 The coordinator combines active typed leads and adversarially reviewed route
-primitives in a versioned campaign graph under `evidence/chain-graphs/`. It
-schedules the highest-ranked unsolved experiment, not whichever route happened
-to finish first. New observations rebuild the graph, so a result can strengthen,
-falsify, or redirect later composition work.
+primitives in a versioned campaign graph under `evidence/chain-graphs/`. Its
+durable experiment frontier records `pending`, `running`, `confirmed`,
+`refuted`, `inconclusive`, and `superseded` states. It schedules the
+highest-value eligible experiment, even when the graph itself is unchanged or
+a higher-ranked experiment already finished. Scoped negatives refute only their
+matching producer/consumer mechanism. A materially changed mechanism gets a new
+identity and can reopen investigation without erasing the earlier result.
 
 ## Preserve state history
 
@@ -65,15 +81,26 @@ requests. Each transition names its before and after state, authority,
 ownership, operation, and invariant.
 
 Sequence generation may repeat an operation within a declared bound, omit
-operations, or choose alternate state-valid paths. It tracks allocation,
-release, use, invalidation, object generations, thread identity, and explicit
-`happensAfter` constraints. Reduction must preserve the transition pairs and
-partial order required by the security claim. This makes allocate, release,
-allocate representable without conflating the two object instances.
+operations, or choose alternate paths. It separately records what an attacker
+can attempt, what the reference security model expects, and what the real
+implementation was observed to do. A released reference can therefore be used
+in an attempted allocate-release-use sequence without the model assuming that
+the implementation accepts it. It tracks allocation, release, use,
+invalidation, object generations, thread identity, and explicit `happensAfter`
+constraints. Reduction must preserve the transition pairs and partial order
+required by the security claim.
 
-The HTTP protocol harness rejects discontinuous histories and records exercised
-and missing transition pairs. `state_sequence_generator.py` emits only
-state-valid histories and marks sequences that cover the required pairs.
+Cross-principal, process, namespace, or runtime movement requires an explicit
+context transition with a named transport, authority change, destination, and
+capabilities preserved across it. The label `any` means unresolved; it is not a
+wildcard that joins incompatible contexts. Chain primitives may opt into
+bounded repeated execution when the repeated operation changes modeled state or
+object generation.
+
+The HTTP protocol harness rejects unrecorded history changes and records
+exercised and missing transition pairs. `state_sequence_generator.py` retains
+reference-valid transitions and explicit attacker attempts that challenge the
+reference model, with an unknown, allowed, or rejected implementation outcome.
 
 ## Separate observations from claims
 

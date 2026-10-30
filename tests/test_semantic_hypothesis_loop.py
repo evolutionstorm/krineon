@@ -10,9 +10,10 @@ import threading
 import unittest
 from pathlib import Path
 
-
 PROJECT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT / "scripts" / "semantic_hypothesis_loop.py"
+sys.path.insert(0, str(PROJECT / "scripts"))
+from scripts.semantic_hypothesis_loop import unknown_transformation_experiments  # noqa: E402
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -38,6 +39,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 class SemanticHypothesisLoopTests(unittest.TestCase):
+    def test_unknown_transform_becomes_runtime_value_trace_experiment(self) -> None:
+        experiments = unknown_transformation_experiments(
+            "/admin",
+            [
+                {
+                    "id": "flow-1",
+                    "validatedFact": "auth-1",
+                    "consumerFact": "consumer-1",
+                    "transformations": [
+                        {"fact": "transform-1", "callee": "customDecode"}
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(len(experiments), 1)
+        self.assertEqual(experiments[0]["status"], "runtime-value-trace-required")
+        self.assertEqual(
+            experiments[0]["tracePlan"]["captureAt"],
+            ["auth-1", "transform-1", "consumer-1"],
+        )
+
     def run_cli(self, *args: str, expected: int = 0, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         completed = subprocess.run(
             [sys.executable, str(SCRIPT), *args],
@@ -99,7 +121,7 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
                                         "resultSymbol": "normalized",
                                         "consumerFact": "route-consumer",
                                         "consumerCallee": "route",
-                                        "status": "source-dataflow-proved-runtime-discriminator-required",
+                                        "status": "scope-aware-def-use-candidate-runtime-trace-required",
                                     }
                                 ],
                             }
@@ -119,7 +141,7 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
                 for row in value["models"][0]["experiment"]["variants"]
                 if row["family"] == "case-fold"
             )
-            self.assertEqual(case_variant["origin"], "source-transformation")
+            self.assertEqual(case_variant["origin"], "tentative-source-flow")
             self.assertEqual(case_variant["sourceFact"], "case-normalizer")
             self.assertTrue(
                 value["models"][0]["assumptionFlow"]["sourceDerivedWitnessAvailable"]
