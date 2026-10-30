@@ -15,6 +15,30 @@ lead, not a finding, and no worker must invent missing links to unlock later
 work. Krineon does not package lower-impact leads as reports. Read
 [references/critical-rce.md](references/critical-rce.md) for the promotion bar.
 
+## Runtime and paths
+
+This skill supports Codex and OMP (Oh My Pi) without a vendor-specific Python
+adapter. Resolve `scripts/`, `references/`, `assets/`, and `profiles/` against
+the skill directory supplied by the runtime, not the target checkout or a
+worker's current directory. Use absolute paths for the skill scripts, campaign,
+checkout, and input files when working outside the skill directory; the
+repository-relative shell examples below assume that directory.
+
+On OMP, invoke `/skill:krineon` or read `skill://krineon`; supporting material is
+available at paths such as `skill://krineon/references/orchestration.md`. Use the
+physical skill directory for Python commands, for example
+`python3 "$KRINEON_ROOT/scripts/research_harness.py"`, with `KRINEON_ROOT` set
+from the supplied skill directory. Pass that absolute path and the campaign
+path explicitly to children; do not assume shell variables or conversation
+history are inherited.
+
+OMP coordinators use `task` to launch workers, `write agent://<id>` to steer or
+follow up, and `wait` only when otherwise blocked. Results arrive automatically.
+Follow the OMP binding in
+[references/orchestration.md](references/orchestration.md#omp-oh-my-pi).
+Runtime tool schemas, permissions, and safe capacity take precedence over
+generic launch guidance; do not call another agent platform's tool names.
+
 ## Start from program rules
 
 When the user supplies bounty-program guidelines and scope, treat that as the
@@ -441,8 +465,8 @@ python3 scripts/research_harness.py lint CAMPAIGN_DIR
 
 As a skill, Krineon's root coordinator actively launches and backfills
 subagents with the runtime's collaboration tools. Its Python scheduler remains
-model-vendor-neutral; Codex, Claude Code, OpenCode, CI jobs, and human adapters
-connect those workers through the shared protocol. Krineon does not
+model-vendor-neutral; Codex, OMP, Claude Code, OpenCode, CI jobs, and human
+adapters connect those workers through the shared protocol. Krineon does not
 autonomously attack third-party targets or submit reports. Dynamic execution is
 limited to explicitly authorized environments, and external actions remain
 subject to the user's authorization and program rules.

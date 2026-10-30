@@ -270,16 +270,18 @@ and JSON replay payloads.
 
 Krineon's skill-level coordinator actively creates and backfills subagents when
 the runtime exposes collaboration tools. The Python scheduler deliberately
-does not embed vendor-specific process-launch APIs; a Codex, Claude Code,
+does not embed vendor-specific process-launch APIs; a Codex, OMP, Claude Code,
 OpenCode, CI, or human adapter binds each spawned runtime to the worker
-protocol as follows:
+protocol. Select the tools actually exposed by the runtime rather than assuming
+that these API names are interchangeable:
 
-1. Use `spawn_agent` for a bounded task packet with one primary question.
-2. Use `wait_agent` with a long timeout rather than polling continuously.
-3. Use `send_message` to add evidence or constraints without restarting work.
-4. Use `followup_task` to trigger a distinct validation pass after an agent is
-   idle.
-5. Use `interrupt_agent` only when the task is unsafe, redundant, or superseded.
+| Operation | Codex collaboration interface | OMP interface |
+| --- | --- | --- |
+| Launch bounded workers | `spawn_agent` | `task` with shared `context` and per-worker `tasks[]` |
+| Await completion | `wait_agent` | Automatic result delivery; `wait` only when otherwise blocked |
+| Send evidence or constraints | `send_message` | `write agent://<id>` |
+| Follow up with an existing worker | `followup_task` | `write agent://<id>`; parked workers can revive |
+| Stop unsafe or superseded work | `interrupt_agent` | `write proc://<id>/kill` without content |
 
 The coordinator's operational loop is:
 
@@ -295,6 +297,67 @@ recover expired leases after coordinator or worker failure
 schedule finding-specific replay tasks that exclude originators
 run the machine-checkable evidence gate before synthesis
 ```
+
+### OMP (Oh My Pi)
+
+Load Krineon through OMP's native skills directory and invoke `/skill:krineon`;
+see [installation](../README.md#load-the-skill-in-omp). Read supporting files via
+`skill://krineon/...`, but resolve executable scripts to the physical skill
+directory. `agents/openai.yaml` is Codex UI metadata, not an OMP runtime adapter.
+
+For each independent runnable slice, put a complete assignment in a `task`
+item, including `task` and `solutionSpace`; put common authorization, pinned
+revision, absolute skill/campaign paths, and evidence requirements in the batch's
+`context`. Omit `agent` to select OMP's default full-capability worker. A
+read-only scout cannot register, claim, heartbeat, or submit durable work. If
+OMP exposes a flat task schema instead, use that schema rather than a batch.
+Children do not inherit the coordinator's conversation. Pass all required
+constraints and paths explicitly.
+
+Have each child register and claim through the Python protocol before research;
+do not preassign a queue task just because it appears in a launch plan. OMP's
+`bash` tool supplies `PI_SESSION_ID` for the current session, including child
+sessions. Bind the immutable Krineon agent identity to that value, not the model,
+agent type, lane, or an unqualified display name that can repeat in another
+session. For example, inside the child, with absolute `KRINEON_ROOT` and
+`CAMPAIGN` values supplied in its assignment:
+
+```bash
+python3 "$KRINEON_ROOT/scripts/research_harness.py" worker-register \
+  "$CAMPAIGN" worker-a --agent "omp:${PI_SESSION_ID:?OMP session identity required}" \
+  --role worker
+python3 "$KRINEON_ROOT/scripts/research_harness.py" claim \
+  "$CAMPAIGN" worker-a --json
+```
+
+The coordinator uses its own `omp:$PI_SESSION_ID` identity and
+`--role coordinator`. Record the mapping between worker ID, OMP session identity,
+and the returned `task` agent ID for messages and cancellation. Keep the same
+worker/agent binding for follow-ups and resumed sessions; a replacement child
+with a different session ID needs a new worker ID. Never manufacture independent
+reviewers by aliasing one session.
+
+Run target commands with OMP `bash.cwd` set to the claim's absolute `workspace`.
+OMP tasks otherwise start in the parent's directory; launching a task does not
+select Krineon's detached worktree. Use the claimed workspace and its
+`KRINEON_TASK.md`, `KRINEON_ASSIGNMENT.json`, authorization, reference files, and
+result template. Do not add another OMP isolation/merge layer around that
+workspace or merge research changes into the coordinator's checkout.
+
+Use the absolute harness path for `heartbeat` and `submit` too. A worker must
+write its JSON result to disk and successfully `submit` it under its lease
+before reporting completion to OMP. An OMP task result or `agent://` artifact is
+not a queue submission and cannot unlock dependencies. Preserve lease tokens
+locally, not in public handoffs or report artifacts. The same independent-replay
+and evidence gates apply on every runtime.
+
+Let OMP deliver completed jobs automatically while the coordinator does useful
+work. After stopping an OMP worker, reconcile its durable lease with `cancel`
+for a retired task or `worker-stop --force` for work to requeue; killing the
+runtime alone does not update SQLite. Recheck `orchestration-status`, recover
+expired leases, and backfill only within actual runtime capacity and campaign
+limits. In print mode, `--wait-async` keeps background results in the session;
+without it OMP cancels outstanding jobs when the initial prompt finishes.
 
 Example task packet:
 

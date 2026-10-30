@@ -34,13 +34,14 @@ production-equivalent, release-build, or authorized production configuration,
 with explicit evidence that neither a development server nor development build
 was used.
 
-## Recommended agent
+## Agent compatibility
 
-The harness is portable, but it works best with Codex because the orchestration
-workflow maps directly to Codex collaboration tools. For long, adversarial
-campaigns, use **GPT-5.6 Sol with `max` reasoning**. Other models and coding
-agents can run the Python harness and follow the shared methodology, but their
-subagent, permission, and skill-loading interfaces may require adapters.
+Krineon supports Codex and OMP (Oh My Pi) as skill-based coordinators. The
+Python harness and worker protocol are model-vendor-neutral; process launch,
+permissions, and skill discovery stay native to each runtime. Claude Code,
+OpenCode, CI jobs, and human adapters can also use the same CLI protocol.
+See [runtime adapters](references/orchestration.md#runtime-adapters-and-collaboration-tools)
+for the tool mapping and OMP worker binding.
 
 ## Analysis coverage
 
@@ -66,6 +67,48 @@ provenance-bound validation tasks in `orchestration.db`. Run
 probe does not install or modify them.
 
 ## Quick start
+
+### Load the skill in OMP
+
+From the Krineon checkout, link the **whole directory**, not just `SKILL.md`,
+into OMP's native user skill root:
+
+```bash
+mkdir -p "$HOME/.omp/agent/skills"
+test ! -e "$HOME/.omp/agent/skills/krineon" &&
+  test ! -L "$HOME/.omp/agent/skills/krineon" &&
+  ln -s "$PWD" "$HOME/.omp/agent/skills/krineon"
+
+# Verify discovery without making a model request.
+omp read skill://krineon
+```
+
+The link command leaves an existing installation untouched. For a named OMP
+profile, use `~/.omp/profiles/PROFILE/agent/skills/krineon` instead; a project-local
+installation can use `TARGET/.omp/skills/krineon`. Start a new OMP session after
+installing. The existing `name` and `description` frontmatter are sufficient;
+no extension, custom agent, or `agents/openai.yaml` adapter is required.
+
+Invoke it from the target workspace:
+
+```text
+/skill:krineon Audit this checkout under the attached program rules. Source
+review and bounded local tests only; no live-target testing.
+```
+
+OMP exposes the skill at `skill://krineon` and its supporting files below that
+URI. Shell commands must use the physical skill directory, not assume that
+`scripts/` exists in the target checkout. For example, with `KRINEON_ROOT` set
+to the absolute skill directory:
+
+```bash
+python3 "$KRINEON_ROOT/scripts/research_harness.py" status /absolute/path/to/campaign
+```
+
+The remaining repository-relative CLI examples assume the Krineon directory.
+For headless OMP campaigns, include `--wait-async` with `--print` so exiting the
+initial turn does not cancel active workers, and set an appropriate
+`--max-time` bound. Runtime approvals do not replace campaign authorization.
 
 ### Start with only the program rules
 
@@ -107,7 +150,7 @@ repository or commit is not unambiguous, the setup task receives explicit
 `pending-source-repository` or `pending-pin` values instead of a guess. See
 [references/program-intake.md](references/program-intake.md).
 
-When Krineon is used through Codex, Claude Code, or OpenCode, the researcher can
+When Krineon is used through Codex, OMP, Claude Code, or OpenCode, the researcher can
 simply paste or attach the program rules and request a campaign. The agent
 performs this intake, resolves routine public-source details, and starts the
 queued source-analysis work. It asks for input only when choosing would change
@@ -238,6 +281,8 @@ campaign's AUTHORIZATION.md, keep the root agent as coordinator, launch Wave 1
 with complementary agents, and do not perform live-target testing.
 ```
 
+On OMP, use `/skill:krineon` instead of Codex's `$krineon` invocation.
+
 Workers register stable identities and atomically claim only dependency-ready
 tasks. A claim creates a per-worker workspace under `worktrees/`; when
 `--checkout` points to a Git repository, that workspace is a detached Git
@@ -245,10 +290,10 @@ worktree at the pinned revision. Claims carry renewable leases and task
 timeouts. Expired leases are recovered, attempt budgets are enforced, and
 submissions are deduplicated by caller-supplied idempotency keys.
 
-When Krineon runs as a Codex or compatible agent skill, the root coordinator
-actively spawns and backfills subagents through the runtime's collaboration
-tools. The portable Python CLI remains model-vendor-neutral: Codex, Claude
-Code, OpenCode, CI jobs, or human adapters connect spawned workers through
+When Krineon runs as a Codex or OMP skill, the root coordinator actively spawns
+and backfills subagents through the runtime's collaboration tools. The portable
+Python CLI remains model-vendor-neutral: Codex, OMP, Claude Code, OpenCode, CI
+jobs, or human adapters connect spawned workers through
 `claim`, `heartbeat`, and `submit`. This separation keeps process launch native
 to each runtime while making dependency, identity, retry, cancellation,
 timeout, budget, and result ingestion machine-enforced.
@@ -575,8 +620,8 @@ evidence gate -> report package -> coordinated disclosure
 ## Project layout
 
 ```text
-SKILL.md                         Codex operating instructions
-agents/openai.yaml               Skill UI metadata
+SKILL.md                         Portable agent skill instructions (Codex/OMP)
+agents/openai.yaml               Codex skill UI metadata (not required by OMP)
 scripts/research_harness.py      Campaign, registry, gates, lint, hashes
                                 and durable task orchestration
 scripts/path_proof.py            Exhaustive path, condition, contradiction,
