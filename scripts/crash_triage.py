@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify crash first faults, cluster stacks, and score controllability."""
+"""Classify crash first faults and validate concrete primitive evidence."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import re
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
+
+from reality_evidence import safe_campaign_path, sha256_file, validate_attestation
 
 
 STACK_RE = re.compile(
@@ -183,83 +185,98 @@ def occurrence_stats(path: Path) -> dict[str, Any]:
     }
 
 
-def controllability(
-    fault: dict[str, Any], frames: list[dict[str, Any]], stats: dict[str, Any], minimized: bool
-) -> dict[str, Any]:
-    fault_class = str(fault["class"])
-    bases = {
-        "control-flow-corruption": 85,
-        "heap-use-after-free": 70,
-        "stack-use-after-return": 65,
-        "stack-use-after-scope": 65,
-        "use-after-free": 65,
-        "double-free": 55,
-        "invalid-free": 50,
-        "heap-buffer-overflow": 50,
-        "stack-buffer-overflow": 50,
-        "global-buffer-overflow": 50,
-        "container-overflow": 45,
-        "out-of-bounds": 40,
-        "uninitialized-read": 35,
-        "data-race": 25,
-        "undefined-behavior": 20,
-        "null-dereference": 5,
-        "bare-signal": 5,
-        "abnormal-exit": 0,
-        "unknown": 0,
+def primitive_control_evidence(crash_dir: Path, fault: dict[str, Any]) -> dict[str, Any]:
+    """Accept control only from a recomputable challenge-response attestation."""
+
+    empty = {
+        "status": "unverified",
+        "claim": None,
+        "chosenBytes": False,
+        "allocationIdentity": False,
+        "chosenProgramCounter": False,
+        "crossProcessStability": False,
+        "freshProcesses": 0,
+        "positiveSuccesses": 0,
+        "distinctChosenValues": 0,
+        "errors": [
+            "a crash class and access direction do not prove attacker control",
+            "run reality_runner.py and primitive_verifier.py with fresh-process controls",
+        ],
     }
-    score = bases.get(fault_class, 10)
-    signals: list[str] = [f"first-fault:{fault_class}"]
-    limitations: list[str] = []
-    access = fault.get("access")
-    if access == "write":
-        score += 18
-        signals.append("sanitizer-recorded-write")
-    elif access == "execute":
-        score += 10
-        signals.append("sanitizer-recorded-execute")
-    elif access == "read":
-        score += 5
-        signals.append("sanitizer-recorded-read")
-    else:
-        limitations.append("access direction is unknown")
-    if fault.get("programCounter"):
-        score += 5
-        signals.append("program-counter-recorded")
-    if frames:
-        score += 3
-        signals.append("symbolized-first-fault-stack")
-    else:
-        limitations.append("no symbolized stack frames")
-    if int(stats.get("distinctRuns", 0)) >= 2:
-        score += 5
-        signals.append("reproduced-across-runs")
-    if int(stats.get("distinctInputs", 0)) >= 2:
-        score += 3
-        signals.append("multiple-triggering-inputs")
-    if minimized:
-        score += 4
-        signals.append("fingerprint-preserving-minimized-input")
-    score = max(0, min(score, 99))
-    tier = "strong" if score >= 85 else "high" if score >= 65 else "medium" if score >= 40 else "low" if score >= 15 else "none"
-    limitations.extend(
-        [
-            "score measures evidence quality, not exploit reliability",
-            "no sanitizer report alone proves attacker-controlled PC, read, write, or RCE",
-        ]
-    )
-    return {"score": score, "tier": tier, "signals": signals, "limitations": limitations}
+    manifest_path = crash_dir / "primitive-verification.json"
+    if not manifest_path.is_file():
+        return empty
+    try:
+        manifest = read_json(manifest_path)
+        root = crash_dir.parents[2]
+        attestation = manifest.get("attestation")
+        if not isinstance(attestation, dict):
+            raise ValueError("primitive attestation is absent")
+        attestation_path = safe_campaign_path(root, attestation.get("path"))
+        validation = validate_attestation(root, attestation_path)
+        errors = list(validation["errors"])
+        if attestation.get("sha256") != sha256_file(attestation_path):
+            errors.append("primitive attestation hash mismatch")
+        if manifest.get("producer") != "krineon-primitive-verifier":
+            errors.append("primitive verifier producer mismatch")
+        if manifest.get("status") != "verified":
+            errors.append("primitive verification is not verified")
+        if manifest.get("crashId") != crash_dir.name:
+            errors.append("primitive crash identity mismatch")
+        claim = str(manifest.get("claim") or "")
+        claims = manifest.get("claims") if isinstance(manifest.get("claims"), dict) else {}
+        if claim == "uaf-write" and not (
+            fault.get("access") == "write" and fault.get("family") == "lifetime"
+        ):
+            errors.append("uaf-write evidence does not match the first fault")
+        if claim == "controlled-write" and fault.get("access") != "write":
+            errors.append("controlled-write evidence does not match the first fault")
+        if claim == "controlled-pc" and not (
+            fault.get("access") == "execute" or fault.get("class") == "control-flow-corruption"
+        ):
+            errors.append("controlled-pc evidence does not match the first fault")
+        chosen_bytes = claims.get("chosenBytes") is True
+        allocation_identity = claims.get("allocationIdentity") is True
+        chosen_pc = claims.get("chosenProgramCounter") is True
+        stable = claims.get("crossProcessStability") is True
+        if claim == "uaf-write" and not (chosen_bytes and allocation_identity and stable):
+            errors.append("uaf-write lacks chosen bytes, allocation identity, or stability")
+        if claim == "controlled-write" and not (chosen_bytes and stable):
+            errors.append("controlled-write lacks chosen bytes or stability")
+        if claim == "controlled-pc" and not (chosen_pc and stable):
+            errors.append("controlled-pc lacks chosen PC or stability")
+        return {
+            "status": "verified" if not errors else "invalid",
+            "claim": claim or None,
+            "chosenBytes": chosen_bytes and not errors,
+            "allocationIdentity": allocation_identity and not errors,
+            "chosenProgramCounter": chosen_pc and not errors,
+            "crossProcessStability": stable and not errors,
+            "freshProcesses": int(manifest.get("freshProcesses") or 0),
+            "positiveSuccesses": int(manifest.get("positiveSuccesses") or 0),
+            "distinctChosenValues": int(manifest.get("distinctChosenValues") or 0),
+            "attestation": attestation,
+            "errors": errors,
+        }
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        return {**empty, "status": "invalid", "errors": [str(error)]}
 
 
 def verdict(fault: dict[str, Any], control: dict[str, Any]) -> dict[str, Any]:
     fault_class = str(fault["class"])
     access = str(fault.get("access"))
-    if fault_class == "control-flow-corruption" or access == "execute":
-        name, recommendation = "potential-control-flow-corruption", "prioritize"
+    if control.get("status") == "verified" and control.get("chosenProgramCounter") is True:
+        name, recommendation = "verified-chosen-program-counter", "retain-verified-primitive"
+    elif control.get("status") == "verified" and control.get("allocationIdentity") is True:
+        name, recommendation = "verified-chosen-byte-uaf-write", "retain-verified-primitive"
+    elif control.get("status") == "verified" and control.get("chosenBytes") is True:
+        name, recommendation = "verified-chosen-byte-write", "retain-verified-primitive"
+    elif fault_class == "control-flow-corruption" or access == "execute":
+        name, recommendation = "unverified-control-flow-corruption-lead", "requires-primitive-verification"
     elif fault_class in {"heap-use-after-free", "stack-use-after-return", "stack-use-after-scope", "use-after-free"} and access == "write":
-        name, recommendation = "potential-lifetime-write-primitive", "prioritize"
+        name, recommendation = "unverified-lifetime-write-lead", "requires-primitive-verification"
     elif fault.get("memorySafety") and access == "write":
-        name, recommendation = "potential-write-primitive", "prioritize"
+        name, recommendation = "unverified-memory-write-lead", "requires-primitive-verification"
     elif fault_class in {"heap-use-after-free", "stack-use-after-return", "stack-use-after-scope", "use-after-free"}:
         name, recommendation = "potential-lifetime-corruption", "retain-lead"
     elif fault.get("memorySafety") and access == "read":
@@ -274,10 +291,10 @@ def verdict(fault: dict[str, Any], control: dict[str, Any]) -> dict[str, Any]:
         "verdict": name,
         "gateRecommendation": recommendation,
         "machinePromotionEligible": False,
-        "controllabilityScore": control["score"],
         "rationale": (
-            "Automated triage prioritizes the next experiment. It cannot establish a Critical/RCE "
-            "terminal, attacker control, production reachability, or filing eligibility."
+            "The crash label classifies the first fault only. Attacker control is verified only "
+            "by repeated harness-generated chosen values, explicit allocation identity where "
+            "applicable, fresh processes, and recomputed controls."
         ),
     }
 
@@ -295,11 +312,11 @@ def analyze_crash_directory(crash_dir: Path) -> dict[str, Any]:
     stack_hash = sha256_bytes(stack_material.encode("utf-8", "replace"))
     stats = occurrence_stats(crash_dir / "occurrences.jsonl")
     minimized = (crash_dir / "minimized.bin").is_file()
-    control = controllability(fault, frames, stats, minimized)
+    control = primitive_control_evidence(crash_dir, fault)
     assessment = verdict(fault, control)
     return {
         "schemaVersion": 1,
-        "classifierVersion": 1,
+        "classifierVersion": 2,
         "crashId": record.get("crashId") or crash_dir.name,
         "analyzedAt": utc_now(),
         "rawEvidence": {
@@ -317,7 +334,7 @@ def analyze_crash_directory(crash_dir: Path) -> dict[str, Any]:
         },
         "occurrenceStats": stats,
         "minimizedInputPresent": minimized,
-        "controllability": control,
+        "controlEvidence": control,
         "automatedExploitability": assessment,
     }
 
@@ -339,19 +356,17 @@ def build_index(triages: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "crashIds": [],
                 "faultClasses": [],
                 "verdicts": [],
-                "maxControllabilityScore": 0,
+                "verifiedPrimitiveCrashIds": [],
             },
         )
         cluster["crashIds"].append(triage["crashId"])
         cluster["faultClasses"] = sorted(set(cluster["faultClasses"] + [triage["firstFault"]["class"]]))
         cluster["verdicts"] = sorted(set(cluster["verdicts"] + [verdict_name]))
-        cluster["maxControllabilityScore"] = max(
-            int(cluster["maxControllabilityScore"]),
-            int(triage["controllability"]["score"]),
-        )
+        if triage["controlEvidence"].get("status") == "verified":
+            cluster["verifiedPrimitiveCrashIds"].append(triage["crashId"])
     return {
         "schemaVersion": 1,
-        "classifierVersion": 1,
+        "classifierVersion": 2,
         "updatedAt": utc_now(),
         "crashCount": len(rows),
         "clusterCount": len(clusters),
@@ -362,7 +377,8 @@ def build_index(triages: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "clusterId": row["stack"]["clusterId"],
                 "faultClass": row["firstFault"]["class"],
                 "access": row["firstFault"]["access"],
-                "controllabilityScore": row["controllability"]["score"],
+                "controlEvidenceStatus": row["controlEvidence"]["status"],
+                "controlClaim": row["controlEvidence"].get("claim"),
                 "verdict": row["automatedExploitability"]["verdict"],
                 "gateRecommendation": row["automatedExploitability"]["gateRecommendation"],
                 "triagePath": f"dynamic/crashes/{row['crashId']}/triage.json",
@@ -381,7 +397,8 @@ def _record_triage(crash_dir: Path, triage: dict[str, Any]) -> None:
         "path": f"dynamic/crashes/{triage['crashId']}/triage.json",
         "faultClass": triage["firstFault"]["class"],
         "stackClusterId": triage["stack"]["clusterId"],
-        "controllabilityScore": triage["controllability"]["score"],
+        "controlEvidenceStatus": triage["controlEvidence"]["status"],
+        "controlClaim": triage["controlEvidence"].get("claim"),
         "verdict": triage["automatedExploitability"]["verdict"],
         "gateRecommendation": triage["automatedExploitability"]["gateRecommendation"],
     }

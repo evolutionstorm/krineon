@@ -1,4 +1,4 @@
 interface:
   display_name: "Krineon"
-  short_description: "Build Critical/RCE chains from source"
-  default_prompt: "Use $krineon to run an authorized first-principles multi-agent source audit for a complete Critical/RCE chain."
+  short_description: "Retain leads; prove Critical/RCE chains"
+  default_prompt: "Use $krineon to run an authorized first-principles audit that advances unique machine-backed leads while reserving filing for complete Critical/RCE chains."

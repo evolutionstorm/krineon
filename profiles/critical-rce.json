@@ -1,28 +1,35 @@
 {
   "schemaVersion": 1,
   "name": "critical-rce",
-  "description": "Aggressive first-principles source analysis that composes public ingress, a violated invariant, an exploitation primitive, and a stock execution terminal into a complete Critical/RCE chain.",
+  "description": "Aggressive first-principles source analysis that retains unique minimized stacks and invariant breaks internally while composing the strongest leads into a complete Critical/RCE filing chain.",
   "schedulingPolicy": {
     "allocation": "dynamic-evidence-driven",
     "capacity": "runtime-advertised",
     "fixedWorkersPerLane": false,
     "allowRuntimeExpansion": true,
     "preferFourOrMoreWorkersWhenAvailable": true,
+    "scaleOutGate": "coordinator-reexecution-liar-test",
     "approachFamilyBalancing": "active-load-then-coverage-before-priority",
     "allowPromiseBasedDominance": false,
-    "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link"
+    "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link",
+    "internalObjective": "lexicographically rank active verified primitives, runtime invariant breaks, unique minimized stack clusters, and source invariant breaks",
+    "filingObjective": "complete independently replayed Critical/RCE chain only",
+    "partialEvidenceAdvancesQueue": true
   },
   "lanes": [
     {
       "wave": 0,
       "id": "coordinator-setup",
       "title": "Pinned-source and authority coordinator",
-      "objective": "Freeze one authorized source revision, build it without vulnerability-oriented source changes, record supported runtime configurations and program Critical criteria, and enforce the no-history discovery boundary. Do not consult changelogs, git history or blame, advisories, patched versions, later or earlier revisions, or internet-derived code comparisons.",
+      "objective": "Freeze one authorized source revision and one buildable component with ASan/UBSan, record supported runtime configurations and program Critical criteria, run the coordinator lie-gate self-test before registering a second worker, and enforce the no-patch-mining discovery boundary. Read checked-in target tests, assertions, invariant comments, fuzz targets, and fixtures as current-revision oracles. Do not consult changelogs, git history or blame, advisories, patched versions, later or earlier revisions, or internet-derived code comparisons.",
       "deliverables": [
         "exact source, dependency, build, and runtime identities",
         "authorization and Critical-impact contract",
         "stock-build and disposable-lab plan",
-        "recorded no-history and no-patch-diff discovery provenance"
+        "recorded no-history and no-patch-diff discovery provenance",
+        "inventory of target-owned tests and invariants used as local oracles",
+        "frozen component manifest with verified ASan/UBSan instrumentation",
+        "passing coordinator-gate.json proving a false worker claim is rejected"
       ],
       "priority": 1000,
       "dependsOn": []
@@ -30,12 +37,12 @@
     {
       "wave": 1,
       "id": "static-analysis-lead-generation",
-      "title": "Executable static-analysis lead generator",
-      "objective": "Run scripts/static_analysis_pipeline.py against the pinned checkout with every available relevant analyzer. Execute the bundled Joern reachability and missing-validation queries, produce a Tree-sitter syntax census, retain Trailmark entrypoints, and derive explicit Z3 specs from implementation constraints. Ingest normalized results into durable static-lead-validation tasks with commit, command, tool-output, and artifact provenance. Do not treat analyzer output as a finding.",
+      "title": "Executable differential-witness lead generator",
+      "objective": "Use source reading, Trailmark, language frontends, Joern, or Tree-sitter only to identify candidate producer/consumer pairs. Queue nothing from names or static hits. Build two pinned consumers, run both on the same hashed inputs through scripts/differential_witness.py, retain an equal control and a recorded disagreement, and pass those witness specs to scripts/static_analysis_pipeline.py. Bind any Z3 spec to an exact pinned-source fragment with an honest extraction label. Ingest only executed differentials and source-bound constraints with command and artifact provenance.",
       "deliverables": [
         "retained tools/static run record with command, stdout, stderr, and status for every selected analyzer",
-        "Joern CPG query TSVs and Tree-sitter or Trailmark census artifacts",
-        "concrete Z3 payloads for source-derived constraints where applicable",
+        "two-consumer differential records containing an equal control and a disagreement",
+        "concrete Z3 payloads with verified source binding and explicit extraction provenance where applicable",
         "idempotent provenance-bound validation tasks in tools/static-leads.json and orchestration.db"
       ],
       "priority": 90,
@@ -87,11 +94,12 @@
       "wave": 1,
       "id": "parser-representation-invariants",
       "title": "Parser, serializer, and representation invariant auditor",
-      "objective": "Compare producers and consumers inside the pinned tree for lengths, encodings, duplicate fields, normalization, object shape, signedness, framing, methods, paths, and type domains. Seek disagreements that can manufacture executable objects, references, modules, callbacks, native structures, or attacker-directed memory effects.",
+      "objective": "Compare producers and consumers inside the pinned tree for lengths, encodings, duplicate fields, normalization, object shape, signedness, framing, methods, paths, and type domains. For Next, React, and Node targets, first run scripts/framework_analysis_pipeline.py against the production build to turn route manifests, middleware ordering, directives, module identities, caches, runtime branches, and source-to-bundle mappings into concrete runtime hypotheses. Use scripts/structured_input_generator.py to create semantic-grouped JSON, URL, header, multipart, RSC, Server Action, and manifest representations, then run them through persistent workers with scripts/js_coverage_harness.py. Use source-mapped V8/Istanbul coverage and measured holes to redirect generation across server, edge, and client bundles. Seek disagreements that can manufacture executable objects, references, modules, callbacks, native structures, or attacker-directed memory effects. Never treat an analysis hypothesis as a vulnerability verdict.",
       "deliverables": [
         "producer-consumer invariant table",
-        "implementation-matched boundary inputs",
+        "source-verified and runtime-confirmed boundary inputs",
         "minimal differential harnesses",
+        "semantic-group manifests and source-mapped JavaScript coverage deltas",
         "representation-to-execution composition candidates"
       ],
       "priority": 105,
@@ -129,7 +137,7 @@
       "wave": 2,
       "id": "cross-lane-chain-composition",
       "title": "Cross-lane Critical/RCE chain composer",
-      "objective": "Continuously combine ingress, invariant violation, primitive, acquisition, and execution-sink evidence from independent workers. Create focused tasks for missing links. Reject chains that end only in denial of service, debug assertions, synthetic callbacks, application-authored command sinks, or unsupported configurations.",
+      "objective": "Continuously combine ingress, invariant violation, primitive, acquisition, and execution-sink evidence from independent workers. Retain unique minimized stacks, invariant breaks, and verified primitives even when no complete chain exists, and create focused tasks for missing links. Reject those partial results only as filings, not as internal search output; mark genuinely falsified leads disproved.",
       "deliverables": [
         "ranked end-to-end chain graph",
         "per-link proof and missing-link table",
@@ -174,10 +182,11 @@
       "wave": 2,
       "id": "stock-deployment-reachability",
       "title": "Stock and supported deployment reachability",
-      "objective": "Reproduce the candidate in an unmodified production-equivalent or release build using defaults or a documented supported configuration derived from the pinned tree. Development servers, development builds, hot-reload paths, test or fixture servers, preview-only runtimes, and debug-only paths can generate leads but cannot satisfy this lane. Remove bespoke vulnerable callbacks, insecure consumer configuration, local manifest inspection, and unrealistic resource or interaction assumptions.",
+      "objective": "Reproduce the candidate in an unmodified production-equivalent or release build using defaults or a documented supported configuration derived from the pinned tree. For Next.js, React, and Node targets, use scripts/framework_adapter.py to pin the lockfile, runtime, compiler, environment, generated bundles, declared production surfaces, and actual deployment files. Exercise the launched artifact through scripts/http_protocol_harness.py with raw framing and independent attacker/victim sessions; use proxy/framework/origin differential replay where applicable. Development servers, development builds, hot-reload paths, test or fixture servers, preview-only runtimes, and debug-only paths can generate leads but cannot satisfy this lane. Remove bespoke vulnerable callbacks, insecure consumer configuration, local manifest inspection, and unrealistic resource or interaction assumptions.",
       "deliverables": [
         "stock-build reachability result",
         "default and supported-configuration matrix",
+        "framework adapter manifest and raw protocol-run evidence",
         "realistic attacker and victim sequence",
         "explicit remaining platform, topology, resource, and interaction conditions"
       ],
@@ -227,7 +236,7 @@
       "wave": 3,
       "id": "finding-scoped-replay-scheduler",
       "title": "Finding-scoped independent replay scheduler",
-      "objective": "For every surviving chain, register a stable finding and its originating worker, then use schedule-replay twice to create finding-specific tasks that exclude every alias of the originating agent and every prior reviewer agent. Do not complete this campaign task until two distinct agents' accepted replays pass machine verification; list every verified finding in taskResult.replayFindings.",
+      "objective": "For every surviving chain, register a stable finding and its originating worker, then use schedule-replay twice to create finding-specific tasks that exclude every alias of the originating agent and every prior reviewer agent. Each reviewer must run the retained recipe in fresh processes with new harness-generated challenges and submit a recomputable reality attestation; prose-only passed results are rejected. Do not complete this campaign task until two distinct agents' accepted replays pass machine verification; list every verified finding in taskResult.replayFindings.",
       "deliverables": [
         "stable finding IDs and originator identities",
         "finding-scoped replay task IDs",
@@ -245,7 +254,7 @@
       "deliverables": [
         "strongest evidence-based rejection arguments",
         "per-condition necessity measurements",
-        "machine-audited path proof with zero unresolved assumptions",
+        "executable path proof with recomputed observations and zero unresolved assumptions",
         "narrow surviving Critical/RCE claim",
         "unresolved objections that block filing"
       ],
@@ -255,7 +264,7 @@
       "wave": 4,
       "id": "critical-rce-synthesis",
       "title": "Critical/RCE chain synthesis and package",
-      "objective": "Package only a chain that proves attacker input through the violated invariant and stock primitive to bounded real code execution, or another program-defined Critical boundary with equivalent concrete impact. Require a passing linked path proof whose ordered steps, complete branch inventory, attacker mechanisms, retained evidence, contradiction checks, empty assumptions list, and independent registered reviewer are revalidated by the candidate gate. If the chain does not meet that bar, retain it as blocked or disproved rather than produce a lower-severity report.",
+      "objective": "Package only a chain that proves attacker input through the violated invariant and stock primitive to bounded real code execution, or another program-defined Critical boundary with equivalent concrete impact. Require a passing linked path proof whose ordered steps and branches are bound to recomputed assertions from raw process output, whose source snapshots and targets are hashed, whose assumptions are empty, and whose reviewer independently executed the same recipe with new challenges. If the chain does not meet that bar, retain it as blocked or disproved rather than produce a lower-severity report.",
       "deliverables": [
         "root-cause-first Critical/RCE report",
         "one-command safe reproducer",

@@ -9,10 +9,19 @@ violated invariant and useful primitive to a stock execution or
 program-defined Critical terminal, then requires controls and independent
 replay.
 
+That is the **filing objective**, not the internal search objective. Internally,
+Krineon retains and ranks unique minimized stack clusters, target-invariant
+breaks, and verified primitives. These are research leads, not findings. They
+create focused follow-up tasks without pretending the missing chain already
+exists. Only the final filing gate requires a complete Critical/RCE chain.
+
 Krineon does not hunt by reading changelogs, mining advisories, walking Git
 history, or comparing the target with patched, earlier, later, or internet-
 discovered source. Discovery is first-principles analysis of one pinned tree,
-its checked-in artifacts, exact-revision builds, and runtime behavior.
+its checked-in artifacts, exact-revision builds, and runtime behavior. The
+pinned target's own tests, assertions, fuzz targets, fixtures, generated code,
+and invariant comments are encouraged local oracles. Patch history, security
+commits, advisories, and other revisions remain prohibited discovery inputs.
 
 The harness is intentionally target-neutral. It supports local source audits,
 owned lab environments, testnets, and program-authorized systems. It does not
@@ -40,20 +49,19 @@ graph or query engine as authoritative:
 
 - **Trailmark** rapidly maps one pinned revision's repository structure, entry
   points, call graphs, and privileged sinks. Krineon does not use its diff mode.
-- **Tree-sitter** provides syntax-aware censuses and precise ordering checks
-  without matching comments or strings as code.
-- **Joern** builds a code property graph for bounded reachability, data-flow,
-  dominance, and missing-validation questions.
-- **Z3** solves implementation-matched constraints for integer boundaries,
-  parser and serializer disagreements, non-injective encodings, cache-key
-  collisions, and authorization-state combinations.
+- **Tree-sitter and Joern** may nominate producer/consumer boundaries, but
+  syntax and graph hits never enter the queue directly.
+- **Differential witnesses** execute two pinned consumers on one hashed input
+  and retain both an equal control and the recorded disagreement.
+- **Z3** generates concrete inputs from either generic mathematical models or
+  constraints bound to a hashed pinned-source fragment. Manually transcribed
+  constraints are labelled as such and are never called implementation-matched.
 
-Together, these tools broaden coverage and help generate concrete test inputs.
-Their output remains a lead or model result until manual source review and a
-controlled runtime differential confirm the security claim. Krineon now runs
-the tools rather than merely detecting them: `static_analysis_pipeline.py`
-retains each command and raw output, normalizes the results, and creates
-idempotent provenance-bound validation tasks in `orchestration.db`. Run
+Together, these tools broaden coverage and generate concrete inputs. Tool
+output remains a note or model result until source review and an executed
+differential confirm the discrepancy. `static_analysis_pipeline.py` retains
+the differential commands and observations and creates idempotent
+provenance-bound validation tasks in `orchestration.db`. Run
 `scripts/tool_probe.py` first to record which optional tools are available. The
 probe does not install or modify them.
 
@@ -122,8 +130,13 @@ python3 scripts/research_harness.py plan ../campaigns/example \
   --task-timeout-seconds 7200 --max-attempts 2
 python3 scripts/tool_probe.py --output ../campaigns/example/tools/tool-probe.json
 python3 scripts/research_harness.py queue ../campaigns/example
+python3 scripts/component_freeze.py COMPONENT.json \
+  ../campaigns/example/frozen/component
+python3 scripts/research_harness.py gate-self-test ../campaigns/example
 python3 scripts/static_analysis_pipeline.py run ../campaigns/example \
-  --language javascript --ingest
+  --tool differential --differential-spec PAIR.json --ingest
+python3 scripts/framework_adapter.py ../campaigns/example ADAPTER.json \
+  ../campaigns/example/evidence/framework/production
 python3 scripts/research_harness.py worker-register ../campaigns/example worker-a \
   --agent codex:session-a --role originator
 python3 scripts/research_harness.py claim ../campaigns/example worker-a --json
@@ -131,21 +144,49 @@ python3 scripts/research_harness.py orchestration-status ../campaigns/example
 python3 scripts/research_harness.py status ../campaigns/example
 ```
 
-For an implementation-derived integer boundary, add a Z3 specification. The
-solver emits decimal, hexadecimal, big-endian, and little-endian testcase
-payloads alongside the retained model:
+The bundled Z3 example is generic mathematics, not target analysis. Run it
+directly to inspect the payload format:
 
 ```bash
-python3 scripts/static_analysis_pipeline.py run ../campaigns/example \
-  --language javascript \
-  --z3-spec examples/z3/u32-truncates-to-zero.json --ingest
+python3 scripts/z3_boundary_solver.py \
+  --spec examples/z3/u32-truncates-to-zero.json
 ```
 
-Raw analyzer evidence is stored under `tools/static/RUN_ID/`; normalized leads
-are in `tools/static-leads.json`. Each lead becomes a
-`static-lead-validation` queue task that carries the campaign commit, tool,
-query, command output, and evidence paths. Running ingestion twice does not
-duplicate a task. No static lead writes to the findings registry.
+Pipeline Z3 specs normally require `implementationBinding` with the pinned
+relative source file, exact line range, expression, and extraction method. The
+solver reads and hashes that fragment. `--allow-unbound-z3` retains generic
+output for experimentation but deliberately creates no validation task.
+
+Raw differential evidence is stored under `tools/static/RUN_ID/`; normalized
+leads are in `tools/static-leads.json`. Each executed disagreement becomes an
+`evidence-lead-validation` queue task that carries the campaign commit,
+commands, observations, and evidence paths. Running ingestion twice does not
+duplicate a task. No witness writes to the findings registry.
+
+For Next.js, React, and Node targets, use a production adapter rather than a
+development server or an ad hoc request. The adapter hashes the lockfile,
+runtime, compiler probes, environment, generated bundles, declared surface
+evidence, and deployment files, then launches and exercises that exact
+artifact. See [framework adapters](references/framework-adapters.md) and the
+[HTTP/protocol harness](references/http-protocol-harness.md). The latter
+preserves duplicate headers and raw framing, models separate roles and tenants,
+and supports stateful, concurrent, redirect, WebSocket, streaming, and
+proxy/framework/origin differential replay.
+
+The framework-analysis pipeline reads the resulting route, middleware,
+prerender, build, and server-reference manifests; structurally indexes source,
+generated, and vendored JavaScript; follows directive and module boundaries;
+and reverse-maps source facts into shipped bundles. It emits concrete
+production experiments with controls, not vulnerability verdicts. See
+[framework production analysis](references/framework-analysis.md).
+
+JavaScript targets can use persistent Node workers and runtime-native
+V8/Istanbul coverage without target-written edge hooks. Browser precise
+coverage from the Chromium runner and server coverage are remapped through
+source maps and classified across Next.js server, edge, and client bundles.
+Built-in semantic generators cover JSON, URLs, headers, multipart, RSC, Server
+Actions, and manifests. See
+[JavaScript coverage and generation](references/javascript-coverage-generation.md).
 
 Every campaign includes `third_party/manifest.json`. Pin exact dependencies
 selected by the target's lockfile, build graph, generated bundle, or runtime
@@ -178,7 +219,9 @@ Agent task packets are written to `tasks/`, grouped into waves in
 The launch plan remains reviewable configuration; the SQLite queue is the
 operational source of truth.
 
-`auto` capacity grows with the number of distinct active runtime-agent
+The first worker may register after setup. A second worker is refused until
+`gate-self-test` proves that coordinator re-execution rejects an intentionally
+false runtime claim. After that, `auto` capacity grows with distinct active runtime-agent
 identities registered by the adapter. It can run four, eight, or more workers
 at once when the runtime safely exposes those slots and independent tasks are
 ready. An explicit positive integer remains available as a hard safety ceiling.
@@ -274,6 +317,10 @@ python3 scripts/research_harness.py register CAMPAIGN F001 \
   --title "Candidate" --lane cross-lane-chain-composition --originator worker-a
 python3 scripts/research_harness.py schedule-replay CAMPAIGN F001
 ```
+
+Each replay submission must link a `krineon-reality-runner` attestation. The
+coordinator re-hashes the recipe, targets, and raw output and recomputes every
+assertion. A different worker ID that merely submits `passed: true` is rejected.
 
 `submit` accepts the same idempotency key repeatedly only when the task,
 worker, result digest, and outcome are identical. A conflicting reuse fails.
@@ -392,12 +439,19 @@ that retained crashes still reproduce against their original pinned targets;
 it performs no cross-version comparison. A crash or sanitizer report remains a
 chain link until controls and escalation establish Critical/RCE impact.
 
-Crash saving now automatically performs first-fault classification, separates
-read, write, execute, lifetime, bounds, concurrency, and crash-only evidence,
-calculates a conservative controllability score, and assigns a normalized
-stack-cluster ID. `dynamic/triage/index.json` is refreshed as the corpus grows,
+Crash saving performs first-fault classification, separates read, write,
+execute, lifetime, bounds, concurrency, and crash-only evidence, and assigns a
+normalized stack-cluster ID. A sanitizer label never receives a controllability
+score. Control remains `unverified` until a challenge-response run proves
+chosen bytes or a chosen PC, repeated fresh-process stability, enforcing
+controls, and allocation generation identity for a UAF claim.
+`dynamic/triage/index.json` is refreshed as the corpus grows,
 so distinct sanitizer reports sharing one underlying stack remain grouped even
-when their exact crash fingerprints differ. Attach reviewed triage to a
+when their exact crash fingerprints differ. Completed tasks can return these
+clusters, invariant contradictions, and verified primitives through
+`taskResult.researchLeads`. `research_harness.py lead-status` deduplicates and
+orders them by machine-evidence grade, not claimed severity, and automatically
+queues the next stated experiment. Attach reviewed triage to a
 finding with:
 
 ```bash
@@ -406,11 +460,39 @@ python3 scripts/dynamic_harness.py triage CAMPAIGN \
   --reviewed-by worker-review --review-note "Interpretation and next experiment"
 ```
 
-The candidate gate verifies the linked crash IDs, triage files, stack clusters,
-and machine verdicts. A crash-only verdict requires an explicit override
-reason. No automated verdict is machine-eligible to establish Critical impact;
+Use `scripts/reality_runner.py` plus `scripts/primitive_verifier.py` to attach
+that evidence. The candidate gate rejects a crash-backed write or PC lead while
+its primitive remains unverified. No automated verdict is machine-eligible to establish Critical impact;
 the existing real-terminal, production-equivalent, and replay gates still
 apply.
+
+See [references/reality-evidence.md](references/reality-evidence.md) for the
+recipe, observation, and independent-replay contracts.
+
+## Frozen-corpus rediscovery measurement
+
+Lane descriptions are hypotheses until they rediscover a hidden target-owned
+oracle. `scripts/rediscovery_benchmark.py` freezes a local corpus and target
+artifacts, stores only the hash of evaluator-held target-test/invariant
+oracles, executes a local search command, and records seconds and hours to first
+rediscovery plus recall. The oracle identities must not be shared with search
+workers.
+
+```bash
+python3 scripts/rediscovery_benchmark.py freeze CAMPAIGN baseline \
+  --checkout /pinned/target --corpus /owned/frozen-corpus \
+  --sealed-oracles /evaluator/oracles.json \
+  --target-artifact /pinned/target/out/release-target
+
+python3 scripts/rediscovery_benchmark.py run CAMPAIGN baseline \
+  --sealed-oracles /evaluator/oracles.json \
+  --command-json '["/owned/search-driver","--jsonl"]'
+```
+
+Before that metric exists, launch-plan lane efficacy is explicitly marked
+`documentation-only`; running a lane is an experiment, not evidence that it
+works. See
+[references/rediscovery-benchmark.md](references/rediscovery-benchmark.md).
 
 The POSIX runner enforces wall-clock, CPU, optional address-space, input, and
 captured-output limits and performs best-effort process-group cleanup. These
@@ -484,7 +566,7 @@ candidate registry and falsification
 wave 3: bounded real terminal | controls | independent clean replay
         |
         v
-machine-audited source-to-sink path proof | every branch | zero assumptions
+executable source-to-sink path proof | recomputed observations | zero assumptions
         |
         v
 evidence gate -> report package -> coordinated disclosure
@@ -498,23 +580,39 @@ agents/openai.yaml               Skill UI metadata
 scripts/research_harness.py      Campaign, registry, gates, lint, hashes
                                 and durable task orchestration
 scripts/path_proof.py            Exhaustive path, condition, contradiction,
-                                evidence, and independent-review audit
+                                executable evidence, and replay audit
+scripts/reality_runner.py        Fresh-process baseline/control/positive runner
+scripts/reality_evidence.py      Raw-output assertion and attestation validator
+scripts/primitive_verifier.py    Chosen-byte/PC, allocation, and stability gate
+scripts/rediscovery_benchmark.py Frozen-corpus blind rediscovery timing and recall
+scripts/component_freeze.py      ASan/UBSan component build and artifact freeze
+scripts/differential_witness.py  Same-input two-consumer disagreement recorder
+scripts/search_score.py          Edge/stack/rediscovery scoring and ablation
+scripts/framework_adapter.py     Next.js, React, and Node production build,
+                                launch, exercise, and artifact freeze
+scripts/framework_analysis_pipeline.py
+                                Route/runtime/source-to-bundle hypothesis mapper
+scripts/http_protocol_harness.py Stateful raw HTTP/WebSocket and differential
+                                protocol replay
+scripts/js_coverage_harness.py  Persistent Node execution and native JS coverage
+scripts/js_persistent_worker.mjs Reusable module worker for many inputs
+scripts/js_coverage_remap.mjs    V8/Istanbul and source-map coverage merger
+scripts/structured_input_generator.py
+                                Semantic framework representation generator
 scripts/campaign_bootstrap.py    Program-rules intake, profile selection,
                                 source pinning, planning, and queue setup
 scripts/dynamic_harness.py       Bounded execution, fuzzing, and crash replay
-scripts/crash_triage.py          First-fault classification, controllability
-                                scoring, and cross-corpus stack clustering
+scripts/crash_triage.py          First-fault classification, verified primitive
+                                linkage, and cross-corpus stack clustering
 scripts/chromium_replay.py       Direct-CDP owned-page runner and sandbox evidence
 scripts/fuzzer_orchestrator.py   AFL++, libFuzzer, and Fuzzilli campaign adapter
 scripts/chrome_v8_harness.py     Pinned d8 registry and cross-build matrices
 scripts/tool_probe.py            Local static-tool capability inventory
 scripts/static_analysis_pipeline.py
-                                Analyzer execution, retained provenance, and
-                                durable lead-task ingestion
-scripts/tree_sitter_census.py    Syntax-aware ingress, guard, and sink census
-scripts/z3_boundary_solver.py    Concrete integer-boundary testcase generator
-queries/joern/                   Runnable CPG reachability and guard queries
-examples/z3/                     Source-derived solver-spec examples
+                                Differential execution, retained provenance,
+                                and durable lead-task ingestion
+scripts/z3_boundary_solver.py    Generic or pinned-source-bound constraint models
+examples/z3/                     Generic solver-format examples
 profiles/chrome-v8.json          Chrome/V8 dependency-aware research lanes
 profiles/critical-rce.json       Default first-principles chain lanes
 profiles/approach-families.json  Semantic boundary, mechanism, and invariant catalog
@@ -528,6 +626,11 @@ references/blocker-resolution.md Dynamic exploration and unblock protocol
 references/approach-families.md  Coverage accounting and convergence redirection
 references/dependencies.md       Pinned dependencies and cross-library chains
 references/tool-assisted-analysis.md
+references/framework-adapters.md Production surface and artifact adapter schema
+references/framework-analysis.md Runtime hypothesis and bundle-mapping schema
+references/http-protocol-harness.md Raw protocol and stateful sequence schema
+references/javascript-coverage-generation.md
+                                Persistent JS coverage and generator schema
 references/evidence-gates.md
 references/false-positive-control.md
 references/pre-filing.md
@@ -537,6 +640,7 @@ assets/campaign.template.json
 assets/finding.template.json
 assets/agent-handoff.template.md
 assets/research-round.template.json
+assets/framework-analysis.template.json
 tests/test_research_harness.py
 tests/test_dynamic_harness.py
 tests/test_chrome_v8_harness.py

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "framework": "nextjs",
+  "projectRoot": "/replace/with/owned/production-build",
+  "adapterRecord": "/replace/with/campaign/evidence/framework/framework-adapter-run.json",
+  "sourceGlobs": [
+    "app/**/*.js",
+    "app/**/*.jsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "pages/**/*.js",
+    "pages/**/*.tsx",
+    "src/**/*.js",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "middleware.ts",
+    "proxy.ts"
+  ],
+  "generatedGlobs": [
+    ".next/server/**/*.js",
+    ".next/static/**/*.js"
+  ],
+  "vendoredGlobs": [
+    "node_modules/next/dist/server/**/*.js",
+    "node_modules/next/dist/compiled/react-server-dom*/**/*.js"
+  ],
+  "manifestGlobs": [".next/**/*manifest*.json", ".next/BUILD_ID"],
+  "sourceMapGlobs": [".next/**/*.map"],
+  "maxParsedFileBytes": 4194304,
+  "maxHypotheses": 500
+}

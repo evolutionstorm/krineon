@@ -246,6 +246,8 @@ class ChromeV8HarnessTests(unittest.TestCase):
             record["summary"]["promotionReady"], record["summary"]["sandboxVerified"]
         )
         self.assertTrue((record_path.parent / "positive" / "page.png").is_file())
+        self.assertTrue((record_path.parent / "positive" / "v8-coverage.json").is_file())
+        self.assertIn("v8Coverage", record["cases"]["positive"])
         self.assertTrue((record_path.parent / "control" / "cdp-events.json").is_file())
         finding = json.loads((self.campaign / "findings" / "F900.json").read_text())
         self.assertEqual(finding["browserReplay"]["replayIds"], [replay_id])

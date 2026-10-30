@@ -1171,7 +1171,8 @@ def cmd_triage(args: argparse.Namespace) -> int:
                 "faultClass": item["firstFault"]["class"],
                 "access": item["firstFault"]["access"],
                 "clusterId": item["stack"]["clusterId"],
-                "controllabilityScore": item["controllability"]["score"],
+                "controlEvidenceStatus": item["controlEvidence"]["status"],
+                "controlClaim": item["controlEvidence"].get("claim"),
                 "verdict": item["automatedExploitability"]["verdict"],
                 "gateRecommendation": item["automatedExploitability"]["gateRecommendation"],
             }
@@ -1185,7 +1186,7 @@ def cmd_triage(args: argparse.Namespace) -> int:
         for result in payload["results"]:
             print(
                 f"{result['crashId']}: {result['faultClass']}/{result['access']} "
-                f"score={result['controllabilityScore']} verdict={result['verdict']}"
+                f"control={result['controlEvidenceStatus']} verdict={result['verdict']}"
             )
         print(f"index: {payload['index']}")
     return 0
@@ -1259,7 +1260,7 @@ def build_parser() -> argparse.ArgumentParser:
     regression.set_defaults(func=cmd_regression)
 
     triage = sub.add_parser(
-        "triage", help="classify first faults, score controllability, and cluster stacks"
+        "triage", help="classify first faults and validate concrete primitive evidence"
     )
     triage.add_argument("campaign_dir")
     triage.add_argument("--crash-id", help="exact crash ID or unique prefix; omit to refresh all")

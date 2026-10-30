@@ -17,11 +17,12 @@ Complete `CAMPAIGN/evidence/path-proofs/F001.json`. The proof must contain:
 
 1. The exact attacker-accessible entry point and exact security-relevant sink.
 2. Every ordered source-to-sink transition, including the attacker-controlled
-   value at that transition and retained source and runtime evidence.
+   value and a `machineEvidence` reference to a matched assertion in a retained
+   Krineon reality attestation.
 3. Every conditional statement on the selected path. For each condition,
    record its exact expression, required outcome, how the attacker causes that
-   outcome, the concrete input or state, and an observed runtime artifact.
-4. A function and source-range inventory. Hash each reviewed source artifact
+   outcome, the concrete input or state, and a recomputable runtime assertion.
+4. A function and source-range inventory. Retain and hash each reviewed source artifact
    and explicitly attest that every path condition was enumerated.
 5. An empty `assumptions` array. An unresolved assumption is a blocker, not a
    field to explain away.
@@ -30,17 +31,26 @@ Complete `CAMPAIGN/evidence/path-proofs/F001.json`. The proof must contain:
    the claim remains blocked or is disproved.
 7. Negative controls and checks for observations that would disprove the
    proposed path.
-8. Review by an identity different from the finding originator.
+8. Originator and reviewer machine attestations produced from the same recipe
+   and target hashes, but different fresh processes and random challenges.
 
-All referenced proof artifacts must exist beneath the campaign's `evidence/`
-directory. The entry point must match the first step, the sink must match the
-last step, and the condition IDs referenced by steps and reviewed functions
-must exactly equal the condition inventory. This prevents omitted guards from
-being hidden in prose.
+File existence is not execution evidence. `path_proof.py` re-hashes the recipe,
+targets, source snapshots, raw stdout and stderr, then recomputes every linked
+assertion. The entry point must match the first step, the sink must match the
+last step, and condition IDs must exactly equal the inventory.
 
 ## Audit and gate
 
-After the originator completes the proof and a different worker reviews it:
+Run the recipe once as the originator and again as the reviewer:
+
+```bash
+python3 scripts/reality_runner.py CAMPAIGN F001 \
+  --recipe evidence/recipes/F001.json --worker-id worker-a --role originator
+python3 scripts/reality_runner.py CAMPAIGN F001 \
+  --recipe evidence/recipes/F001.json --worker-id worker-b --role reviewer
+```
+
+Link the two attestation paths and SHA-256 values in the proof, then audit it:
 
 ```bash
 python3 scripts/path_proof.py audit CAMPAIGN F001 --update-gate --json

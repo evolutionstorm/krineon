@@ -1,6 +1,9 @@
 # Evidence Gates
 
 The harness has two mechanical gate levels. Human review remains mandatory.
+These gates govern candidate findings and filing. They do not decide whether a
+unique minimized stack, invariant break, or verified primitive is retained or
+advanced as an internal research lead.
 
 ## Candidate gate
 
@@ -30,7 +33,9 @@ A candidate must have:
   ordered transitions and every conditional on the chosen path, show concrete
   attacker control and observed evidence for every required branch outcome,
   contain zero unresolved assumptions, resolve every contradiction challenge,
-  and carry review by an identity other than the originator;
+  and bind every step and branch to an assertion recomputed from retained raw
+  process output. The originator and reviewer must provide distinct machine
+  attestations using fresh harness-generated challenges;
 - reviewed automated triage when a sanitizer or crash artifact supports the
   chain. The gate verifies the crash identity, first-fault record, normalized
   stack cluster, and machine verdict against retained campaign artifacts.
@@ -48,7 +53,8 @@ campaign `evidence/` tree. See
 In addition to the candidate gate:
 
 - reproduction is complete on an unmodified supported build;
-- two different researcher or runtime-agent identities independently replayed it;
+- two different researcher or runtime-agent identities independently replayed
+  it through fresh machine attestations, not by accepting or restating prose;
 - official documentation and upstream tests were checked;
 - current-version behavior was executed without mining or diffing patched code;
 - any duplicate check happened only after independent chain validation;
@@ -92,19 +98,20 @@ Every dynamic crash has three separate identities:
 - the exact crash fingerprint used for replay and input minimization;
 - a normalized stack-cluster ID used to group related failures as the corpus
   grows; and
-- a first-fault and controllability assessment used to prioritize escalation.
+- a first-fault classification and, separately, verified primitive evidence.
 
-The assessment distinguishes control-flow evidence, out-of-bounds read or
+The classifier distinguishes control-flow evidence, out-of-bounds read or
 write, lifetime violations, double or invalid free, undefined behavior, data
-races, null dereferences, bare signals, and abnormal exits. Its score measures
-the quality of evidence, not exploitability or severity. The machine field
+races, null dereferences, bare signals, and abnormal exits. Those labels confer
+no attacker control. `controlEvidence.status` remains `unverified` unless a
+recomputable challenge run proves the exact consequence. The machine field
 `machinePromotionEligible` must remain false.
 
 When `dynamicTriage.required` is true, the candidate gate loads every referenced
 `triage.json` and `dynamic/triage/index.json`, verifies crash and cluster IDs,
 checks that the attached verdict matches the retained result, and requires a
 named reviewer with notes. A `reject-crash-only` recommendation needs a
-specific override reason. Even a strong PC or write-oriented verdict cannot
+specific override reason. An unverified PC or write-oriented lead cannot
 replace the real-terminal and production-reachability gates.
 
 ## Owned-page Chromium replay

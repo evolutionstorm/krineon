@@ -613,8 +613,20 @@ def run_browser_case(
             session_id = str(attached.get("sessionId") or "")
             if not session_id:
                 raise ChromiumReplayError("CDP did not return a session ID")
-            for method in ("Page.enable", "Runtime.enable", "Network.enable", "Log.enable"):
+            for method in (
+                "Page.enable",
+                "Runtime.enable",
+                "Network.enable",
+                "Log.enable",
+                "Profiler.enable",
+            ):
                 client.command(method, session_id=session_id, deadline=deadline)
+            client.command(
+                "Profiler.startPreciseCoverage",
+                {"callCount": True, "detailed": True},
+                session_id=session_id,
+                deadline=deadline,
+            )
             client.command(
                 "Fetch.enable",
                 {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
@@ -661,6 +673,24 @@ def run_browser_case(
             result_object = evaluated.get("result") if isinstance(evaluated.get("result"), dict) else {}
             actual = result_object.get("value")
             exception_details = evaluated.get("exceptionDetails")
+            precise_coverage = client.command(
+                "Profiler.takePreciseCoverage",
+                session_id=session_id,
+                deadline=deadline,
+            )
+            coverage_path = output_dir / "v8-coverage.json"
+            coverage_path.write_text(
+                json.dumps(
+                    {"result": precise_coverage.get("result", [])}, indent=2
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            client.command(
+                "Profiler.stopPreciseCoverage",
+                session_id=session_id,
+                deadline=deadline,
+            )
             screenshot = client.command(
                 "Page.captureScreenshot",
                 {"format": "png", "fromSurface": True},
@@ -698,6 +728,11 @@ def run_browser_case(
                         "path": "page.png",
                         "sha256": sha256_file(screenshot_path),
                         "size": screenshot_path.stat().st_size,
+                    },
+                    "v8Coverage": {
+                        "path": "v8-coverage.json",
+                        "sha256": sha256_file(coverage_path),
+                        "size": coverage_path.stat().st_size,
                     },
                     "eventCount": len(client.events),
                     "eventsTruncated": client.events_dropped > 0,

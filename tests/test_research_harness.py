@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import shutil
 import sqlite3
@@ -10,13 +11,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.path_proof_fixture import complete_path_proof
+from tests.path_proof_fixture import install_machine_path_evidence
 
 
 PROJECT = Path(__file__).resolve().parents[1]
 HARNESS = PROJECT / "scripts" / "research_harness.py"
 PROBE = PROJECT / "scripts" / "tool_probe.py"
 PATH_PROOF = PROJECT / "scripts" / "path_proof.py"
+REALITY_RUNNER = PROJECT / "scripts" / "reality_runner.py"
 
 
 class HarnessTests(unittest.TestCase):
@@ -46,6 +48,18 @@ class HarnessTests(unittest.TestCase):
             "--commit",
             "0123456789abcdef",
         )
+        gate = campaign / "evidence" / "coordinator-gate.json"
+        gate.write_text(
+            json.dumps(
+                {
+                    "producer": "krineon-coordinator-gate",
+                    "status": "passed",
+                    "lyingWorkerRejected": True,
+                    "testFixture": True,
+                }
+            )
+            + "\n"
+        )
         return campaign
 
     def install_valid_path_proof(
@@ -58,13 +72,9 @@ class HarnessTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        artifact = campaign / "evidence" / "path-proof" / "trace.json"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_text('{"observed": true}\n', encoding="utf-8")
-        proof = complete_path_proof()
-        proof["findingId"] = finding_id
-        proof["review"]["originator"] = originator
-        proof["review"]["reviewer"] = reviewer
+        proof = install_machine_path_evidence(
+            campaign, finding_id, originator, reviewer
+        )
         proof_path = campaign / "evidence" / "path-proofs" / f"{finding_id}.json"
         proof_path.write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
         completed = subprocess.run(
@@ -107,14 +117,44 @@ class HarnessTests(unittest.TestCase):
 
     @classmethod
     def valid_replay_result(
-        cls, task_id: str, finding_id: str, originator: str, reviewer: str
+        cls,
+        campaign: Path,
+        task_id: str,
+        finding_id: str,
+        originator: str,
+        reviewer: str,
     ) -> dict[str, object]:
+        recipe = f"evidence/recipes/{finding_id}.json"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(REALITY_RUNNER),
+                str(campaign),
+                finding_id,
+                "--recipe",
+                recipe,
+                "--worker-id",
+                reviewer,
+                "--role",
+                "reviewer",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode:
+            raise AssertionError(completed.stderr or completed.stdout)
+        attestation = json.loads(completed.stdout)
         result = cls.valid_task_result(task_id)
         result["independentReplay"] = {
             "findingId": finding_id,
             "originator": originator,
             "reviewer": reviewer,
             "passed": True,
+            "attestation": {
+                "path": attestation["attestation"],
+                "sha256": attestation["sha256"],
+            },
         }
         return result
 
@@ -427,6 +467,7 @@ class HarnessTests(unittest.TestCase):
             replay_result.write_text(
                 json.dumps(
                     self.valid_replay_result(
+                        campaign,
                         "replay-F001-gate", "F001", "worker-origin", "worker-review"
                     )
                 )
@@ -462,6 +503,7 @@ class HarnessTests(unittest.TestCase):
             replay_result_2.write_text(
                 json.dumps(
                     self.valid_replay_result(
+                        campaign,
                         "replay-F001-gate-2",
                         "F001",
                         "worker-origin",
@@ -639,6 +681,333 @@ class HarnessTests(unittest.TestCase):
             wave_one = self.run_cli("claim", str(campaign), "worker-a", "--json")
             self.assertEqual(
                 json.loads(wave_one.stdout)["lane"], "public-ingress-map"
+            )
+
+    def test_partial_invariant_lead_is_ranked_deduplicated_and_advances_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            checkout = Path(tmp) / "lead-source"
+            checkout.mkdir()
+            source_file = checkout / "src" / "consumer.cc"
+            source_file.parent.mkdir()
+            source_file.write_text(
+                "auto produced = make_wide();\nauto consumed = narrow(produced);\n"
+            )
+            campaign_record = json.loads((campaign / "campaign.json").read_text())
+            campaign_record["localCheckout"] = str(checkout.resolve())
+            campaign_record["authorization"]["confirmed"] = True
+            campaign_record["authorization"]["basis"] = "owned coordinator replay fixture"
+            replay_target = campaign / "evidence" / "bin" / "reality_target.py"
+            replay_target.parent.mkdir(parents=True, exist_ok=True)
+            replay_target.write_bytes(
+                (PROJECT / "tests" / "fixtures" / "reality_target.py").read_bytes()
+            )
+            campaign_record["frozenTargetArtifacts"] = [
+                {
+                    "path": replay_target.relative_to(campaign).as_posix(),
+                    "sha256": hashlib.sha256(replay_target.read_bytes()).hexdigest(),
+                    "producer": "test-coordinator",
+                }
+            ]
+            (campaign / "campaign.json").write_text(
+                json.dumps(campaign_record, indent=2) + "\n"
+            )
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "lead-worker",
+                "--agent",
+                "codex:lead-worker",
+            )
+            assignment = json.loads(
+                self.run_cli("claim", str(campaign), "lead-worker", "--json").stdout
+            )
+            evidence = campaign / "evidence" / "invariant-observation.json"
+            evidence.write_text('{"producer":"wide","consumer":"narrow"}\n')
+            lead = {
+                "kind": "invariant-break",
+                "title": "Producer and consumer disagree on the value domain",
+                "status": "active",
+                "sourceReferences": ["src/producer.cc:10", "src/consumer.cc:20"],
+                "sourceArtifacts": [
+                    {
+                        "targetPath": "src/consumer.cc",
+                        "sha256": hashlib.sha256(source_file.read_bytes()).hexdigest(),
+                        "lineStart": 1,
+                        "lineEnd": 2,
+                    }
+                ],
+                "evidence": ["evidence/invariant-observation.json"],
+                "approachFamilies": ["representation-parser"],
+                "nextExperiment": "Run the same value through the release consumer and restoring control.",
+                "invariantBreak": {
+                    "boundary": "producer-to-consumer",
+                    "invariant": "both sides accept the same numeric domain",
+                    "expected": "the consumer preserves the produced value",
+                    "observed": "the consumer truncates it",
+                    "restoredControl": "a value inside the shared domain is preserved",
+                    "runtimeReproduced": False,
+                },
+            }
+            crash_id = "a" * 64
+            crash_dir = campaign / "dynamic" / "crashes" / crash_id
+            crash_dir.mkdir(parents=True)
+            minimized = crash_dir / "minimized.bin"
+            minimized.write_bytes(b"minimal-trigger")
+            triage = {
+                "crashId": crash_id,
+                "firstFault": {"class": "out-of-bounds-write"},
+                "stack": {"clusterId": "SC-unique-stack"},
+            }
+            triage_path = crash_dir / "triage.json"
+            triage_path.write_text(json.dumps(triage) + "\n")
+            stack_lead = {
+                "kind": "minimized-stack",
+                "title": "Unique minimized first-fault stack",
+                "status": "active",
+                "sourceReferences": ["src/consumer.cc:20"],
+                "evidence": [
+                    f"dynamic/crashes/{crash_id}/triage.json",
+                    f"dynamic/crashes/{crash_id}/minimized.bin",
+                ],
+                "approachFamilies": ["memory-lifetime"],
+                "nextExperiment": "Restore the disputed bound and replay the minimized input.",
+                "minimizedStack": {
+                    "crashId": crash_id,
+                    "clusterId": "SC-unique-stack",
+                    "minimizedSha256": hashlib.sha256(
+                        minimized.read_bytes()
+                    ).hexdigest(),
+                },
+            }
+            result = self.valid_task_result(assignment["taskId"])
+            result["taskResult"]["researchLeads"] = [
+                lead,
+                dict(lead),
+                stack_lead,
+                dict(stack_lead),
+            ]
+            replay_recipe = campaign / "evidence" / "recipes" / "lead-replay.json"
+            replay_recipe.parent.mkdir(parents=True, exist_ok=True)
+            replay_recipe.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "findingId": assignment["taskId"],
+                        "targetArtifacts": ["evidence/bin/reality_target.py"],
+                        "cases": [
+                            {
+                                "name": "baseline",
+                                "command": [sys.executable, "evidence/bin/reality_target.py"],
+                                "assertions": [
+                                    {
+                                        "id": "baseline-no-challenge",
+                                        "kind": "stdout-not-contains-challenge",
+                                    }
+                                ],
+                            },
+                            {
+                                "name": "negative",
+                                "command": [sys.executable, "evidence/bin/reality_target.py"],
+                                "assertions": [
+                                    {
+                                        "id": "negative-no-challenge",
+                                        "kind": "stdout-not-contains-challenge",
+                                    }
+                                ],
+                            },
+                            {
+                                "name": "positive",
+                                "command": [sys.executable, "evidence/bin/reality_target.py"],
+                                "assertions": [
+                                    {
+                                        "id": "positive-challenge",
+                                        "kind": "stdout-contains-challenge",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            result["taskResult"]["coordinatorReplay"] = {
+                "recipe": replay_recipe.relative_to(campaign).as_posix(),
+                "repetitions": 1,
+            }
+            result_path = campaign / "lead-result.json"
+            result_path.write_text(json.dumps(result) + "\n")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "lead-worker",
+                assignment["taskId"],
+                "--lease-token",
+                assignment["leaseToken"],
+                "--result",
+                str(result_path),
+                "--idempotency-key",
+                "partial-lead",
+            )
+            status = json.loads(
+                self.run_cli("lead-status", str(campaign), "--json").stdout
+            )
+            self.assertFalse(status["impactClaimed"])
+            self.assertEqual(len(status["leads"]), 2)
+            self.assertEqual(status["leads"][0]["evidenceGrade"], "minimized-stack")
+            self.assertEqual(status["leads"][1]["evidenceGrade"], "source-invariant")
+            connection = sqlite3.connect(campaign / "orchestration.db")
+            try:
+                rows = connection.execute(
+                    "SELECT task_id,packet FROM tasks WHERE lane='research-lead-validation'"
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(len(rows), 2)
+            for _, packet_path in rows:
+                packet = (campaign / packet_path).read_text()
+                self.assertIn("RCE chain is **not** required", packet)
+
+    def test_coordinator_reexecution_rejects_a_worker_lie(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            campaign_record = json.loads((campaign / "campaign.json").read_text())
+            campaign_record["authorization"]["confirmed"] = True
+            campaign_record["authorization"]["basis"] = "owned liar-gate fixture"
+            target = campaign / "evidence" / "bin" / "always_negative.py"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                "#!/usr/bin/env python3\nprint('no-positive-observation')\n",
+                encoding="utf-8",
+            )
+            campaign_record["frozenTargetArtifacts"] = [
+                {
+                    "path": target.relative_to(campaign).as_posix(),
+                    "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                    "producer": "test-coordinator",
+                }
+            ]
+            (campaign / "campaign.json").write_text(
+                json.dumps(campaign_record, indent=2) + "\n"
+            )
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "lying-worker",
+                "--agent",
+                "codex:lying-worker",
+            )
+            assignment = json.loads(
+                self.run_cli("claim", str(campaign), "lying-worker", "--json").stdout
+            )
+            recipe = campaign / "evidence" / "recipes" / "liar.json"
+            recipe.parent.mkdir(parents=True, exist_ok=True)
+            recipe.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "findingId": assignment["taskId"],
+                        "targetArtifacts": ["evidence/bin/always_negative.py"],
+                        "cases": [
+                            {
+                                "name": "baseline",
+                                "command": [sys.executable, "evidence/bin/always_negative.py"],
+                                "assertions": [
+                                    {"id": "b", "kind": "stdout-not-contains-challenge"}
+                                ],
+                            },
+                            {
+                                "name": "negative",
+                                "command": [sys.executable, "evidence/bin/always_negative.py"],
+                                "assertions": [
+                                    {"id": "n", "kind": "stdout-not-contains-challenge"}
+                                ],
+                            },
+                            {
+                                "name": "positive",
+                                "command": [sys.executable, "evidence/bin/always_negative.py"],
+                                "assertions": [
+                                    {"id": "p", "kind": "stdout-contains-challenge"}
+                                ],
+                            },
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            result = self.valid_task_result(assignment["taskId"])
+            result["taskResult"]["coordinatorReplay"] = {
+                "recipe": recipe.relative_to(campaign).as_posix()
+            }
+            result_path = campaign / "lying-result.json"
+            result_path.write_text(json.dumps(result) + "\n")
+            rejected = self.run_cli(
+                "submit",
+                str(campaign),
+                "lying-worker",
+                assignment["taskId"],
+                "--lease-token",
+                assignment["leaseToken"],
+                "--result",
+                str(result_path),
+                "--idempotency-key",
+                "lying-worker-claim",
+                expected=1,
+            )
+            self.assertIn("coordinator re-execution rejected", rejected.stderr)
+            with sqlite3.connect(campaign / "orchestration.db") as connection:
+                state = connection.execute(
+                    "SELECT state FROM tasks WHERE task_id=?", (assignment["taskId"],)
+                ).fetchone()[0]
+            self.assertEqual(state, "running")
+
+    def test_scale_out_waits_for_coordinator_gate_self_test(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / "campaign"
+            self.run_cli(
+                "init",
+                str(campaign),
+                "--target",
+                "fixture",
+                "--repo",
+                "https://example.invalid/fixture",
+                "--commit",
+                "a" * 40,
+            )
+            record = json.loads((campaign / "campaign.json").read_text())
+            record["authorization"]["confirmed"] = True
+            record["authorization"]["basis"] = "owned gate fixture"
+            (campaign / "campaign.json").write_text(json.dumps(record) + "\n")
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "worker-one",
+                "--agent",
+                "codex:one",
+            )
+            refused = self.run_cli(
+                "worker-register",
+                str(campaign),
+                "worker-two",
+                "--agent",
+                "codex:two",
+                expected=1,
+            )
+            self.assertIn("additional workers are disabled", refused.stderr)
+            self.run_cli("gate-self-test", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "worker-two",
+                "--agent",
+                "codex:two",
             )
 
     @unittest.skipUnless(shutil.which("git"), "Git is required for worktree provisioning")
@@ -855,6 +1224,7 @@ class HarnessTests(unittest.TestCase):
                 "--originator",
                 "origin",
             )
+            self.install_valid_path_proof(campaign, "F001", "origin", "review")
             self.run_cli(
                 "schedule-replay",
                 str(campaign),
@@ -873,11 +1243,36 @@ class HarnessTests(unittest.TestCase):
                 self.run_cli("claim", str(campaign), "review", "--json").stdout
             )
             self.assertEqual(review_claim["taskId"], "replay-F001")
+            prose_only = self.valid_task_result("replay-F001")
+            prose_only["independentReplay"] = {
+                "findingId": "F001",
+                "originator": "origin",
+                "reviewer": "review",
+                "passed": True,
+            }
+            prose_result = campaign / "prose-replay.json"
+            prose_result.write_text(json.dumps(prose_only) + "\n")
+            rejected = self.run_cli(
+                "submit",
+                str(campaign),
+                "review",
+                "replay-F001",
+                "--lease-token",
+                review_claim["leaseToken"],
+                "--result",
+                str(prose_result),
+                "--idempotency-key",
+                "replay-F001-prose-only",
+                "--replay-of",
+                "F001",
+                expected=1,
+            )
+            self.assertIn("machine attestation", rejected.stderr)
             replay_result = campaign / "replay.json"
             replay_result.write_text(
                 json.dumps(
                     self.valid_replay_result(
-                        "replay-F001", "F001", "origin", "review"
+                        campaign, "replay-F001", "F001", "origin", "review"
                     )
                 )
                 + "\n"
@@ -920,7 +1315,7 @@ class HarnessTests(unittest.TestCase):
             second_result.write_text(
                 json.dumps(
                     self.valid_replay_result(
-                        "replay-F001-2", "F001", "origin", "review-2"
+                        campaign, "replay-F001-2", "F001", "origin", "review-2"
                     )
                 )
                 + "\n"
@@ -979,6 +1374,7 @@ class HarnessTests(unittest.TestCase):
                 "--originator",
                 "origin",
             )
+            self.install_valid_path_proof(campaign, "FALIAS", "origin", "review")
             self.run_cli(
                 "schedule-replay",
                 str(campaign),
@@ -1013,7 +1409,7 @@ class HarnessTests(unittest.TestCase):
             replay_result.write_text(
                 json.dumps(
                     self.valid_replay_result(
-                        "replay-FALIAS", "FALIAS", "origin", "review"
+                        campaign, "replay-FALIAS", "FALIAS", "origin", "review"
                     )
                 )
                 + "\n"
@@ -1051,7 +1447,7 @@ class HarnessTests(unittest.TestCase):
             second_result.write_text(
                 json.dumps(
                     self.valid_replay_result(
-                        "replay-FALIAS-2", "FALIAS", "origin", "review-2"
+                        campaign, "replay-FALIAS-2", "FALIAS", "origin", "review-2"
                     )
                 )
                 + "\n"

@@ -5,6 +5,12 @@ fuzzing, crash triage, and local browser validation. It does not download or
 modify V8, launch cloud instances, visit live targets, or turn a crash into an
 exploit automatically.
 
+Use checked-in V8/Chromium tests, DCHECK/ASSERT invariants, fuzz targets, and
+fixtures from the pinned revision as discovery oracles. Do not mine later
+regression tests, patch history, advisories, or fixed revisions. Preserve unique
+minimized stack clusters and invariant breaks as research leads even before an
+RCE chain exists; only filing promotion requires the complete chain.
+
 Its lanes are deliberately non-exhaustive. The open-ended expansion lane and
 `task-add` command capture new source-derived directions during a campaign.
 Blocked paths use the evidence-driven `schedule-unblock` protocol described in
@@ -95,11 +101,11 @@ Run the crash triager after a retained failure:
 python3 scripts/dynamic_harness.py triage CAMPAIGN --crash-id CRASH_ID --json
 ```
 
-It classifies the first fault and access direction, hashes normalized top
-frames into a persistent cluster, scores controllability, and emits a
-conservative machine verdict. Use the score to choose the next primitive test,
-not to claim exploitability. Attach the result to a finding only after a named
-reviewer interprets it.
+It classifies the first fault and access direction and hashes normalized top
+frames into a persistent cluster. It does not infer controllability. A write,
+UAF, or apparent PC fault remains unverified until a challenge-response recipe
+proves the exact chosen value, controls, fresh-process stability, and allocation
+identity where claimed.
 
 ## Replay an owned page in sandboxed Chromium
 

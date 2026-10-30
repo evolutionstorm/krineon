@@ -38,8 +38,13 @@
       "finalCorpusDigest": "",
       "workers": 0,
       "replayConfirmedCrashIds": [],
-      "coverageRebuildRecord": ""
+      "minimizedStackClusterIds": [],
+      "coverageRebuildRecord": "",
+      "newEdgesPerHour": null,
+      "plateauReached": false,
+      "nextCoverageHoleTask": ""
     },
+    "coordinatorReplay": null,
     "pathProofContribution": {
       "findingId": "",
       "entryPoint": "",
@@ -54,6 +59,33 @@
     "approachFamiliesExercised": [
       "Stable family IDs from KRINEON_APPROACH_REGISTRY.json"
     ],
+    "researchLeads": [
+      {
+        "kind": "invariant-break",
+        "title": "One retained observation, not a filing claim",
+        "status": "active",
+        "sourceReferences": ["pinned source or checked-in test reference"],
+        "sourceArtifacts": [
+          {
+            "targetPath": "checkout-relative/source.cc",
+            "sha256": "sha256 of the pinned checkout file",
+            "lineStart": 1,
+            "lineEnd": 1
+          }
+        ],
+        "evidence": ["campaign-relative retained evidence file"],
+        "approachFamilies": ["one registered semantic family"],
+        "nextExperiment": "The smallest experiment that improves or falsifies this lead",
+        "invariantBreak": {
+          "boundary": "producer to consumer",
+          "invariant": "the target-owned rule that should hold",
+          "expected": "expected state",
+          "observed": "contradictory state",
+          "restoredControl": "control that restores the invariant",
+          "runtimeReproduced": false
+        }
+      }
+    ],
     "hypotheses": [],
     "nextTasks": [],
     "replayFindings": [],
@@ -64,6 +96,9 @@
       "advisoryMiningUsed": false,
       "patchedVersionDiffUsed": false,
       "internetPatchDiffUsed": false
-    }
+    },
+    "targetOwnedOraclesUsed": [
+      "Checked-in test, assertion, invariant comment, or fixture from the pinned revision"
+    ]
   }
 }

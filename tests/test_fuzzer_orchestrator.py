@@ -138,6 +138,43 @@ class ExternalFuzzerTests(unittest.TestCase):
             ".js",
         )
 
+        framework_spec = self.base / "rsc-generator.json"
+        framework_spec.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "kind": "rsc",
+                    "model": {
+                        "rows": [
+                            {"id": 16, "tag": "J", "payload": {"value": "owned"}}
+                        ]
+                    },
+                }
+            )
+            + "\n"
+        )
+        self.run_command(
+            FUZZERS,
+            "framework-generate",
+            str(self.campaign),
+            "native",
+            "--spec",
+            str(framework_spec),
+            "--count",
+            "4",
+            "--seed",
+            "9",
+        )
+        provenance = (
+            self.campaign
+            / "dynamic"
+            / "fuzzers"
+            / "native"
+            / "corpus-provenance.jsonl"
+        ).read_text()
+        self.assertIn('"kind": "framework-semantic-generator"', provenance)
+        self.assertIn('"semanticGroupSha256":', provenance)
+
         launched = self.run_command(
             FUZZERS,
             "launch",
@@ -149,6 +186,8 @@ class ExternalFuzzerTests(unittest.TestCase):
             "1",
             "--sync-interval-seconds",
             "0.05",
+            "--plateau-seconds",
+            "0.01",
             "--forward-crashes",
         )
         launch_id = next(
@@ -171,7 +210,15 @@ class ExternalFuzzerTests(unittest.TestCase):
         self.assertEqual(run["workersRequested"], 3)
         self.assertGreaterEqual(run["summary"]["newCorpusInputs"], 1)
         self.assertEqual(run["summary"]["replayConfirmedCrashes"], 1)
+        self.assertEqual(run["summary"]["minimizedCrashes"], 1)
+        self.assertEqual(run["summary"]["uniqueStackClustersQueued"], 1)
+        self.assertIsInstance(run["summary"]["newEdgesPerHour"], float)
+        self.assertIn("plateau", run["summary"])
+        self.assertTrue(run["summary"]["plateau"]["reached"])
         self.assertEqual(len(list((self.campaign / "dynamic" / "crashes").iterdir())), 1)
+        crash = next((self.campaign / "dynamic" / "crashes").iterdir())
+        self.assertTrue((crash / "minimized.bin").is_file())
+        self.assertTrue((crash / "triage.json").is_file())
         external = next((self.campaign / "dynamic" / "external-crashes").iterdir())
         external_record = json.loads((external / "external.json").read_text())
         self.assertEqual(external_record["classification"], "replay-confirmed Krineon crash")
@@ -180,6 +227,19 @@ class ExternalFuzzerTests(unittest.TestCase):
         showmap = self.base / "afl-showmap"
         showmap.write_text(showmap_source.read_text(encoding="utf-8"), encoding="utf-8")
         showmap.chmod(0o755)
+        universe = self.base / "edge-universe.json"
+        universe.write_text(
+            json.dumps(
+                {
+                    "edges": [
+                        {"id": "000001", "label": "entry"},
+                        {"id": "000002", "label": "normal consumer"},
+                        {"id": "000003", "label": "unreached error consumer"},
+                    ]
+                }
+            )
+            + "\n"
+        )
         coverage = self.run_command(
             FUZZERS,
             "coverage-rebuild",
@@ -189,6 +249,8 @@ class ExternalFuzzerTests(unittest.TestCase):
             "afl-showmap",
             "--tool",
             str(showmap),
+            "--edge-universe",
+            str(universe),
         )
         coverage_id = next(
             line.split(": ", 1)[1]
@@ -207,6 +269,10 @@ class ExternalFuzzerTests(unittest.TestCase):
             ).read_text()
         )
         self.assertEqual(coverage_record["coverage"]["uniqueEdges"], 2)
+        self.assertEqual(coverage_record["metrics"]["newEdges"], 2)
+        self.assertGreater(coverage_record["metrics"]["newEdgesPerHour"], 0)
+        self.assertEqual(coverage_record["coverageHoles"]["status"], "measured")
+        self.assertEqual(coverage_record["coverageHoles"]["uncovered"], 1)
         status = json.loads(
             self.run_command(
                 FUZZERS, "status", str(self.campaign), "native", "--json"

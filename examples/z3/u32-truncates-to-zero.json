@@ -1,4 +1,5 @@
 {
+  "modelScope": "generic-not-target-bound",
   "kind": "truncate",
   "bits": 32,
   "target": 0,

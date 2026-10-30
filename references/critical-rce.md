@@ -14,9 +14,12 @@ attacker-controlled public ingress
   -> bounded real command or program-defined Critical impact
 ```
 
-A parser discrepancy, crash, assertion, memory corruption, module-selection
-primitive, or command gadget is not a finding by itself. Keep it as one link in
-the chain and assign separate agents to the missing links.
+A parser discrepancy, unique minimized stack, assertion, memory corruption,
+module-selection primitive, or command gadget is not a filing by itself. It is
+still a first-class internal research result. Retain it in the lead registry,
+rank it by reproducible evidence rather than promised impact, and assign the
+next falsification or composition experiment. Never require an agent to invent
+a complete chain before the queue will preserve or advance its observation.
 
 ## First-principles discovery boundary
 
@@ -36,6 +39,12 @@ used to review Krineon's own files are unrelated. If filing-day scope or
 duplicate checks are required after the chain is independently confirmed, keep
 them outside discovery, record them separately, and do not let them substitute
 for source-derived evidence.
+
+The target revision's own tests, assertions, invariant comments, fuzz targets,
+and fixtures are explicitly permitted discovery oracles. They state what the
+current code believes should hold. Reading them is not history mining. Using a
+later regression test, fix commit, or issue to locate a defect remains
+prohibited.
 
 ## Aggressive multi-agent operation
 
@@ -87,6 +96,18 @@ If any link is missing, record the exact blocker and schedule focused
 experiments. If evidence disproves a link, preserve that result and explore a
 different source-derived path. If only lower-severity or denial-of-service
 impact survives, do not create a bounty report.
+
+This promotion bar applies only to candidate findings and reports. It does not
+control whether a minimized stack, invariant break, or verified primitive is
+retained or receives another research task.
+
+## Empirical search bar
+
+Do not claim that a profile or lane is effective because its instructions sound
+comprehensive. Freeze a local corpus and evaluator-held target-owned oracles,
+then measure time to first rediscovery and recall with
+`scripts/rediscovery_benchmark.py`. Until a number exists, new lanes are
+unmeasured documentation and must be labelled that way in launch plans.
 
 ## Safe terminal
 

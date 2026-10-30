@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "kind": "rsc",
+  "model": {
+    "rows": [
+      {
+        "id": 16,
+        "tag": "J",
+        "payload": {
+          "value": "replace-with-seed-value"
+        }
+      }
+    ]
+  }
+}

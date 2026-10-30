@@ -7,12 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.path_proof_fixture import complete_path_proof
+from tests.path_proof_fixture import complete_path_proof, install_machine_path_evidence
 
 
 PROJECT = Path(__file__).resolve().parents[1]
 HARNESS = PROJECT / "scripts" / "research_harness.py"
 PATH_PROOF = PROJECT / "scripts" / "path_proof.py"
+REALITY_RUNNER = PROJECT / "scripts" / "reality_runner.py"
 
 
 class PathProofTests(unittest.TestCase):
@@ -44,6 +45,17 @@ class PathProofTests(unittest.TestCase):
             "https://invalid.test/source",
             "--commit",
             "0123456789abcdef",
+        )
+        (campaign / "evidence" / "coordinator-gate.json").write_text(
+            json.dumps(
+                {
+                    "producer": "krineon-coordinator-gate",
+                    "status": "passed",
+                    "lyingWorkerRejected": True,
+                    "testFixture": True,
+                }
+            )
+            + "\n"
         )
         self.run_cli(
             HARNESS,
@@ -112,11 +124,16 @@ class PathProofTests(unittest.TestCase):
     def test_complete_independently_reviewed_proof_clears_path_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             campaign = self.campaign_with_finding(Path(temporary))
-            artifact = campaign / "evidence" / "path-proof" / "trace.json"
-            artifact.parent.mkdir(parents=True)
-            artifact.write_text('{"observed": true}\n', encoding="utf-8")
             proof_path = campaign / "evidence" / "path-proofs" / "FPATH.json"
-            proof_path.write_text(json.dumps(complete_path_proof(), indent=2) + "\n")
+            proof_path.write_text(
+                json.dumps(
+                    install_machine_path_evidence(
+                        campaign, "FPATH", "worker-originator", "worker-reviewer"
+                    ),
+                    indent=2,
+                )
+                + "\n"
+            )
             audit = json.loads(
                 self.run_cli(
                     PATH_PROOF,
@@ -130,6 +147,8 @@ class PathProofTests(unittest.TestCase):
             self.assertTrue(audit["passed"])
             self.assertEqual(audit["summary"]["assumptions"], 0)
             self.assertTrue(audit["summary"]["independentReviewer"])
+            self.assertTrue(audit["summary"]["machineIndependentReview"])
+            self.assertGreater(audit["summary"]["machineObservations"], 0)
             gate = json.loads(
                 self.run_cli(
                     HARNESS,
@@ -146,10 +165,9 @@ class PathProofTests(unittest.TestCase):
     def test_assumptions_or_self_review_fail_audit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             campaign = self.campaign_with_finding(Path(temporary))
-            artifact = campaign / "evidence" / "path-proof" / "trace.json"
-            artifact.parent.mkdir(parents=True)
-            artifact.write_text('{"observed": true}\n', encoding="utf-8")
-            proof = complete_path_proof()
+            proof = install_machine_path_evidence(
+                campaign, "FPATH", "worker-originator", "worker-reviewer"
+            )
             proof["assumptions"] = ["the allocator probably preserves the value"]
             proof["review"]["reviewer"] = "worker-originator"
             proof_path = campaign / "evidence" / "path-proofs" / "FPATH.json"
@@ -180,11 +198,9 @@ class PathProofTests(unittest.TestCase):
                 "--role",
                 "reviewer",
             )
-            artifact = campaign / "evidence" / "path-proof" / "trace.json"
-            artifact.parent.mkdir(parents=True)
-            artifact.write_text('{"observed": true}\n', encoding="utf-8")
-            proof = complete_path_proof()
-            proof["review"]["reviewer"] = "worker-alias"
+            proof = install_machine_path_evidence(
+                campaign, "FPATH", "worker-originator", "worker-alias"
+            )
             proof_path = campaign / "evidence" / "path-proofs" / "FPATH.json"
             proof_path.write_text(json.dumps(proof, indent=2) + "\n")
             audit = json.loads(
@@ -198,6 +214,105 @@ class PathProofTests(unittest.TestCase):
                 ).stdout
             )
             self.assertIn("review.agent:must-be-independent", audit["errors"])
+
+    def test_prose_and_existing_files_cannot_replace_machine_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            campaign = self.campaign_with_finding(Path(temporary))
+            artifact = campaign / "evidence" / "path-proof" / "trace.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text('{"observed": true}\n', encoding="utf-8")
+            source = campaign / "evidence" / "source-snapshots" / "path.cc"
+            source.parent.mkdir(parents=True)
+            source.write_text("int parse_request() { return 1; }\n")
+            proof = complete_path_proof(source_sha256="0" * 64)
+            proof_path = campaign / "evidence" / "path-proofs" / "FPATH.json"
+            proof_path.write_text(json.dumps(proof, indent=2) + "\n")
+            audit = json.loads(
+                self.run_cli(
+                    PATH_PROOF,
+                    "audit",
+                    str(campaign),
+                    "FPATH",
+                    "--json",
+                    expected=1,
+                ).stdout
+            )
+            self.assertFalse(audit["passed"])
+            self.assertTrue(
+                any("machineEvidence" in error for error in audit["errors"]),
+                audit,
+            )
+
+    def test_raw_output_tampering_breaks_recomputed_assertion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            campaign = self.campaign_with_finding(Path(temporary))
+            proof = install_machine_path_evidence(
+                campaign, "FPATH", "worker-originator", "worker-reviewer"
+            )
+            reference = proof["steps"][0]["machineEvidence"][0]
+            attestation = json.loads((campaign / reference["attestation"]).read_text())
+            positive = attestation["cases"]["positive"][0]
+            stdout_path = campaign / positive["raw"]["stdoutPath"]
+            stdout_path.write_text("tampered\n", encoding="utf-8")
+            proof_path = campaign / "evidence" / "path-proofs" / "FPATH.json"
+            proof_path.write_text(json.dumps(proof, indent=2) + "\n")
+            audit = json.loads(
+                self.run_cli(
+                    PATH_PROOF,
+                    "audit",
+                    str(campaign),
+                    "FPATH",
+                    "--json",
+                    expected=1,
+                ).stdout
+            )
+            self.assertTrue(any("stdout-hash" in error for error in audit["errors"]), audit)
+
+    def test_recipe_cannot_run_an_unrelated_echo_instead_of_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            campaign = self.campaign_with_finding(Path(temporary))
+            record = json.loads((campaign / "campaign.json").read_text())
+            record["authorization"]["confirmed"] = True
+            record["authorization"]["basis"] = "owned fixture"
+            (campaign / "campaign.json").write_text(json.dumps(record) + "\n")
+            target = campaign / "evidence" / "bin" / "unused.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("print('unused')\n")
+            recipe = campaign / "evidence" / "recipes" / "echo.json"
+            recipe.parent.mkdir(parents=True)
+            recipe.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "findingId": "FPATH",
+                        "targetArtifacts": ["evidence/bin/unused.py"],
+                        "cases": [
+                            {
+                                "name": name,
+                                "command": [sys.executable, "-c", "print('ok')"],
+                                "assertions": [
+                                    {"id": f"{name}-ok", "kind": "stdout-contains", "value": "ok"}
+                                ],
+                            }
+                            for name in ("baseline", "negative", "positive")
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            completed = self.run_cli(
+                REALITY_RUNNER,
+                str(campaign),
+                "FPATH",
+                "--recipe",
+                recipe.relative_to(campaign).as_posix(),
+                "--worker-id",
+                "worker-originator",
+                "--role",
+                "originator",
+                expected=2,
+            )
+            self.assertIn("does not invoke a declared target artifact", completed.stderr)
 
 
 if __name__ == "__main__":

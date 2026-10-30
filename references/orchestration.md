@@ -7,7 +7,20 @@ revision pinning, the registry, evidence quality, cross-agent synthesis, and the
 final claim. Workers own bounded questions and return evidence, not prose-only
 opinions.
 
-Use every safe worker slot exposed by the runtime continuously after setup.
+Start with one worker. Before registering a second identity, run:
+
+```bash
+python3 scripts/research_harness.py gate-self-test CAMPAIGN
+```
+
+The coordinator executes an intentionally false positive recipe against a
+frozen local target and must reject the worker's claimed positive observation.
+`worker-register` blocks scale-out until that machine gate passes. Runtime
+leads later require their own `taskResult.coordinatorReplay`; the coordinator
+executes the frozen artifact itself and ignores a worker-supplied `passed`
+label.
+
+After this gate, use every safe worker slot exposed by the runtime continuously.
 Four or more workers may run concurrently when runtime capacity and independent
 work permit. Keep the root agent coordinating and synthesizing while workers
 pull non-overlapping chain questions from the shared queue. Never reserve a
@@ -23,12 +36,13 @@ evidence changes. Do not waste slots on duplicate keyword searches.
 
 The coordinator:
 
-1. freezes the source and runtime revision;
+1. freezes the source, one ASan/UBSan component, and runtime revision;
 2. records authorization and scope;
 3. runs the tool probe;
 4. inventories public entry points and privileged sinks;
 5. creates stable hypothesis IDs;
-6. generates agent task packets with the harness.
+6. proves the coordinator lie-detection gate before scale-out;
+7. generates agent task packets with the harness.
 
 ### Wave 1: independent discovery
 
@@ -75,11 +89,13 @@ The originating worker must not validate its own candidate. Assign:
 - adversarial attempts to reduce the chain to crash-only behavior, app misuse,
   unsupported configuration, unavailable coordinates, or synthetic evidence.
 
-The fresh reviewer also completes the structured source-to-sink path proof. It
+The fresh reviewer also executes the retained recipe with new harness-generated
+challenges and completes the structured source-to-sink path proof. It
 must enumerate every conditional, record the concrete attacker mechanism and
 observed outcome for each branch, challenge contradictions, and leave no
 unresolved assumptions. Distinct worker IDs that map to the same runtime-agent
-identity do not count as independent review.
+identity do not count as independent review, and a prose-only replay result is
+rejected even when it says `passed: true`.
 
 ### Wave 4: synthesis
 
@@ -314,6 +330,26 @@ Every handoff must contain:
 Use [assets/agent-handoff.template.md](../assets/agent-handoff.template.md).
 
 ## Registry states
+
+There are two registries. `research_leads` in `orchestration.db` stores unique
+minimized stacks, invariant breaks, and verified primitives. Those observations
+advance through focused experiments without satisfying candidate gates.
+`registry.json` stores candidate findings only after a plausible complete chain
+exists. Never create or embellish a finding merely to preserve partial search
+output.
+
+Inspect ranked leads with:
+
+```bash
+python3 scripts/research_harness.py lead-status CAMPAIGN --json
+```
+
+Lead ranking is lexicographic by evidence grade, not a severity or
+controllability point score: verified primitive, runtime invariant break,
+unique minimized stack cluster, then source invariant break. Disproved leads
+remain retained but sort after active leads.
+
+Candidate finding states use this fixed vocabulary:
 
 Use a small fixed vocabulary:
 

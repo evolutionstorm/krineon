@@ -23,6 +23,8 @@ from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DYNAMIC_HARNESS = PROJECT_ROOT / "scripts" / "dynamic_harness.py"
+RESEARCH_HARNESS = PROJECT_ROOT / "scripts" / "research_harness.py"
+FRAMEWORK_GENERATOR = PROJECT_ROOT / "scripts" / "structured_input_generator.py"
 ENGINES = ("aflpp", "libfuzzer", "fuzzilli")
 INSTRUMENTATION_KINDS = (
     "afl-clang-fast",
@@ -803,6 +805,94 @@ def cmd_structured_generate(args: argparse.Namespace) -> int:
     return 0 if all(row.get("accepted") is True for row in records) else 1
 
 
+def cmd_framework_generate(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    profile = require_profile(root, args.name)
+    spec = resolve_file(args.spec, label="framework generator spec")
+    generation_id = run_id()
+    generation_dir = profile_root(root, args.name) / "generation" / generation_id
+    output_dir = generation_dir / "outputs"
+    result = run_bounded_command(
+        [
+            sys.executable,
+            str(FRAMEWORK_GENERATOR),
+            str(spec),
+            str(output_dir),
+            "--count",
+            str(args.count),
+            "--seed",
+            str(args.seed),
+        ],
+        cwd=Path(profile["cwd"]),
+        env=os.environ.copy(),
+        timeout_seconds=args.timeout_seconds,
+        output_dir=generation_dir / "command",
+        max_output_bytes=args.max_output_bytes,
+    )
+    if result["timedOut"] or result["returnCode"] != 0:
+        atomic_json(
+            generation_dir / "generation.json",
+            {
+                "schemaVersion": 1,
+                "generationId": generation_id,
+                "at": utc_now(),
+                "producer": "krineon-framework-generator-import",
+                "spec": artifact(spec),
+                "command": result,
+                "status": "failed",
+            },
+        )
+        raise FuzzerError("framework input generation failed")
+    manifest_path = output_dir / "generation.json"
+    manifest = read_json(manifest_path)
+    if manifest.get("producer") != "krineon-structured-input-generator":
+        raise FuzzerError("framework generator returned an unrecognized manifest")
+    records: list[dict[str, Any]] = []
+    added = 0
+    for index, row in enumerate(manifest.get("outputs", [])):
+        if not isinstance(row, dict):
+            raise FuzzerError("framework generator output record is invalid")
+        source = (output_dir / str(row.get("path") or "")).resolve()
+        source.relative_to(output_dir)
+        if not source.is_file() or sha256_file(source) != row.get("sha256"):
+            raise FuzzerError("framework generator output hash mismatch")
+        _, created = add_to_corpus(
+            root,
+            args.name,
+            source,
+            max_input_bytes=profile["maxInputBytes"],
+            provenance={
+                "kind": "framework-semantic-generator",
+                "generationId": generation_id,
+                "index": index,
+                "generatorKind": manifest.get("kind"),
+                "semanticGroupSha256": row.get("semanticGroupSha256"),
+                "representation": row.get("representation"),
+                "contentType": row.get("contentType"),
+            },
+        )
+        added += int(created)
+        records.append({**row, "accepted": True, "newCorpusInput": created})
+    record = {
+        "schemaVersion": 1,
+        "generationId": generation_id,
+        "at": utc_now(),
+        "producer": "krineon-framework-generator-import",
+        "spec": artifact(spec),
+        "generator": artifact(FRAMEWORK_GENERATOR),
+        "semanticGroupSha256": manifest.get("semanticGroupSha256"),
+        "count": len(records),
+        "newCorpusInputs": added,
+        "outputs": records,
+        "command": result,
+        "status": "completed",
+    }
+    atomic_json(generation_dir / "generation.json", record)
+    print(f"generation: {generation_id}")
+    print(f"semantic variants: {len(records)}; new corpus inputs: {added}")
+    return 0
+
+
 def command_for_workers(
     profile: dict[str, Any],
     run_dir: Path,
@@ -1018,6 +1108,38 @@ def forward_crash(root: Path, name: str, profile: dict[str, Any], crash_dir: Pat
         "crashId": crash_id,
         "confirmed": crash_id is not None,
     }
+    if crash_id:
+        minimize_command = [
+            sys.executable,
+            str(DYNAMIC_HARNESS),
+            "minimize",
+            str(root),
+            crash_id,
+            "--max-tests",
+            "200",
+        ]
+        minimized = subprocess.run(
+            minimize_command, check=False, capture_output=True, text=True, timeout=120
+        )
+        result["minimization"] = {
+            "command": minimize_command,
+            "exitCode": minimized.returncode,
+            "stdout": minimized.stdout[-16384:],
+            "stderr": minimized.stderr[-16384:],
+            "completed": minimized.returncode == 0,
+        }
+        if minimized.returncode == 0:
+            triage_path = root / "dynamic" / "crashes" / crash_id / "triage.json"
+            minimized_path = root / "dynamic" / "crashes" / crash_id / "minimized.bin"
+            if triage_path.is_file() and minimized_path.is_file():
+                triage = read_json(triage_path)
+                cluster_id = str((triage.get("stack") or {}).get("clusterId") or "")
+                result["clusterId"] = cluster_id
+                result["minimized"] = artifact(minimized_path)
+                queue_record = queue_unique_stack_cluster(
+                    root, name, crash_id, cluster_id, triage_path, minimized_path
+                )
+                result["queue"] = queue_record
     record = read_json(crash_dir / "external.json")
     record["replay"] = result
     record["classification"] = (
@@ -1025,6 +1147,91 @@ def forward_crash(root: Path, name: str, profile: dict[str, Any], crash_dir: Pat
     )
     atomic_json(crash_dir / "external.json", record)
     return result
+
+
+def queue_unique_stack_cluster(
+    root: Path,
+    profile_name: str,
+    crash_id: str,
+    cluster_id: str,
+    triage_path: Path,
+    minimized_path: Path,
+) -> dict[str, Any]:
+    if not cluster_id:
+        return {"eligible": False, "reason": "triage produced no stack cluster"}
+    registry_path = profile_root(root, profile_name) / "queued-stack-clusters.json"
+    registry = (
+        read_json(registry_path)
+        if registry_path.is_file()
+        else {"schemaVersion": 1, "clusters": {}}
+    )
+    clusters = registry.get("clusters")
+    if not isinstance(clusters, dict):
+        clusters = {}
+    if cluster_id in clusters:
+        return {
+            "eligible": False,
+            "reason": "duplicate normalized stack cluster",
+            "representative": clusters[cluster_id],
+        }
+    task_id = "fuzz-" + cluster_id.removeprefix("SC-").lower()
+    scheduled = False
+    schedule_error = None
+    if (root / "orchestration.db").is_file():
+        command = [
+            sys.executable,
+            str(RESEARCH_HARNESS),
+            "task-add",
+            str(root),
+            task_id,
+            "--title",
+            f"Validate minimized stack cluster {cluster_id}",
+            "--lane",
+            "minimized-stack-validation",
+            "--objective",
+            (
+                f"Re-execute crash {crash_id} from minimized.bin, explain the first violated "
+                "target invariant, and test whether it composes into a Critical/RCE chain."
+            ),
+            "--approach-family",
+            "memory-lifetime",
+            "--success-criterion",
+            "Coordinator replay reproduces the minimized stack hash on the pinned target.",
+            "--success-criterion",
+            "Source reasoning names every condition from ingress to the first fault.",
+            "--priority",
+            "750",
+            "--max-attempts",
+            "2",
+        ]
+        scheduled_result = subprocess.run(
+            command, check=False, capture_output=True, text=True, timeout=30
+        )
+        scheduled = scheduled_result.returncode == 0 or "already" in scheduled_result.stderr.lower()
+        if not scheduled:
+            schedule_error = scheduled_result.stderr[-4000:]
+    record = {
+        "crashId": crash_id,
+        "clusterId": cluster_id,
+        "triage": str(triage_path.relative_to(root)),
+        "minimized": {
+            "path": str(minimized_path.relative_to(root)),
+            "sha256": sha256_file(minimized_path),
+            "size": minimized_path.stat().st_size,
+        },
+        "taskId": task_id if scheduled else None,
+        "queuedAt": utc_now(),
+    }
+    clusters[cluster_id] = record
+    registry["clusters"] = clusters
+    atomic_json(registry_path, registry)
+    return {
+        "eligible": True,
+        "uniqueCluster": True,
+        "scheduled": scheduled,
+        "taskId": task_id if scheduled else None,
+        "scheduleError": schedule_error,
+    }
 
 
 def ingest_crashes(
@@ -1091,6 +1298,49 @@ def collect_engine_stats(engine: str, run_dir: Path) -> list[dict[str, Any]]:
     return records
 
 
+def observed_edge_count(
+    engine: str,
+    run_dir: Path,
+    processes: list[tuple[str, ManagedProcess]],
+) -> int | None:
+    """Extract a monotonic coverage count from native engine evidence."""
+
+    values: list[int] = []
+    for record in collect_engine_stats(engine, run_dir):
+        parsed = record.get("parsed")
+        if isinstance(parsed, dict):
+            for key in ("edges_found", "paths_total", "corpus_found", "coverage"):
+                raw = parsed.get(key)
+                if isinstance(raw, (int, float)) or (
+                    isinstance(raw, str) and raw.isdigit()
+                ):
+                    values.append(int(raw))
+    if engine == "libfuzzer":
+        for _, process in processes:
+            text_value = (bytes(process.stdout) + b"\n" + bytes(process.stderr)).decode(
+                "utf-8", "replace"
+            )
+            values.extend(
+                int(value) for value in re.findall(r"\bcov:\s*(\d+)", text_value)
+            )
+    return max(values) if values else None
+
+
+def coverage_timeline_sample(
+    engine: str,
+    run_dir: Path,
+    processes: list[tuple[str, ManagedProcess]],
+    started: float,
+    corpus_inputs: int,
+) -> dict[str, Any]:
+    return {
+        "at": utc_now(),
+        "elapsedSeconds": round(time.monotonic() - started, 3),
+        "uniqueEdges": observed_edge_count(engine, run_dir, processes),
+        "corpusInputs": corpus_inputs,
+    }
+
+
 def cmd_launch(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     profile = require_profile(root, args.name)
@@ -1135,6 +1385,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
         "initialCorpus": initial_corpus,
     }
     atomic_json(run_dir / "run.json", record)
+    started_monotonic = time.monotonic()
+    coverage_timeline: list[dict[str, Any]] = []
     try:
         for worker, command, output_dir in commands:
             processes.append(
@@ -1153,6 +1405,18 @@ def cmd_launch(args: argparse.Namespace) -> int:
         corpus_added = 0
         while time.monotonic() < deadline:
             corpus_added += sync_engine_corpus(root, args.name, profile, run_dir)
+            sample = coverage_timeline_sample(
+                profile["engine"],
+                run_dir,
+                processes,
+                started_monotonic,
+                sum(1 for path in canonical.iterdir() if path.is_file()),
+            )
+            if (
+                not coverage_timeline
+                or sample["uniqueEdges"] != coverage_timeline[-1]["uniqueEdges"]
+            ):
+                coverage_timeline.append(sample)
             if all(process.process.poll() is not None for _, process in processes):
                 break
             time.sleep(min(args.sync_interval_seconds, max(0.05, deadline - time.monotonic())))
@@ -1170,12 +1434,40 @@ def cmd_launch(args: argparse.Namespace) -> int:
         engine_stats = collect_engine_stats(profile["engine"], run_dir)
         final_corpus_inputs = sum(1 for path in canonical.iterdir() if path.is_file())
         final_corpus = corpus_snapshot(canonical)
+        final_sample = coverage_timeline_sample(
+            profile["engine"],
+            run_dir,
+            processes,
+            started_monotonic,
+            final_corpus_inputs,
+        )
+        final_sample["terminal"] = True
+        if not coverage_timeline or final_sample != coverage_timeline[-1]:
+            coverage_timeline.append(final_sample)
+        edge_samples = [
+            item
+            for item in coverage_timeline
+            if isinstance(item.get("uniqueEdges"), int)
+        ]
+        first_edges = int(edge_samples[0]["uniqueEdges"]) if edge_samples else 0
+        last_edges = int(edge_samples[-1]["uniqueEdges"]) if edge_samples else 0
+        elapsed_seconds = max(time.monotonic() - started_monotonic, 0.001)
+        new_edges = max(0, last_edges - first_edges)
+        last_edge_change = 0.0
+        previous_edge_value: int | None = None
+        for edge_sample in edge_samples:
+            edge_value = int(edge_sample["uniqueEdges"])
+            if previous_edge_value is None or edge_value != previous_edge_value:
+                last_edge_change = float(edge_sample["elapsedSeconds"])
+                previous_edge_value = edge_value
         record.update(
             {
                 "status": "completed",
                 "endedAt": utc_now(),
+                "elapsedSeconds": round(elapsed_seconds, 3),
                 "workers": workers,
                 "engineStats": engine_stats,
+                "coverageTimeline": coverage_timeline,
                 "summary": {
                     "corpusInputs": final_corpus_inputs,
                     "newCorpusInputs": max(0, final_corpus_inputs - initial_corpus_inputs),
@@ -1185,6 +1477,28 @@ def cmd_launch(args: argparse.Namespace) -> int:
                     "replayConfirmedCrashes": sum(
                         row.get("forwarded", {}).get("confirmed") is True for row in crashes
                     ),
+                    "minimizedCrashes": sum(
+                        row.get("forwarded", {})
+                        .get("minimization", {})
+                        .get("completed")
+                        is True
+                        for row in crashes
+                    ),
+                    "uniqueStackClustersQueued": sum(
+                        row.get("forwarded", {}).get("queue", {}).get("eligible")
+                        is True
+                        for row in crashes
+                    ),
+                    "newEdges": new_edges,
+                    "newEdgesPerHour": new_edges / (elapsed_seconds / 3600),
+                    "plateau": {
+                        "thresholdSeconds": args.plateau_seconds,
+                        "secondsWithoutNewEdge": max(
+                            0.0, elapsed_seconds - last_edge_change
+                        ),
+                        "reached": bool(edge_samples)
+                        and elapsed_seconds - last_edge_change >= args.plateau_seconds,
+                    },
                     "coverageRebuilt": False,
                     "crashClassification": (
                         "Only replay-confirmed crashes enter dynamic/crashes and automated triage."
@@ -1256,6 +1570,189 @@ def coverage_target_command(profile: dict[str, Any], input_path: Path) -> list[s
     ]
 
 
+def previous_coverage_record(root: Path, name: str) -> dict[str, Any] | None:
+    profile = read_json(profile_path(root, name))
+    rows = profile.get("coverageRebuilds")
+    if not isinstance(rows, list) or not rows:
+        return None
+    path = root / str(rows[-1].get("record") or "")
+    return read_json(path) if path.is_file() else None
+
+
+def coverage_edge_ids_from_llvm(path: Path) -> set[str]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    result: set[str] = set()
+    for data in value.get("data", []) if isinstance(value, dict) else []:
+        if not isinstance(data, dict):
+            continue
+        for function in data.get("functions", []):
+            if not isinstance(function, dict):
+                continue
+            name = str(function.get("name") or "")
+            filenames = (
+                function.get("filenames")
+                if isinstance(function.get("filenames"), list)
+                else []
+            )
+            for region in function.get("regions", []):
+                if (
+                    not isinstance(region, list)
+                    or len(region) < 5
+                    or int(region[4]) <= 0
+                ):
+                    continue
+                result.add(
+                    hashlib.sha256(
+                        json.dumps(
+                            [name, filenames, region[:4]], separators=(",", ":")
+                        ).encode()
+                    ).hexdigest()
+                )
+    return result
+
+
+def finalize_coverage_metrics(
+    root: Path,
+    name: str,
+    record: dict[str, Any],
+    edge_ids: set[str],
+    edge_path: Path,
+) -> None:
+    edge_path.write_text("\n".join(sorted(edge_ids)) + "\n", encoding="utf-8")
+    previous = previous_coverage_record(root, name)
+    previous_ids: set[str] = set()
+    previous_at = None
+    if previous:
+        artifact_record = (previous.get("coverage") or {}).get("edgeIds")
+        if isinstance(artifact_record, dict):
+            path = Path(str(artifact_record.get("path") or ""))
+            if path.is_file() and sha256_file(path) == artifact_record.get("sha256"):
+                previous_ids = {
+                    line.strip()
+                    for line in path.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                    if line.strip()
+                }
+        previous_at = previous.get("endedAt")
+    new_ids = edge_ids - previous_ids
+    elapsed_hours = None
+    if previous_at:
+        try:
+            elapsed_hours = max(
+                (
+                    dt.datetime.fromisoformat(record["endedAt"])
+                    - dt.datetime.fromisoformat(previous_at)
+                ).total_seconds()
+                / 3600,
+                1 / 3600,
+            )
+        except (TypeError, ValueError):
+            elapsed_hours = None
+    else:
+        runs_root = profile_root(root, name) / "runs"
+        run_paths = sorted(runs_root.glob("*/run.json")) if runs_root.is_dir() else []
+        if run_paths:
+            latest_run = read_json(run_paths[-1])
+            elapsed = latest_run.get("elapsedSeconds")
+            if isinstance(elapsed, (int, float)) and elapsed > 0:
+                elapsed_hours = max(float(elapsed) / 3600, 1 / 3600)
+    record.setdefault("coverage", {})["edgeIds"] = artifact(edge_path)
+    record["metrics"] = {
+        "uniqueEdges": len(edge_ids),
+        "newEdges": len(new_ids),
+        "elapsedHoursSincePrevious": elapsed_hours,
+        "newEdgesPerHour": len(new_ids) / elapsed_hours if elapsed_hours else None,
+    }
+
+
+def record_coverage_holes(
+    root: Path,
+    profile_name: str,
+    edge_ids: set[str],
+    universe_value: str | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    if not universe_value:
+        return {
+            "status": "unavailable",
+            "reason": "no --edge-universe artifact supplied",
+            "nextTask": None,
+        }
+    universe_path = resolve_file(universe_value, label="edge universe")
+    universe = read_json(universe_path)
+    raw_edges = universe.get("edges")
+    if not isinstance(raw_edges, list) or not raw_edges:
+        raise FuzzerError("edge universe requires a non-empty edges array")
+    rows: list[dict[str, str]] = []
+    for index, raw in enumerate(raw_edges):
+        if not isinstance(raw, dict) or not str(raw.get("id") or "").strip():
+            raise FuzzerError(f"edge universe entry {index} is invalid")
+        rows.append(
+            {
+                "id": str(raw["id"]),
+                "label": str(raw.get("label") or raw["id"]),
+                "source": str(raw.get("source") or ""),
+            }
+        )
+    holes = [row for row in rows if row["id"] not in edge_ids]
+    holes_path = output_dir / "coverage-holes.json"
+    atomic_json(
+        holes_path,
+        {
+            "schemaVersion": 1,
+            "universe": artifact(universe_path),
+            "covered": len(rows) - len(holes),
+            "uncovered": len(holes),
+            "holes": holes,
+        },
+    )
+    next_task = None
+    schedule_error = None
+    if holes and (root / "orchestration.db").is_file():
+        hole = holes[0]
+        task_id = "coverage-" + hashlib.sha256(hole["id"].encode()).hexdigest()[:16]
+        command = [
+            sys.executable,
+            str(RESEARCH_HARNESS),
+            "task-add",
+            str(root),
+            task_id,
+            "--title",
+            f"Reach uncovered edge: {hole['label']}",
+            "--lane",
+            "coverage-hole",
+            "--objective",
+            (
+                f"Create a structured input that reaches uncovered edge {hole['id']} "
+                f"({hole['label']}) in the pinned instrumented component."
+            ),
+            "--approach-family",
+            "structured-generation",
+            "--success-criterion",
+            "Coverage rebuild records the target edge ID from a retained minimized input.",
+            "--priority",
+            "700",
+            "--max-attempts",
+            "2",
+        ]
+        scheduled = subprocess.run(
+            command, check=False, capture_output=True, text=True, timeout=30
+        )
+        if scheduled.returncode == 0 or "already" in scheduled.stderr.lower():
+            next_task = task_id
+        else:
+            schedule_error = scheduled.stderr[-4000:]
+    return {
+        "status": "measured",
+        "universe": artifact(universe_path),
+        "artifact": artifact(holes_path),
+        "uncovered": len(holes),
+        "nextTask": next_task,
+        "scheduleError": schedule_error,
+    }
+
+
 def cmd_coverage_rebuild(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     profile = require_profile(root, args.name)
@@ -1320,8 +1817,8 @@ def cmd_coverage_rebuild(args: argparse.Namespace) -> int:
                 }
             )
         edge_path = output_dir / "edges.txt"
-        edge_path.write_text("\n".join(sorted(aggregate)) + "\n", encoding="utf-8")
-        record["coverage"] = {"uniqueEdges": len(aggregate), "artifact": artifact(edge_path)}
+        edge_ids = aggregate
+        record["coverage"] = {"uniqueEdges": len(aggregate)}
         record["tool"] = artifact(tool)
     else:
         profdata_tool = resolve_file(args.llvm_profdata, label="llvm-profdata", executable=True)
@@ -1388,7 +1885,13 @@ def cmd_coverage_rebuild(args: argparse.Namespace) -> int:
             "llvmProfdata": artifact(profdata_tool),
             "llvmCov": artifact(cov_tool),
         }
+        edge_ids = coverage_edge_ids_from_llvm(export_path)
+        edge_path = output_dir / "edges.txt"
     record["endedAt"] = utc_now()
+    finalize_coverage_metrics(root, args.name, record, edge_ids, edge_path)
+    record["coverageHoles"] = record_coverage_holes(
+        root, args.name, edge_ids, args.edge_universe, output_dir
+    )
     record["status"] = "completed"
     record_path = output_dir / ("coverage.json" if args.mode == "afl-showmap" else "record.json")
     atomic_json(record_path, record)
@@ -1507,12 +2010,26 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--max-output-bytes", type=int, default=1024 * 1024)
     generate.set_defaults(func=cmd_structured_generate)
 
+    framework_generate = sub.add_parser(
+        "framework-generate",
+        help="generate semantic-equivalent JSON/URL/header/multipart/RSC/action/manifest inputs",
+    )
+    framework_generate.add_argument("campaign_dir")
+    framework_generate.add_argument("name")
+    framework_generate.add_argument("--spec", required=True)
+    framework_generate.add_argument("--count", type=int, default=16)
+    framework_generate.add_argument("--seed", type=int, default=1)
+    framework_generate.add_argument("--timeout-seconds", type=int, default=120)
+    framework_generate.add_argument("--max-output-bytes", type=int, default=4 * 1024 * 1024)
+    framework_generate.set_defaults(func=cmd_framework_generate)
+
     launch = sub.add_parser("launch", help="launch native parallel workers and synchronize corpus")
     launch.add_argument("campaign_dir")
     launch.add_argument("name")
     launch.add_argument("--workers", type=int, default=max(1, os.cpu_count() or 1))
     launch.add_argument("--duration-seconds", type=int, default=3600)
     launch.add_argument("--sync-interval-seconds", type=float, default=30.0)
+    launch.add_argument("--plateau-seconds", type=float, default=300.0)
     launch.add_argument("--max-output-bytes", type=int, default=16 * 1024 * 1024)
     launch.add_argument("--env", action="append")
     launch.add_argument("--forward-crashes", action="store_true")
@@ -1535,6 +2052,10 @@ def build_parser() -> argparse.ArgumentParser:
     coverage.add_argument("--timeout-seconds", type=int, default=30)
     coverage.add_argument("--max-output-bytes", type=int, default=1024 * 1024)
     coverage.add_argument("--max-coverage-bytes", type=int, default=256 * 1024 * 1024)
+    coverage.add_argument(
+        "--edge-universe",
+        help="JSON artifact listing instrumented edge IDs and labels for hole scheduling",
+    )
     coverage.set_defaults(func=cmd_coverage_rebuild)
 
     status = sub.add_parser("status", help="show corpus and external fuzzer runs")
@@ -1556,6 +2077,7 @@ def validate_positive(args: argparse.Namespace) -> None:
         "workers",
         "duration_seconds",
         "sync_interval_seconds",
+        "plateau_seconds",
         "max_coverage_bytes",
     ):
         if hasattr(args, name) and getattr(args, name) <= 0:

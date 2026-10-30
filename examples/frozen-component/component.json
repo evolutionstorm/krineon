@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "name": "row-length-consumers",
+  "source": "row_length_consumers.cc",
+  "compiler": "clang++",
+  "compilerFlags": [
+    "-std=c++17",
+    "-O1",
+    "-g",
+    "-fno-omit-frame-pointer",
+    "-fsanitize=address,undefined"
+  ],
+  "sanitizers": ["address", "undefined"],
+  "corpus": ["seeds/in-range.hex", "seeds/wrap.hex"]
+}

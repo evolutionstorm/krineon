@@ -13,10 +13,13 @@ attacker-controlled ingress
   -> bounded real execution or program-defined Critical impact
 ```
 
-An assertion, crash, denial of service, parser discrepancy, memory corruption,
-or callable gadget is not a finding by itself. Preserve it as a chain link and
-assign the missing links to other workers. Do not prepare lower-severity
-reports.
+An assertion, unique minimized stack, denial of service, parser discrepancy,
+memory corruption, or callable gadget is not a fileable finding by itself. It
+is still valuable search output. Preserve it as a deduplicated research lead,
+rank it by observed evidence grade, and assign its next falsification,
+minimization, acquisition, or composition experiment. Do not prepare
+lower-severity reports, and do not force workers to fabricate a complete chain
+to advance the queue.
 
 ## Discovery boundary
 
@@ -33,6 +36,11 @@ runtime behavior. During discovery and chain construction, do not use:
 Ordinary worktree diffs for changes to Krineon are unrelated. Scope and
 duplicate checks may occur after independent validation, but cannot supply the
 root cause or missing exploit links.
+
+Read target-owned tests, assertions, invariant comments, fuzz targets, and
+fixtures in the pinned revision during discovery. They are code-local oracles.
+Do not use regression tests introduced by later fixes or mine history to learn
+where a vulnerability was patched.
 
 ## Phase 0: pin authority and artifacts
 
@@ -55,13 +63,12 @@ In parallel, map:
 Work forward from ingress and backward from sinks. Record guard dominance,
 identity, provenance, and every required state transition.
 
-Execute `scripts/static_analysis_pipeline.py` during this phase. Its Trailmark
-entrypoints, Tree-sitter census, Joern CPG queries, and explicit Z3 models must
-be retained under the campaign and ingested as durable validation tasks. A
-machine lead never satisfies this phase by itself: a worker must inspect the
-source semantics and confirm or falsify the path at runtime. This turns static
-coverage into experiments while keeping tool output distinct from evidence of
-impact.
+Use structural tools only to nominate incompatible consumers. Execute both
+consumers on the same hashed input with `differential_witness.py`; require an
+equal control before a disagreement can enter the durable validation queue.
+Source-bound Z3 models may produce inputs for that differential, but never
+replace it. A machine witness still requires source semantics, attacker
+control, and a stock-build chain link.
 
 For fuzzing, use `scripts/fuzzer_orchestrator.py` with verified compiler or
 REPRL instrumentation. Harvest source tests and fixtures, preserve structured
@@ -80,6 +87,10 @@ Write each hypothesis as:
 
 Assign a stable ID. Record exact source references, expected primitive,
 falsification condition, and missing predecessor and successor links.
+Emit a `taskResult.researchLeads` entry for every unique minimized stack,
+invariant break, or verified primitive. The lead registry deduplicates semantic
+identity and schedules the next experiment without waiting for candidate
+promotion.
 
 ## Phase 3: compose aggressively
 
@@ -107,8 +118,9 @@ Promote incrementally:
 
 1. Source invariant contradiction.
 2. Minimal deterministic harness at the same revision.
-3. Automated first-fault classification, normalized stack clustering, and
-   reviewed controllability assessment for any crash-backed primitive.
+3. Automated first-fault classification and normalized stack clustering. For a
+   crash-backed primitive, separately prove chosen bytes or PC, allocation
+   identity when claimed, controls, and fresh-process stability.
 4. Unmodified shipped component or bundle.
 5. Supported production-equivalent or release entrypoint; development servers
    and development builds remain lead-only.
@@ -180,3 +192,11 @@ unavailable coordinates, synthetic evidence, or an unproven boundary.
 
 If the complete Critical/RCE chain does not survive, retain the primitive and
 blocker evidence. Do not emit a lower-severity bounty report.
+
+## Phase 10: measure the search method
+
+Use evaluator-held target-test or target-invariant oracles and a frozen local
+corpus with `scripts/rediscovery_benchmark.py`. Record hours to first
+rediscovery, recall, failed runs, resource limits, target hashes, corpus hashes,
+and the exact search command. Until this measurement exists, profile lanes are
+unmeasured hypotheses rather than validated methodology.

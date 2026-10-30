@@ -13,6 +13,9 @@ PROJECT = Path(__file__).resolve().parents[1]
 HARNESS = PROJECT / "scripts" / "research_harness.py"
 DYNAMIC = PROJECT / "scripts" / "dynamic_harness.py"
 FIXTURE = PROJECT / "tests" / "fixtures" / "dynamic_target.py"
+PRIMITIVE_FIXTURE = PROJECT / "tests" / "fixtures" / "primitive_probe.py"
+REALITY = PROJECT / "scripts" / "reality_runner.py"
+PRIMITIVE = PROJECT / "scripts" / "primitive_verifier.py"
 
 
 class DynamicHarnessTests(unittest.TestCase):
@@ -248,7 +251,7 @@ class DynamicHarnessTests(unittest.TestCase):
         crash_dirs = list((self.campaign / "dynamic" / "crashes").iterdir())
         self.assertEqual(len(crash_dirs), 4)
 
-    def test_first_fault_scoring_and_stack_clusters_grow_with_corpus(self) -> None:
+    def test_first_fault_labels_do_not_imply_control_and_clusters_grow(self) -> None:
         self.run_input(b"UAFWRITE-one")
         self.run_input(b"OOBREAD-two")
         records = []
@@ -263,13 +266,15 @@ class DynamicHarnessTests(unittest.TestCase):
         self.assertEqual(oob["firstFault"]["access"], "read")
         self.assertEqual(
             uaf["automatedExploitability"]["verdict"],
-            "potential-lifetime-write-primitive",
+            "unverified-lifetime-write-lead",
         )
         self.assertEqual(
             oob["automatedExploitability"]["verdict"],
             "potential-read-primitive",
         )
         self.assertFalse(uaf["automatedExploitability"]["machinePromotionEligible"])
+        self.assertEqual(uaf["controlEvidence"]["status"], "unverified")
+        self.assertFalse(uaf["controlEvidence"]["chosenBytes"])
         self.assertEqual(uaf["stack"]["clusterId"], oob["stack"]["clusterId"])
         index = json.loads(
             (self.campaign / "dynamic" / "triage" / "index.json").read_text()
@@ -284,10 +289,11 @@ class DynamicHarnessTests(unittest.TestCase):
         triage = json.loads((crash_dir / "triage.json").read_text())
         self.assertEqual(triage["firstFault"]["class"], "control-flow-corruption")
         self.assertEqual(triage["firstFault"]["access"], "execute")
-        self.assertGreaterEqual(triage["controllability"]["score"], 85)
+        self.assertEqual(triage["controlEvidence"]["status"], "unverified")
+        self.assertFalse(triage["controlEvidence"]["chosenProgramCounter"])
         self.assertEqual(
             triage["automatedExploitability"]["verdict"],
-            "potential-control-flow-corruption",
+            "unverified-control-flow-corruption-lead",
         )
         self.assertFalse(triage["automatedExploitability"]["machinePromotionEligible"])
 
@@ -332,7 +338,7 @@ class DynamicHarnessTests(unittest.TestCase):
         self.assertEqual(linked["crashIds"], [result["fingerprint"]])
         self.assertEqual(
             linked["machineVerdicts"][result["fingerprint"]],
-            "potential-lifetime-write-primitive",
+            "unverified-lifetime-write-lead",
         )
         self.assertTrue(finding["gates"]["automated_triage_reviewed"])
         gate = subprocess.run(
@@ -352,12 +358,93 @@ class DynamicHarnessTests(unittest.TestCase):
         )
         self.assertEqual(gate.returncode, 1)
         gate_result = json.loads(gate.stdout)
-        self.assertFalse(
-            any(
-                field.startswith("dynamicTriage.")
-                for field in gate_result["missingFields"]
-            ),
-            gate_result,
+        self.assertIn(
+            f"dynamicTriage.unverifiedPrimitive:{result['fingerprint']}",
+            gate_result["missingFields"],
+        )
+
+    def test_uaf_control_requires_chosen_bytes_allocation_identity_and_stability(self) -> None:
+        _, result = self.run_input(b"UAFWRITE-reality")
+        crash_id = result["fingerprint"]
+        probe = self.campaign / "evidence" / "bin" / "primitive_probe.py"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(PRIMITIVE_FIXTURE.read_bytes())
+        recipe = self.campaign / "evidence" / "recipes" / "primitive.json"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "findingId": "FPRIM",
+                    "targetArtifacts": ["evidence/bin/primitive_probe.py"],
+                    "cases": [
+                        {
+                            "name": name,
+                            "command": [sys.executable, "evidence/bin/primitive_probe.py"],
+                            "assertions": assertions,
+                        }
+                        for name, assertions in (
+                            ("baseline", [{"id": "baseline-no-write", "kind": "no-memory-write"}]),
+                            ("negative", [{"id": "negative-no-write", "kind": "no-memory-write"}]),
+                            (
+                                "positive",
+                                [{"id": "chosen-uaf-write", "kind": "controlled-write", "claim": "uaf-write"}],
+                            ),
+                        )
+                    ],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        execution = subprocess.run(
+            [
+                sys.executable,
+                str(REALITY),
+                str(self.campaign),
+                "FPRIM",
+                "--recipe",
+                recipe.relative_to(self.campaign).as_posix(),
+                "--worker-id",
+                "primitive-reviewer",
+                "--role",
+                "reviewer",
+                "--repetitions",
+                "3",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(execution.returncode, 0, execution.stderr)
+        attestation = json.loads(execution.stdout)
+        verified = subprocess.run(
+            [
+                sys.executable,
+                str(PRIMITIVE),
+                str(self.campaign),
+                crash_id,
+                "--attestation",
+                attestation["attestation"],
+                "--claim",
+                "uaf-write",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.run_dynamic("triage", str(self.campaign), "--crash-id", crash_id)
+        triage = json.loads(
+            (self.campaign / "dynamic" / "crashes" / crash_id / "triage.json").read_text()
+        )
+        self.assertEqual(triage["controlEvidence"]["status"], "verified")
+        self.assertTrue(triage["controlEvidence"]["chosenBytes"])
+        self.assertTrue(triage["controlEvidence"]["allocationIdentity"])
+        self.assertTrue(triage["controlEvidence"]["crossProcessStability"])
+        self.assertEqual(
+            triage["automatedExploitability"]["verdict"],
+            "verified-chosen-byte-uaf-write",
         )
 
     def test_case_replay_compares_the_recorded_result(self) -> None:

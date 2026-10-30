@@ -113,9 +113,10 @@ def build_inventory() -> dict[str, Any]:
         },
         "guidance": {
             "staticPipeline": "Run scripts/static_analysis_pipeline.py; it retains raw outputs and creates provenance-bound validation tasks.",
-            "treeSitter": "scripts/tree_sitter_census.py emits a syntax-aware source census; absence is a recorded limitation.",
-            "joern": "queries/joern contains runnable sink-reachability and missing-validation CPG queries; empty graphs are not proof of absence.",
-            "z3": "scripts/z3_boundary_solver.py emits concrete decimal, hexadecimal, and endian-specific testcase payloads; a model is not runtime proof.",
+            "treeSitter": "Use Tree-sitter only to nominate exact producer/consumer pairs; syntax hits do not enter the queue.",
+            "joern": "Use Joern only to nominate exact producer/consumer pairs; CPG hits do not enter the queue.",
+            "differential": "scripts/differential_witness.py runs two pinned consumers on one hashed input and requires an equal control before retaining a disagreement.",
+            "z3": "scripts/z3_boundary_solver.py distinguishes generic models from hashed source-bound constraints; manual transcription is labelled and a model is not runtime proof.",
             "trailmark": "The static pipeline invokes single-revision structure and entrypoint analysis; diff modes are prohibited.",
             "chromeV8": "For chrome-v8 campaigns, record GN, Ninja, Clang, symbolizer, Swift/Fuzzilli, and minidump availability without installing them.",
             "browserReplay": "scripts/chrome_v8_harness.py browser-replay uses direct CDP and does not require Playwright; register an exact sandboxed-chrome binary first.",

@@ -17,42 +17,59 @@ Use this contract only for an authorized `chrome-v8` Krineon campaign. Read
 
 1. State the exact V8 and Chromium commits and binary SHA-256 values.
 2. Separate source inference from a runtime result.
-3. Record whether a testcase needs `--allow-natives-syntax`, `--expose-gc`, a
+3. Treat static tooling only as a way to nominate exact consumer pairs. Queue
+   a lead only after both consumers execute the same hashed input, an equal
+   control passes, and `differential_witness.py` records their disagreement. Prioritize
+   representation changes, producer/consumer domain mismatches, state committed
+   before fallible effects, lifetime escape, indirect dispatch, and shared-value
+   differences. A function or call name containing `parse`, `exec`, `handler`,
+   or `memcpy` is not a lead by itself. Generic Z3 mathematics is not target
+   evidence; require a verified source binding and label constraints as manual
+   transcription. Do not claim implementation matching until a verified
+   source-to-SMT extractor exists.
+4. Record whether a testcase needs `--allow-natives-syntax`, `--expose-gc`, a
    stress flag, a non-default feature, or an instrumented shell.
-4. Do not promote an internal-flag-only or DCHECK-only failure as web-reachable.
-5. Locate the earliest invalid state or memory access, not merely the final
+5. Do not promote an internal-flag-only or DCHECK-only failure as web-reachable.
+6. Locate the earliest invalid state or memory access, not merely the final
    signal.
-6. Run `dynamic_harness.py triage` for every retained crash. Preserve the exact
-   crash ID separately from the normalized stack cluster, review its access
-   direction and controllability score, and record why the machine verdict is
-   or is not meaningful. Never equate the score with exploitability.
-7. For sustained fuzzing, use `fuzzer_orchestrator.py`; the built-in
+7. Run `dynamic_harness.py triage` for every retained crash. Preserve the exact
+   crash ID separately from the normalized stack cluster. Treat access direction
+   as a first-fault label, not control. For a claimed primitive, use generated
+   challenges to prove chosen bytes or PC, allocation identity where relevant,
+   controls, and fresh-process stability.
+8. For sustained fuzzing, use `fuzzer_orchestrator.py`; the built-in
    deterministic mutator is only a target-plumbing smoke test. Retain the
    instrumented-build record, engine identity, initial/final corpus digest,
    native worker topology, crash-forwarding result, and an AFL/LLVM coverage
-   rebuild. For JavaScript, prefer Fuzzilli or another structured generator.
-8. Preserve a working baseline and a negative control differing only in the
+   rebuild. Record new edges per hour, plateau duration, unique stack clusters,
+   and the next coverage-hole task. Minimize and stack-deduplicate before queue
+   admission. For JavaScript, prefer Fuzzilli or another structured generator.
+9. Preserve a working baseline and a negative control differing only in the
    disputed state transition.
-9. Minimize the testcase without changing its crash fingerprint.
-10. Replay across release, ASan, and debug builds. Measure `N/M` in fresh
+10. Minimize the testcase without changing its crash fingerprint.
+11. Replay across release, ASan, and debug builds. Measure `N/M` in fresh
    processes if scheduling, concurrent compilation, GC, or allocation matters.
-11. Move the testcase to full Chromium only after the engine result survives
+12. Move the testcase to full Chromium only after the engine result survives
    triage. Use `chrome_v8_harness.py browser-replay` with an owned local origin,
    a separate negative-control entry, fresh processes, and the sandbox enabled.
    Retain the replay ID and machine record; a screenshot alone is insufficient.
-12. Call a result a sandbox escape only after demonstrating a separate,
+13. Call a result a sandbox escape only after demonstrating a separate,
     bounded sandbox-boundary violation. Renderer memory corruption alone is
     not a sandbox escape.
-13. Do not use changelogs, advisories, Git history, historical commits,
+14. Do not use changelogs, advisories, Git history, historical commits,
     patched-version comparisons, or internet-derived patch diffs for discovery.
-14. Do not promote a crash or partial primitive without a bounded execution
-    chain or explicit program-defined Critical terminal.
-15. Before candidate promotion, complete the linked structured path proof.
+    Do read checked-in target tests, assertions, fuzz targets, and invariant
+    comments from the pinned revision as local semantic oracles.
+15. Retain unique minimized stack clusters, invariant breaks, and verified
+    primitives in `taskResult.researchLeads` and advance their next experiments.
+    Do not promote them as findings without a bounded execution chain or
+    explicit program-defined Critical terminal.
+16. Before candidate promotion, complete the linked structured path proof.
     Walk from the owned web entry point to the claimed sink, list every
     conditional and exact attacker-controlled outcome, retain source and
-    runtime evidence for each step, resolve all contradiction challenges, and
-    leave the assumptions list empty. Another registered runtime-agent identity
-    must review it; aliases of the originator do not count.
+    machine evidence for each step, resolve all contradiction challenges, and
+    leave the assumptions list empty. The reviewer must execute the same recipe
+    with new challenges and processes; aliases and prose-only replay do not count.
 
 ## Open-ended search mandate
 
@@ -80,6 +97,10 @@ reproducible artifacts to the finding pipeline.
 Do not infer security impact from coverage, a differential, a timeout, an OOM,
 or an assertion. These results identify the next experiment.
 
+Do not infer search efficacy from this contract either. Compare
+`search_score.py` snapshots for edge velocity, unique stack yield, and frozen
+hours-to-rediscover. Delete a subsystem that moves none of them.
+
 ## Handoff result
 
 Start from `KRINEON_TASK_RESULT.template.json` for the scheduler contract and
@@ -94,11 +115,12 @@ fields. The submitted JSON should identify:
 - baseline, negative, and positive controls;
 - required flags and whether they exist in normal web execution;
 - first-fault explanation;
-- exact crash fingerprint, stack-cluster ID, access direction, controllability
-  score, automated verdict, and reviewer interpretation;
+- exact crash fingerprint, stack-cluster ID, access direction, verified or
+  unverified control evidence, automated verdict, and reviewer interpretation;
 - reliability;
 - remaining browser or sandbox blocker;
 - cleanup state.
 
-For independent replay, include the exact `independentReplay` object required by
-the task packet. The originating worker cannot perform that replay.
+For independent replay, include the exact `independentReplay` object and reality
+attestation required by the task packet. The originating worker cannot perform
+that replay, and copied originator output is not an independent experiment.

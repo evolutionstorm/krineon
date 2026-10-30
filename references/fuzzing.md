@@ -76,12 +76,27 @@ python3 scripts/fuzzer_orchestrator.py structured-generate CAMPAIGN parser \
 Fuzzilli is itself the structured JavaScript/state-sequence generator. Do not
 flatten its programs into byte-mutation inputs merely to fit the smoke mutator.
 
+For JavaScript framework inputs, prefer the built-in semantic generators. They
+cover JSON, URLs, ordered duplicate headers, multipart, RSC, Server Actions,
+and manifests, and retain a semantic-group hash across representation variants:
+
+```bash
+python3 scripts/fuzzer_orchestrator.py framework-generate CAMPAIGN parser \
+  --spec generator.json --count 1000 --seed 1
+```
+
+For persistent Node execution and native V8/Istanbul coverage, including
+source-map remapping and Next.js server/client boundary classification, read
+[javascript-coverage-generation.md](javascript-coverage-generation.md) and use
+`scripts/js_coverage_harness.py`. Manual `KRINEON_COVERAGE_FILE` hooks remain a
+fixture/debugging contract; they are not required for JavaScript targets.
+
 ## Launch native parallel workers
 
 ```bash
 python3 scripts/fuzzer_orchestrator.py launch CAMPAIGN parser \
   --workers 16 --duration-seconds 21600 \
-  --sync-interval-seconds 30 --forward-crashes
+  --sync-interval-seconds 30 --plateau-seconds 900 --forward-crashes
 ```
 
 Parallelism follows each engine's native model:
@@ -109,9 +124,16 @@ python3 scripts/fuzzer_orchestrator.py sync CAMPAIGN parser --forward-crashes
 ```
 
 External crash files are leads. `--forward-crashes` replays each with
-`dynamic_harness.py run`; only a replay that produces a Krineon crash ID enters
-`dynamic/crashes/` and automatic first-fault triage. OOM, timeout, assertion,
-and non-reproducing artifacts stay visibly unconfirmed.
+`dynamic_harness.py run`. A reproducing crash is minimized before triage, then
+deduplicated by its normalized stack hash. Only the first minimized
+representative of a stack cluster can create a validation task. OOM, timeout,
+assertion, duplicate-stack, and non-reproducing artifacts remain recorded but
+do not enter the queue.
+
+Each run retains a native edge timeline, new edges per hour, corpus growth, and
+the seconds since the last new edge. `plateau.reached` is data, not a reason to
+stop: use it to redirect structured generation toward the next measured
+coverage hole.
 
 ## Rebuild coverage from the retained corpus
 
@@ -119,7 +141,8 @@ AFL edge reconstruction:
 
 ```bash
 python3 scripts/fuzzer_orchestrator.py coverage-rebuild CAMPAIGN parser \
-  --mode afl-showmap --tool /owned/afl/bin/afl-showmap
+  --mode afl-showmap --tool /owned/afl/bin/afl-showmap \
+  --edge-universe CAMPAIGN/tools/parser-edge-universe.json
 ```
 
 LLVM source coverage reconstruction:
@@ -132,10 +155,23 @@ python3 scripts/fuzzer_orchestrator.py coverage-rebuild CAMPAIGN parser \
 
 The first mode executes every canonical input through `afl-showmap` and stores
 the union of edge IDs. The second emits one `.profraw` file per input, merges
-them, and retains `llvm-cov export` output. Coverage is evidence about explored
-code, not proof that an unvisited path is safe. Rebuild after material corpus
-growth and use the gaps to redirect structured generators and source-derived
-seed harvesting.
+them, retains `llvm-cov export`, and derives stable covered-region IDs. Each
+rebuild records new edges and new edges per hour. An optional hashed edge
+universe produces `coverage-holes.json`; the highest uncovered edge becomes the
+next structured-generation task. Coverage remains exploration evidence, not a
+proof that an unvisited path is safe.
+
+Take score snapshots before and after changing a subsystem:
+
+```bash
+python3 scripts/search_score.py snapshot CAMPAIGN \
+  --profile parser --benchmark frozen-oracles --output before.json
+python3 scripts/search_score.py compare CAMPAIGN \
+  --subsystem grammar-mutator --before before.json --after after.json --enforce
+```
+
+If the subsystem improves neither edge velocity, unique stack clusters, nor
+hours-to-rediscover, remove it from the campaign.
 
 ## Operational boundaries
 

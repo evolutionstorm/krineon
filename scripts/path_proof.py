@@ -19,6 +19,21 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+try:
+    from .reality_evidence import (
+        evidence_reference,
+        safe_campaign_path,
+        sha256_file,
+        validate_attestation,
+    )
+except ImportError:  # Direct script execution.
+    from reality_evidence import (
+        evidence_reference,
+        safe_campaign_path,
+        sha256_file,
+        validate_attestation,
+    )
+
 
 FINDING_ID_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{1,63}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -78,7 +93,7 @@ def _relative_evidence(value: Any) -> bool:
 
 def proof_template(finding_id: str, originator: str = "") -> dict[str, Any]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "findingId": finding_id,
         "complete": False,
         "entryPoint": {
@@ -105,6 +120,7 @@ def proof_template(finding_id: str, originator: str = "") -> dict[str, Any]:
                 "conditionIds": [],
                 "sourceEvidence": [],
                 "runtimeEvidence": [],
+                "machineEvidence": [],
             },
             {
                 "ordinal": 2,
@@ -116,6 +132,7 @@ def proof_template(finding_id: str, originator: str = "") -> dict[str, Any]:
                 "conditionIds": [],
                 "sourceEvidence": [],
                 "runtimeEvidence": [],
+                "machineEvidence": [],
             },
         ],
         "conditions": [
@@ -129,6 +146,7 @@ def proof_template(finding_id: str, originator: str = "") -> dict[str, Any]:
                 "concreteInputOrState": "",
                 "sourceEvidence": [],
                 "runtimeEvidence": [],
+                "machineEvidence": [],
                 "observed": False,
             }
         ],
@@ -140,6 +158,9 @@ def proof_template(finding_id: str, originator: str = "") -> dict[str, Any]:
                     "symbol": "",
                     "range": "",
                     "sourceSha256": "",
+                    "sourceArtifact": "",
+                    "lineStart": 0,
+                    "lineEnd": 0,
                     "conditionIds": [],
                 }
             ],
@@ -165,6 +186,8 @@ def proof_template(finding_id: str, originator: str = "") -> dict[str, Any]:
             "reviewer": "",
             "reviewedAt": "",
             "notes": "",
+            "originatorAttestation": {"path": "", "sha256": ""},
+            "reviewerAttestation": {"path": "", "sha256": ""},
         },
     }
 
@@ -185,6 +208,7 @@ def validate_path_proof(
             errors.append(field)
 
     evidence_artifacts: set[str] = set()
+    machine_observations = 0
 
     def retain_evidence(value: Any, field: str) -> None:
         require(_relative_evidence(value), field)
@@ -205,7 +229,29 @@ def validate_path_proof(
                     f"{field}:missing-artifact:{item}",
                 )
 
-    require(proof.get("schemaVersion") == 1, "schemaVersion:1")
+    def retain_machine_evidence(value: Any, field: str) -> None:
+        nonlocal machine_observations
+        require(isinstance(value, list) and bool(value), field)
+        if not isinstance(value, list) or campaign_root is None:
+            return
+        for index, reference in enumerate(value):
+            passed, reference_errors, summary = evidence_reference(
+                campaign_root,
+                reference,
+                expected_finding_id=str(proof.get("findingId") or ""),
+            )
+            require(passed, f"{field}[{index}]:machine-verified")
+            for error in reference_errors:
+                errors.append(f"{field}[{index}]:{error}")
+            if passed:
+                require(
+                    summary.get("challengeBound") is True,
+                    f"{field}[{index}]:challenge-bound-observation",
+                )
+                machine_observations += int(summary.get("observations") or 0)
+                evidence_artifacts.add(str(summary.get("attestation") or ""))
+
+    require(proof.get("schemaVersion") == 2, "schemaVersion:2")
     finding_id = proof.get("findingId")
     require(isinstance(finding_id, str) and bool(FINDING_ID_RE.fullmatch(finding_id)), "findingId")
     if expected_finding_id is not None:
@@ -244,6 +290,7 @@ def validate_path_proof(
         require(_text(step.get("transitionToNext")), f"{prefix}.transitionToNext")
         retain_evidence(step.get("sourceEvidence"), f"{prefix}.sourceEvidence")
         retain_evidence(step.get("runtimeEvidence"), f"{prefix}.runtimeEvidence")
+        retain_machine_evidence(step.get("machineEvidence"), f"{prefix}.machineEvidence")
         condition_ids = step.get("conditionIds")
         require(isinstance(condition_ids, list), f"{prefix}.conditionIds")
         if isinstance(condition_ids, list):
@@ -298,6 +345,9 @@ def validate_path_proof(
             require(_text(condition.get(field)), f"{prefix}.{field}")
         retain_evidence(condition.get("sourceEvidence"), f"{prefix}.sourceEvidence")
         retain_evidence(condition.get("runtimeEvidence"), f"{prefix}.runtimeEvidence")
+        retain_machine_evidence(
+            condition.get("machineEvidence"), f"{prefix}.machineEvidence"
+        )
         require(condition.get("observed") is True, f"{prefix}.observed:true")
     require(referenced_conditions == condition_ids, "conditions:step-coverage-exact")
 
@@ -327,6 +377,34 @@ def validate_path_proof(
             and bool(SHA256_RE.fullmatch(function["sourceSha256"])),
             f"{prefix}.sourceSha256",
         )
+        source_artifact = function.get("sourceArtifact")
+        require(_text(source_artifact), f"{prefix}.sourceArtifact")
+        line_start = function.get("lineStart")
+        line_end = function.get("lineEnd")
+        require(isinstance(line_start, int) and line_start >= 1, f"{prefix}.lineStart")
+        require(
+            isinstance(line_end, int)
+            and isinstance(line_start, int)
+            and line_end >= line_start,
+            f"{prefix}.lineEnd",
+        )
+        if campaign_root is not None and _text(source_artifact):
+            try:
+                source_path = safe_campaign_path(campaign_root, source_artifact)
+                source_lines = source_path.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+                require(
+                    sha256_file(source_path) == function.get("sourceSha256"),
+                    f"{prefix}.sourceSha256:mismatch",
+                )
+                require(
+                    isinstance(line_end, int) and line_end <= len(source_lines),
+                    f"{prefix}.lineRange:outside-artifact",
+                )
+                evidence_artifacts.add(str(source_artifact))
+            except (OSError, ValueError):
+                errors.append(f"{prefix}.sourceArtifact:missing-or-unsafe")
         function_ids = function.get("conditionIds")
         require(isinstance(function_ids, list), f"{prefix}.conditionIds")
         if isinstance(function_ids, list):
@@ -388,6 +466,68 @@ def validate_path_proof(
     )
     require(_text(review.get("notes")), "review.notes")
 
+    origin_attestation = review.get("originatorAttestation")
+    reviewer_attestation = review.get("reviewerAttestation")
+    origin_result: dict[str, Any] = {"passed": False, "errors": ["not-checked"]}
+    reviewer_result: dict[str, Any] = {"passed": False, "errors": ["not-checked"]}
+    if campaign_root is None:
+        errors.append("review.attestations:campaign-root-required")
+    else:
+        for label, value, worker, role in (
+            ("originatorAttestation", origin_attestation, originator, "originator"),
+            ("reviewerAttestation", reviewer_attestation, reviewer, "reviewer"),
+        ):
+            if not isinstance(value, dict):
+                errors.append(f"review.{label}")
+                continue
+            try:
+                attestation_path = safe_campaign_path(campaign_root, value.get("path"))
+                result = validate_attestation(
+                    campaign_root,
+                    attestation_path,
+                    expected_finding_id=str(finding_id or ""),
+                    expected_worker_id=str(worker or ""),
+                    expected_role=role,
+                )
+                if value.get("sha256") != result.get("attestationSha256"):
+                    result["errors"].append("review:attestation-hash")
+                    result["passed"] = False
+                for error in result["errors"]:
+                    errors.append(f"review.{label}:{error}")
+                evidence_artifacts.add(str(value.get("path") or ""))
+                if label == "originatorAttestation":
+                    origin_result = result
+                else:
+                    reviewer_result = result
+            except (OSError, ValueError):
+                errors.append(f"review.{label}:missing-or-unsafe")
+        if origin_result.get("passed") and reviewer_result.get("passed"):
+            origin_record = origin_result["record"]
+            reviewer_record = reviewer_result["record"]
+            require(
+                origin_record.get("runId") != reviewer_record.get("runId"),
+                "review.attestations:distinct-run-id",
+            )
+            require(
+                origin_record.get("recipe", {}).get("sha256")
+                == reviewer_record.get("recipe", {}).get("sha256"),
+                "review.attestations:same-recipe",
+            )
+            require(
+                origin_result.get("targetHashes") == reviewer_result.get("targetHashes"),
+                "review.attestations:same-targets",
+            )
+            require(
+                not set(origin_result.get("challengeHashes", []))
+                & set(reviewer_result.get("challengeHashes", [])),
+                "review.attestations:fresh-independent-challenges",
+            )
+            require(
+                not set(origin_result.get("processIds", []))
+                & set(reviewer_result.get("processIds", [])),
+                "review.attestations:fresh-independent-processes",
+            )
+
     errors = list(dict.fromkeys(errors))
     return {
         "passed": not errors,
@@ -400,6 +540,10 @@ def validate_path_proof(
             "contradictionChecks": len(contradiction_checks),
             "independentReviewer": bool(_text(reviewer) and originator != reviewer),
             "evidenceArtifacts": len(evidence_artifacts),
+            "machineObservations": machine_observations,
+            "machineIndependentReview": bool(
+                origin_result.get("passed") and reviewer_result.get("passed")
+            ),
         },
     }
 

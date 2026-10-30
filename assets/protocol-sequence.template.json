@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "framework": {"host": "127.0.0.1", "port": "${PORT}"}
+  },
+  "sessions": {
+    "attacker": {"role": "user", "tenant": "attacker", "cookies": {}, "variables": {}},
+    "victim": {"role": "user", "tenant": "victim", "cookies": {}, "variables": {}}
+  },
+  "steps": [
+    {
+      "id": "baseline",
+      "target": "framework",
+      "session": "victim",
+      "request": {"method": "GET", "path": "/", "headers": []},
+      "assertions": [{"kind": "status", "equals": 200}]
+    }
+  ]
+}

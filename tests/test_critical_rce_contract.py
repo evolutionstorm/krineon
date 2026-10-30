@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.path_proof_fixture import complete_path_proof
+from tests.path_proof_fixture import install_machine_path_evidence
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -70,6 +70,17 @@ class CriticalRceContractTests(unittest.TestCase):
             "--commit",
             "0123456789abcdef",
         )
+        (campaign / "evidence" / "coordinator-gate.json").write_text(
+            json.dumps(
+                {
+                    "producer": "krineon-coordinator-gate",
+                    "status": "passed",
+                    "lyingWorkerRejected": True,
+                    "testFixture": True,
+                }
+            )
+            + "\n"
+        )
         return campaign
 
     def install_valid_path_proof(
@@ -102,13 +113,9 @@ class CriticalRceContractTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        artifact = campaign / "evidence" / "path-proof" / "trace.json"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_text('{"observed": true}\n', encoding="utf-8")
-        proof = complete_path_proof()
-        proof["findingId"] = finding_id
-        proof["review"]["originator"] = originator
-        proof["review"]["reviewer"] = "review-worker"
+        proof = install_machine_path_evidence(
+            campaign, finding_id, originator, "review-worker"
+        )
         proof_path = campaign / "evidence" / "path-proofs" / f"{finding_id}.json"
         proof_path.write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
         completed = subprocess.run(

@@ -37,6 +37,7 @@
     "confirmed": false,
     "basis": "",
     "allowedEnvironment": "local owned fixture",
+    "protocolTargets": [],
     "stopConditions": []
   },
   "scope": [],

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run static analyzers and turn retained leads into durable validation tasks."""
+"""Run executable differentials and source-bound models into validation tasks."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import hashlib
 import json
@@ -19,12 +18,8 @@ from typing import Any, Iterable
 
 PROJECT = Path(__file__).resolve().parents[1]
 HARNESS = PROJECT / "scripts" / "research_harness.py"
-TREE_CENSUS = PROJECT / "scripts" / "tree_sitter_census.py"
 Z3_SOLVER = PROJECT / "scripts" / "z3_boundary_solver.py"
-JOERN_QUERIES = (
-    ("critical-sink-reachability", PROJECT / "queries" / "joern" / "critical-sink-reachability.sc"),
-    ("missing-validation", PROJECT / "queries" / "joern" / "missing-validation.sc"),
-)
+DIFFERENTIAL = PROJECT / "scripts" / "differential_witness.py"
 ALLOWED_FAMILIES = {
     "ingress-authority",
     "execution-sink-backtrace",
@@ -146,14 +141,15 @@ def normalize_lead(
             "title": title,
             "location": location,
             "approachFamily": family,
+            "priorityScore": int(raw.get("priorityScore") or raw.get("score") or 0),
             "evidence": evidence,
             "provenance": {
                 **(raw.get("provenance") if isinstance(raw.get("provenance"), dict) else {}),
                 "runId": run_id,
                 "runRecord": run_path,
                 "campaignCommit": commit,
-                "staticOnly": True,
-                "runtimeValidated": False,
+                "staticOnly": raw.get("runtimeValidated") is not True,
+                "runtimeValidated": raw.get("runtimeValidated") is True,
                 "firstPrinciplesOnly": True,
                 "gitHistoryUsed": False,
                 "patchedVersionDiffUsed": False,
@@ -164,98 +160,119 @@ def normalize_lead(
     return lead
 
 
-def trailmark_leads(path: Path) -> list[dict[str, Any]]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, list):
-        return []
-    leads = []
-    for item in value:
-        if not isinstance(item, dict):
+def select_normalized_leads(
+    raw_leads: Iterable[tuple[dict[str, Any], list[str]]],
+    *,
+    run_id: str,
+    run_path: str,
+    commit: str,
+    max_leads: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Deduplicate and rank semantic compositions above inventory discovery."""
+    normalized_by_id: dict[str, dict[str, Any]] = {}
+    for raw, evidence in raw_leads:
+        lead = normalize_lead(
+            raw,
+            run_id=run_id,
+            run_path=run_path,
+            commit=commit,
+            default_evidence=evidence,
+        )
+        previous = normalized_by_id.get(lead["id"])
+        if previous is None or int(lead["priorityScore"]) > int(previous["priorityScore"]):
+            normalized_by_id[lead["id"]] = lead
+    ranked = sorted(
+        normalized_by_id.values(),
+        key=lambda item: (
+            -int(item.get("priorityScore") or 0),
+            str(item.get("tool") or ""),
+            str(item["id"]),
+        ),
+    )
+    return ranked[:max_leads], len(ranked)
+
+
+def differential_leads(path: Path) -> list[dict[str, Any]]:
+    record = read_json(path)
+    if record.get("producer") != "krineon-differential-witness":
+        raise RuntimeError(f"not a Krineon differential witness: {path}")
+    leads: list[dict[str, Any]] = []
+    for case in record.get("cases", []):
+        if not isinstance(case, dict) or case.get("disagreement") is not True:
             continue
-        symbol = str(item.get("node_id") or item.get("name") or "entrypoint")
+        witness_id = str(case.get("witnessId") or "")
+        input_record = case.get("input") if isinstance(case.get("input"), dict) else {}
         leads.append(
             {
-                "tool": "trailmark",
-                "kind": "public-ingress",
-                "title": f"Review public entry point {symbol}",
-                "location": symbol,
-                "approachFamily": "ingress-authority",
-                "excerpt": str(item.get("description") or ""),
-                "trailmark": item,
+                "tool": "differential-witness",
+                "kind": "consumer-disagreement",
+                "title": f"Two consumers disagree in {record.get('name')}",
+                "location": str(input_record.get("path") or witness_id),
+                "approachFamily": "representation-parser",
+                "leadClass": "executed-differential",
+                "priorityScore": 96,
+                "runtimeValidated": True,
+                "witnessId": witness_id,
+                "input": input_record,
+                "observations": [
+                    value.get("observation")
+                    for value in case.get("consumers", [])
+                    if isinstance(value, dict)
+                ],
             }
         )
     return leads
 
 
-def parse_joern_tsv(path: Path, query: str) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    leads: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8", newline="") as stream:
-        for row in csv.DictReader(stream, delimiter="\t"):
-            kind = row.get("kind") or query
-            location = f"{row.get('file') or 'unknown'}:{row.get('line') or '?'}"
-            family = (
-                "execution-sink-backtrace"
-                if kind == "sink-reachability"
-                else "ingress-authority"
-            )
-            leads.append(
-                {
-                    "tool": "joern",
-                    "kind": kind,
-                    "title": f"Joern {kind}: {row.get('method') or row.get('code') or location}",
-                    "location": location,
-                    "approachFamily": family,
-                    "excerpt": row.get("code") or "",
-                    "query": query,
-                }
-            )
-    return leads
-
-
-def parse_z3_spec(path: Path) -> dict[str, Any]:
+def parse_z3_spec(path: Path, *, allow_unbound: bool) -> dict[str, Any]:
     spec = read_json(path)
-    required = {"kind", "bits", "target", "maxX"}
-    if spec.get("kind") not in {"truncate", "add-wrap", "mul-wrap"}:
+    kind = spec.get("kind")
+    supported = {
+        "truncate", "add-wrap", "sub-wrap", "mul-wrap",
+        "narrowing-collision", "custom-smt",
+    }
+    if kind not in supported:
         raise RuntimeError(f"Z3 spec {path} has unsupported kind: {spec.get('kind')}")
-    if spec.get("kind") != "truncate":
-        required.add("maxY")
+    if kind == "custom-smt":
+        required = {"kind", "consumerBits", "variables", "assertions"}
+    else:
+        required = {"kind", "bits", "target", "maxX"}
+        if kind != "truncate":
+            required.add("maxY")
     missing = required.difference(spec)
     if missing:
         raise RuntimeError(f"Z3 spec {path} missing: {', '.join(sorted(missing))}")
+    binding = spec.get("implementationBinding")
+    if not isinstance(binding, dict) and not allow_unbound:
+        raise RuntimeError(
+            f"Z3 spec {path} is generic mathematics, not target analysis; add "
+            "implementationBinding or pass --allow-unbound-z3 for artifact-only output"
+        )
+    if isinstance(binding, dict):
+        binding_required = {
+            "sourceFile", "startLine", "endLine", "expression", "constraintExtraction"
+        }
+        binding_missing = binding_required.difference(binding)
+        if binding_missing:
+            raise RuntimeError(
+                f"Z3 spec {path} binding missing: {', '.join(sorted(binding_missing))}"
+            )
     return spec
 
 
-def z3_command(spec: dict[str, Any], output: Path, emit_dir: Path) -> list[str]:
-    command = [
+def z3_command(spec_path: Path, source: Path, output: Path, emit_dir: Path) -> list[str]:
+    return [
         sys.executable,
         str(Z3_SOLVER),
-        "--kind",
-        str(spec["kind"]),
-        "--bits",
-        str(spec["bits"]),
-        "--target",
-        str(spec["target"]),
-        "--min-x",
-        str(spec.get("minX", 0)),
-        "--max-x",
-        str(spec["maxX"]),
+        "--spec",
+        str(spec_path),
+        "--source-root",
+        str(source),
         "--output",
         str(output),
         "--emit-dir",
         str(emit_dir),
     ]
-    if spec["kind"] != "truncate":
-        command.extend(
-            [
-                "--min-y",
-                str(spec.get("minY", 0)),
-                "--max-y",
-                str(spec["maxY"]),
-            ]
-        )
-    return command
 
 
 def resolve_source(campaign: dict[str, Any], explicit: Path | None) -> Path:
@@ -303,7 +320,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         raise RuntimeError(f"not a Krineon campaign: {campaign_root}")
     campaign = read_json(campaign_path)
     source = resolve_source(campaign, args.source)
-    selected = set(args.tool or ("trailmark", "tree-sitter", "joern", "z3"))
+    selected = set(args.tool or ("trailmark", "differential", "z3"))
     run_id = (
         dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
         + uuid.uuid4().hex[:8]
@@ -338,103 +355,112 @@ def run_pipeline(args: argparse.Namespace) -> int:
             if entries["status"] == "completed":
                 (run_dir / entries["stdout"]).replace(entries_file)
                 entries["stdout"] = entries_file.name
-                for lead in trailmark_leads(entries_file):
-                    raw_leads.append((lead, [relative_evidence(campaign_root, entries_file)]))
             tools.extend((summary, entries))
 
-    if "tree-sitter" in selected:
-        tree_output = run_dir / "tree-sitter-census.json"
-        command = [sys.executable, str(TREE_CENSUS), str(source), "--max-leads", str(args.max_leads), "--output", str(tree_output)]
-        if args.language:
-            command.extend(["--language", args.language])
-        result = command_record("tree-sitter-census", command, run_dir, args.timeout)
-        tools.append(result)
-        if result["status"] == "completed" and tree_output.is_file():
-            census = read_json(tree_output)
-            for lead in census.get("leads", []):
-                if isinstance(lead, dict):
-                    raw_leads.append((lead, [relative_evidence(campaign_root, tree_output)]))
-
-    if "joern" in selected:
-        parser_executable = shutil.which("joern-parse")
-        joern_executable = shutil.which("joern")
-        if not parser_executable or not joern_executable:
-            tools.append({"name": "joern", "status": "unavailable"})
-        else:
-            cpg = run_dir / "cpg.bin"
-            parse_result = command_record(
-                "joern-parse",
-                [parser_executable, str(source), "-o", str(cpg)],
-                run_dir,
-                max(args.timeout, 300),
+    if "differential" in selected:
+        if not args.differential_spec:
+            tools.append(
+                {
+                    "name": "differential-witness",
+                    "status": "skipped",
+                    "reason": "no --differential-spec supplied",
+                }
             )
-            tools.append(parse_result)
-            if parse_result["status"] == "completed":
-                for name, query in JOERN_QUERIES:
-                    output = run_dir / f"joern-{name}.tsv"
-                    result = command_record(
-                        f"joern-{name}",
-                        [joern_executable, "--script", str(query), "--param", f"cpgFile={cpg}", "--param", f"out={output}"],
-                        run_dir,
-                        max(args.timeout, 300),
+        for index, spec_path in enumerate(args.differential_spec or (), 1):
+            retained_spec = run_dir / f"differential-{index}-spec.json"
+            shutil.copyfile(spec_path.expanduser().resolve(), retained_spec)
+            output = run_dir / f"differential-{index}.json"
+            result = command_record(
+                f"differential-{index}",
+                [
+                    sys.executable,
+                    str(DIFFERENTIAL),
+                    "--spec",
+                    str(retained_spec),
+                    "--output",
+                    str(output),
+                    "--timeout",
+                    str(args.timeout),
+                ],
+                run_dir,
+                args.timeout * 10,
+            )
+            tools.append(result)
+            if result["status"] == "completed" and output.is_file():
+                for lead in differential_leads(output):
+                    raw_leads.append(
+                        (
+                            lead,
+                            [
+                                relative_evidence(campaign_root, retained_spec),
+                                relative_evidence(campaign_root, output),
+                            ],
+                        )
                     )
-                    tools.append(result)
-                    if result["status"] == "completed":
-                        for lead in parse_joern_tsv(output, name):
-                            raw_leads.append((lead, [relative_evidence(campaign_root, output)]))
 
     if "z3" in selected:
         if not args.z3_spec:
             tools.append({"name": "z3", "status": "skipped", "reason": "no --z3-spec supplied"})
         for index, spec_path in enumerate(args.z3_spec or (), 1):
-            spec = parse_z3_spec(spec_path.expanduser().resolve())
+            spec = parse_z3_spec(
+                spec_path.expanduser().resolve(), allow_unbound=args.allow_unbound_z3
+            )
             retained_spec = run_dir / f"z3-{index}-spec.json"
             write_json(retained_spec, spec)
             output = run_dir / f"z3-{index}.json"
             emit_dir = run_dir / f"z3-{index}-payloads"
             result = command_record(
                 f"z3-{index}",
-                z3_command(spec, output, emit_dir),
+                z3_command(retained_spec, source, output, emit_dir),
                 run_dir,
                 args.timeout,
             )
             tools.append(result)
             if result["status"] == "completed" and output.is_file():
                 model = read_json(output)
-                raw_leads.append(
-                    (
-                        {
-                            "tool": "z3",
-                            "kind": "concrete-boundary-input",
-                            "title": f"Concrete {spec['kind']} input for {spec['bits']}-bit consumer",
-                            "location": spec_path.name,
-                            "approachFamily": "representation-parser",
-                            "constraint": spec,
-                            "model": model.get("model"),
-                        },
-                        [
-                            relative_evidence(campaign_root, retained_spec),
-                            relative_evidence(campaign_root, output),
-                            relative_evidence(campaign_root, emit_dir),
-                        ],
+                binding = model.get("implementationBinding")
+                binding = binding if isinstance(binding, dict) else {}
+                if binding.get("sourceBound") is True:
+                    raw_leads.append(
+                        (
+                            {
+                                "tool": "z3",
+                                "kind": "source-bound-constraint-input",
+                                "title": f"Source-bound {spec['kind']} constraint model",
+                                "location": (
+                                    f"{binding.get('sourceFile')}:{binding.get('startLine')}"
+                                ),
+                                "approachFamily": "representation-parser",
+                                "constraint": spec,
+                                "model": model.get("model"),
+                                "implementationBinding": binding,
+                                "leadClass": "source-bound-constraint",
+                                "priorityScore": 86,
+                                "provenance": {
+                                    "sourceBound": True,
+                                    "implementationMatched": binding.get(
+                                        "implementationMatched", False
+                                    ),
+                                    "constraintExtraction": binding.get(
+                                        "constraintExtraction"
+                                    ),
+                                },
+                            },
+                            [
+                                relative_evidence(campaign_root, retained_spec),
+                                relative_evidence(campaign_root, output),
+                                relative_evidence(campaign_root, emit_dir),
+                            ],
+                        )
                     )
-                )
 
-    normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw, evidence in raw_leads:
-        lead = normalize_lead(
-            raw,
-            run_id=run_id,
-            run_path=run_record_relative,
-            commit=str(campaign.get("commit") or "unknown"),
-            default_evidence=evidence,
-        )
-        if lead["id"] not in seen:
-            seen.add(lead["id"])
-            normalized.append(lead)
-        if len(normalized) >= args.max_leads:
-            break
+    normalized, untruncated_lead_count = select_normalized_leads(
+        raw_leads,
+        run_id=run_id,
+        run_path=run_record_relative,
+        commit=str(campaign.get("commit") or "unknown"),
+        max_leads=args.max_leads,
+    )
     run_record = {
         "schemaVersion": 1,
         "runId": run_id,
@@ -454,6 +480,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         },
         "tools": tools,
         "leadCount": len(normalized),
+        "untruncatedLeadCount": untruncated_lead_count,
+        "leadSelection": "semantic-priority-not-tool-order",
         "leads": normalized,
     }
     write_json(run_record_path, run_record)
@@ -490,10 +518,10 @@ def ingest_run(campaign_root: Path, run_path: Path, max_leads: int) -> int:
         task_id = "static-" + lead_id.removeprefix("SL-").lower()
         if not task_exists(database, task_id):
             objective = (
-                f"Validate or falsify static lead {lead_id} at {lead.get('location')}. "
-                f"Inspect the pinned source manually, establish attacker control and guards, then run a bounded stock-build discriminator. "
+                f"Validate or falsify evidence lead {lead_id} at {lead.get('location')}. "
+                f"Inspect the pinned source manually, establish attacker control and guards, then re-execute the recorded differential on a stock build. "
                 f"Provenance: {lead['provenance']['runRecord']}; evidence: {', '.join(lead.get('evidence', []))}. "
-                "Do not promote the analyzer hit itself as a finding."
+                "Do not promote the analyzer or differential hit itself as a finding."
             )
             command = [
                 sys.executable,
@@ -502,15 +530,15 @@ def ingest_run(campaign_root: Path, run_path: Path, max_leads: int) -> int:
                 str(campaign_root),
                 task_id,
                 "--title",
-                f"Validate static lead: {lead.get('title')}",
+                f"Validate evidence lead: {lead.get('title')}",
                 "--lane",
-                "static-lead-validation",
+                "evidence-lead-validation",
                 "--objective",
                 objective,
                 "--approach-family",
                 str(lead.get("approachFamily") or "representation-parser"),
                 "--success-criterion",
-                "Retain a manual source slice confirming or falsifying the analyzer's semantics and guard ordering.",
+                "Retain a manual source slice confirming or falsifying the two consumers and guard ordering.",
                 "--success-criterion",
                 "Run a bounded positive/negative runtime discriminator on an unmodified supported build, or record the exact blocking mechanism.",
                 "--success-criterion",
@@ -567,8 +595,21 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("campaign_dir", type=Path)
     run.add_argument("--source", type=Path)
     run.add_argument("--language")
-    run.add_argument("--tool", action="append", choices=("trailmark", "tree-sitter", "joern", "z3"))
+    run.add_argument(
+        "--tool", action="append", choices=("trailmark", "differential", "z3")
+    )
+    run.add_argument(
+        "--differential-spec",
+        action="append",
+        type=Path,
+        help="two-consumer executable witness specification; repeatable",
+    )
     run.add_argument("--z3-spec", action="append", type=Path)
+    run.add_argument(
+        "--allow-unbound-z3",
+        action="store_true",
+        help="retain generic solver output but never enqueue it as a target-source lead",
+    )
     run.add_argument("--timeout", type=int, default=120)
     run.add_argument("--max-leads", type=int, default=100)
     run.add_argument("--ingest", action="store_true")

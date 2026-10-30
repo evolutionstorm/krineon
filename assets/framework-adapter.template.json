@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "framework": "nextjs",
+  "projectRoot": "/replace/with/owned/checkout",
+  "lockfile": "package-lock.json",
+  "surfaces": ["app-router", "rsc", "node-runtime"],
+  "surfaceEvidence": {
+    "app-router": ["app/**/*"],
+    "rsc": ["app/**/*"],
+    "node-runtime": ["package.json"]
+  },
+  "environment": {"NODE_ENV": "production"},
+  "installCommand": ["npm", "ci"],
+  "buildCommand": ["npm", "run", "build"],
+  "generatedArtifacts": [".next/BUILD_ID", ".next/server/**/*"],
+  "deploymentArtifacts": [".next/BUILD_ID", ".next/server/**/*"],
+  "compilerProbes": [
+    {"name": "node", "command": ["{runtime}", "--version"]},
+    {"name": "next", "command": ["{runtime}", "node_modules/next/dist/bin/next", "--version"]}
+  ],
+  "launch": {
+    "command": ["{runtime}", "node_modules/next/dist/bin/next", "start", "-p", "{port}"],
+    "readyPath": "/"
+  },
+  "exerciseSpec": "production-sequence.json",
+  "cases": [
+    {"name": "supported-node", "runtime": "node"}
+  ]
+}
+

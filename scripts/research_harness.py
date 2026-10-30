@@ -27,14 +27,17 @@ from urllib.parse import urlsplit
 
 try:
     from .path_proof import validate_path_proof
+    from .reality_evidence import safe_campaign_path, validate_attestation
 except ImportError:  # Direct script execution.
     from path_proof import validate_path_proof
+    from reality_evidence import safe_campaign_path, validate_attestation
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = PROJECT_ROOT / "assets"
 PROFILES = PROJECT_ROOT / "profiles"
 APPROACH_FAMILIES = PROFILES / "approach-families.json"
+REALITY_RUNNER = PROJECT_ROOT / "scripts" / "reality_runner.py"
 
 CAMPAIGN_DIRS = (
     "tasks",
@@ -46,6 +49,7 @@ CAMPAIGN_DIRS = (
     "results",
     "worktrees",
     "third_party",
+    "benchmarks",
 )
 
 ORCHESTRATION_DB = "orchestration.db"
@@ -295,6 +299,27 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           FOREIGN KEY(task_id) REFERENCES tasks(task_id),
           FOREIGN KEY(family_id) REFERENCES approach_families(family_id)
         );
+        CREATE TABLE IF NOT EXISTS research_leads (
+          lead_id TEXT PRIMARY KEY,
+          semantic_identity TEXT NOT NULL UNIQUE,
+          kind TEXT NOT NULL,
+          evidence_grade TEXT NOT NULL,
+          state TEXT NOT NULL,
+          title TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          first_task_id TEXT,
+          first_worker_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_research_leads (
+          task_id TEXT NOT NULL,
+          lead_id TEXT NOT NULL,
+          relationship TEXT NOT NULL,
+          PRIMARY KEY(task_id, lead_id, relationship),
+          FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+          FOREIGN KEY(lead_id) REFERENCES research_leads(lead_id)
+        );
         CREATE INDEX IF NOT EXISTS tasks_state_wave_idx ON tasks(state, wave, priority);
         CREATE INDEX IF NOT EXISTS task_approach_family_idx
           ON task_approach_families(family_id, task_id);
@@ -302,6 +327,8 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           ON tasks(lease_owner)
           WHERE state = 'running' AND lease_owner IS NOT NULL;
         CREATE INDEX IF NOT EXISTS events_task_idx ON events(task_id, event_id);
+        CREATE INDEX IF NOT EXISTS research_leads_grade_idx
+          ON research_leads(state, evidence_grade, updated_at);
         """
     )
     task_columns = {
@@ -325,6 +352,8 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
         )
     if "reviews_task_id" not in task_columns:
         connection.execute("ALTER TABLE tasks ADD COLUMN reviews_task_id TEXT")
+    if "lead_id" not in task_columns:
+        connection.execute("ALTER TABLE tasks ADD COLUMN lead_id TEXT")
     connection.commit()
 
 
@@ -655,6 +684,14 @@ PROHIBITED_PROVENANCE_FLAGS = (
     "internetPatchDiffUsed",
 )
 
+LEAD_KINDS = ("minimized-stack", "invariant-break", "verified-primitive")
+LEAD_GRADE_ORDER = {
+    "verified-primitive": 0,
+    "runtime-invariant": 1,
+    "minimized-stack": 2,
+    "source-invariant": 3,
+}
+
 
 def validate_analysis_provenance(container: dict[str, Any]) -> dict[str, Any]:
     provenance = container.get("analysisProvenance")
@@ -668,7 +705,231 @@ def validate_analysis_provenance(container: dict[str, Any]) -> dict[str, Any]:
     return provenance
 
 
-def validate_completed_result(result: dict[str, Any], task_id: str) -> None:
+def canonical_digest(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_lead_evidence_paths(root: Path, lead: dict[str, Any]) -> list[str]:
+    evidence = require_string_list(lead.get("evidence"), "researchLead.evidence")
+    retained: list[str] = []
+    for value in evidence:
+        try:
+            path = safe_campaign_path(root, value)
+        except ValueError as error:
+            raise SystemExit(f"researchLead.evidence:{error}") from error
+        if not path.is_file():
+            raise SystemExit(f"researchLead.evidence does not exist: {value}")
+        retained.append(path.relative_to(root).as_posix())
+    return retained
+
+
+def validate_lead_source_artifacts(root: Path, lead: dict[str, Any]) -> list[dict[str, Any]]:
+    campaign = read_json(root / "campaign.json")
+    checkout_value = str(campaign.get("localCheckout") or "").strip()
+    if not checkout_value:
+        raise SystemExit("invariant-break lead requires campaign.localCheckout")
+    checkout = Path(checkout_value).expanduser().resolve()
+    raw = lead.get("sourceArtifacts")
+    if not isinstance(raw, list) or not raw:
+        raise SystemExit("invariant-break lead requires sourceArtifacts")
+    normalized = []
+    for index, artifact in enumerate(raw):
+        if not isinstance(artifact, dict):
+            raise SystemExit(f"researchLead.sourceArtifacts[{index}] must be an object")
+        target_path = require_string(
+            artifact.get("targetPath"), f"sourceArtifacts[{index}].targetPath"
+        )
+        candidate = Path(target_path)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise SystemExit("sourceArtifacts.targetPath must be checkout-relative")
+        source = (checkout / candidate).resolve()
+        try:
+            source.relative_to(checkout)
+        except ValueError as error:
+            raise SystemExit("sourceArtifacts.targetPath escapes the checkout") from error
+        if not source.is_file():
+            raise SystemExit(f"source artifact does not exist: {target_path}")
+        observed_sha = sha256(source)
+        if artifact.get("sha256") != observed_sha:
+            raise SystemExit(f"source artifact hash mismatch: {target_path}")
+        line_start = artifact.get("lineStart")
+        line_end = artifact.get("lineEnd")
+        line_count = len(source.read_text(encoding="utf-8", errors="replace").splitlines())
+        if (
+            not isinstance(line_start, int)
+            or not isinstance(line_end, int)
+            or line_start < 1
+            or line_end < line_start
+            or line_end > line_count
+        ):
+            raise SystemExit(f"invalid source line range: {target_path}")
+        normalized.append(
+            {
+                "targetPath": candidate.as_posix(),
+                "sha256": observed_sha,
+                "lineStart": line_start,
+                "lineEnd": line_end,
+            }
+        )
+    return normalized
+
+
+def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise SystemExit("taskResult.researchLeads entries must be objects")
+    kind = require_string(raw.get("kind"), "researchLead.kind")
+    if kind not in LEAD_KINDS:
+        raise SystemExit("researchLead.kind must identify a retained stack, invariant, or primitive")
+    title = require_string(raw.get("title"), "researchLead.title")
+    next_experiment = require_string(
+        raw.get("nextExperiment"), "researchLead.nextExperiment"
+    )
+    source_references = require_string_list(
+        raw.get("sourceReferences"), "researchLead.sourceReferences"
+    )
+    approach_families = require_string_list(
+        raw.get("approachFamilies"), "researchLead.approachFamilies"
+    )
+    evidence = validate_lead_evidence_paths(root, raw)
+    status = str(raw.get("status") or "active")
+    if status not in {"active", "disproved"}:
+        raise SystemExit("researchLead.status must be active or disproved")
+
+    normalized = {
+        "kind": kind,
+        "title": title,
+        "status": status,
+        "nextExperiment": next_experiment,
+        "sourceReferences": source_references,
+        "approachFamilies": approach_families,
+        "evidence": evidence,
+    }
+    if kind == "minimized-stack":
+        stack = raw.get("minimizedStack")
+        if not isinstance(stack, dict):
+            raise SystemExit("minimized-stack lead requires minimizedStack")
+        crash_id = require_string(stack.get("crashId"), "minimizedStack.crashId")
+        cluster_id = require_string(stack.get("clusterId"), "minimizedStack.clusterId")
+        if not re.fullmatch(r"[0-9a-f]{64}", crash_id):
+            raise SystemExit("minimizedStack.crashId must be a full crash fingerprint")
+        crash_dir = root / "dynamic" / "crashes" / crash_id
+        triage_path = crash_dir / "triage.json"
+        minimized_path = crash_dir / "minimized.bin"
+        if not triage_path.is_file() or not minimized_path.is_file():
+            raise SystemExit("minimized-stack lead requires retained triage and minimized.bin")
+        triage = read_json(triage_path)
+        observed_cluster = str((triage.get("stack") or {}).get("clusterId") or "")
+        if observed_cluster != cluster_id:
+            raise SystemExit("minimizedStack.clusterId does not match retained triage")
+        minimized_sha = sha256(minimized_path)
+        supplied_sha = str(stack.get("minimizedSha256") or "")
+        if supplied_sha and supplied_sha != minimized_sha:
+            raise SystemExit("minimizedStack.minimizedSha256 does not match retained input")
+        normalized["minimizedStack"] = {
+            "crashId": crash_id,
+            "clusterId": cluster_id,
+            "minimizedSha256": minimized_sha,
+            "faultClass": str((triage.get("firstFault") or {}).get("class") or ""),
+        }
+        normalized["semanticIdentity"] = f"stack:{cluster_id}"
+        normalized["evidenceGrade"] = "minimized-stack"
+    elif kind == "invariant-break":
+        invariant = raw.get("invariantBreak")
+        if not isinstance(invariant, dict):
+            raise SystemExit("invariant-break lead requires invariantBreak")
+        boundary = require_string(invariant.get("boundary"), "invariantBreak.boundary")
+        invariant_text = require_string(
+            invariant.get("invariant"), "invariantBreak.invariant"
+        )
+        expected = require_string(invariant.get("expected"), "invariantBreak.expected")
+        observed = require_string(invariant.get("observed"), "invariantBreak.observed")
+        restored = require_string(
+            invariant.get("restoredControl"), "invariantBreak.restoredControl"
+        )
+        runtime_reproduced = invariant.get("runtimeReproduced") is True
+        source_artifacts = validate_lead_source_artifacts(root, raw)
+        attestation_summary: dict[str, Any] | None = None
+        if runtime_reproduced:
+            reference = invariant.get("attestation")
+            if not isinstance(reference, dict):
+                raise SystemExit("runtime invariant lead requires a machine attestation")
+            try:
+                attestation_path = safe_campaign_path(root, reference.get("path"))
+            except ValueError as error:
+                raise SystemExit(f"invariantBreak.attestation:{error}") from error
+            result = validate_attestation(root, attestation_path)
+            if not result["passed"]:
+                raise SystemExit(
+                    "runtime invariant attestation failed: " + ", ".join(result["errors"])
+                )
+            if reference.get("sha256") != result["attestationSha256"]:
+                raise SystemExit("runtime invariant attestation hash mismatch")
+            attestation_summary = {
+                "path": attestation_path.relative_to(root).as_posix(),
+                "sha256": result["attestationSha256"],
+                "runId": result["record"]["runId"],
+            }
+        identity_material = {
+            "boundary": boundary,
+            "invariant": invariant_text,
+            "sourceArtifacts": source_artifacts,
+        }
+        normalized["sourceArtifacts"] = source_artifacts
+        normalized["invariantBreak"] = {
+            "boundary": boundary,
+            "invariant": invariant_text,
+            "expected": expected,
+            "observed": observed,
+            "restoredControl": restored,
+            "runtimeReproduced": runtime_reproduced,
+            "attestation": attestation_summary,
+        }
+        normalized["semanticIdentity"] = "invariant:" + canonical_digest(identity_material)
+        normalized["evidenceGrade"] = (
+            "runtime-invariant" if runtime_reproduced else "source-invariant"
+        )
+    else:
+        primitive = raw.get("verifiedPrimitive")
+        if not isinstance(primitive, dict):
+            raise SystemExit("verified-primitive lead requires verifiedPrimitive")
+        crash_id = require_string(primitive.get("crashId"), "verifiedPrimitive.crashId")
+        claim = require_string(primitive.get("claim"), "verifiedPrimitive.claim")
+        try:
+            verification_path = safe_campaign_path(root, primitive.get("verificationPath"))
+        except ValueError as error:
+            raise SystemExit(f"verifiedPrimitive.verificationPath:{error}") from error
+        if not verification_path.is_file():
+            raise SystemExit("verifiedPrimitive.verificationPath does not exist")
+        verification = read_json(verification_path)
+        if (
+            verification.get("producer") != "krineon-primitive-verifier"
+            or verification.get("status") != "verified"
+            or verification.get("crashId") != crash_id
+            or verification.get("claim") != claim
+        ):
+            raise SystemExit("verifiedPrimitive does not match its retained verifier record")
+        normalized["verifiedPrimitive"] = {
+            "crashId": crash_id,
+            "claim": claim,
+            "verificationPath": verification_path.relative_to(root).as_posix(),
+            "verificationSha256": sha256(verification_path),
+        }
+        normalized["semanticIdentity"] = f"primitive:{crash_id}:{claim}"
+        normalized["evidenceGrade"] = "verified-primitive"
+    return normalized
+
+
+def validate_research_leads(root: Path, task_result: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = task_result.get("researchLeads", [])
+    if not isinstance(raw, list):
+        raise SystemExit("taskResult.researchLeads must be a list")
+    return [validate_research_lead(root, item) for item in raw]
+
+
+def validate_completed_result(
+    root: Path, result: dict[str, Any], task_id: str
+) -> list[dict[str, Any]]:
     task_result = result.get("taskResult")
     if not isinstance(task_result, dict):
         raise SystemExit("completed result requires a taskResult object")
@@ -708,6 +969,138 @@ def validate_completed_result(result: dict[str, Any], task_id: str) -> None:
         if not isinstance(task_result.get(field), list):
             raise SystemExit(f"taskResult.{field} must be a list")
     validate_analysis_provenance(task_result)
+    return validate_research_leads(root, task_result)
+
+
+def coordinator_reexecute_result(
+    root: Path,
+    result: dict[str, Any],
+    task_id: str,
+    validated_leads: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    runtime_grades = {"runtime-invariant", "minimized-stack", "verified-primitive"}
+    runtime_claim = any(
+        str(lead.get("evidenceGrade") or "") in runtime_grades
+        for lead in validated_leads
+    )
+    task_result = result.get("taskResult")
+    replay = task_result.get("coordinatorReplay") if isinstance(task_result, dict) else None
+    if not runtime_claim and replay is None:
+        return None
+    if not isinstance(replay, dict):
+        raise SystemExit(
+            "runtime evidence cannot enter the queue without taskResult.coordinatorReplay"
+        )
+    try:
+        recipe_path = safe_campaign_path(root, replay.get("recipe"))
+    except ValueError as error:
+        raise SystemExit(f"coordinatorReplay.recipe:{error}") from error
+    if not recipe_path.is_file():
+        raise SystemExit("coordinator replay recipe does not exist")
+    recipe = read_json(recipe_path)
+    if recipe.get("findingId") != task_id:
+        raise SystemExit("coordinator replay recipe findingId must equal the task ID")
+    cases = recipe.get("cases")
+    if not isinstance(cases, list):
+        raise SystemExit("coordinator replay recipe requires cases")
+    by_name = {
+        str(case.get("name")): case for case in cases if isinstance(case, dict)
+    }
+    if set(by_name) != {"baseline", "negative", "positive"}:
+        raise SystemExit("coordinator replay requires baseline, negative, and positive")
+    control_kinds = {"stdout-not-contains-challenge", "no-memory-write"}
+    positive_kinds = {
+        "stdout-contains-challenge",
+        "controlled-write",
+        "controlled-pc",
+    }
+    for name in ("baseline", "negative"):
+        assertions = by_name[name].get("assertions")
+        kinds = {
+            str(value.get("kind") or "")
+            for value in assertions or []
+            if isinstance(value, dict)
+        }
+        if not kinds.intersection(control_kinds):
+            raise SystemExit(
+                f"coordinator replay {name} lacks a machine-checkable absence control"
+            )
+    positive_assertions = by_name["positive"].get("assertions")
+    positive_observations = {
+        str(value.get("kind") or "")
+        for value in positive_assertions or []
+        if isinstance(value, dict)
+    }
+    if not positive_observations.intersection(positive_kinds):
+        raise SystemExit("coordinator replay positive case lacks a concrete observation")
+
+    campaign = read_json(root / "campaign.json")
+    frozen = campaign.get("frozenTargetArtifacts")
+    frozen_by_path = {
+        str(value.get("path")): str(value.get("sha256"))
+        for value in frozen or []
+        if isinstance(value, dict)
+    }
+    targets = recipe.get("targetArtifacts")
+    if not isinstance(targets, list) or not targets:
+        raise SystemExit("coordinator replay recipe requires frozen target artifacts")
+    for target_value in targets:
+        target_path = safe_campaign_path(root, target_value)
+        relative = target_path.relative_to(root).as_posix()
+        if frozen_by_path.get(relative) != sha256(target_path):
+            raise SystemExit(
+                f"coordinator replay target is not coordinator-frozen: {relative}"
+            )
+
+    repetitions = int(replay.get("repetitions") or 1)
+    if repetitions < 1 or repetitions > 10:
+        raise SystemExit("coordinatorReplay.repetitions must be between 1 and 10")
+    command = [
+        sys.executable,
+        str(REALITY_RUNNER),
+        str(root),
+        task_id,
+        "--recipe",
+        recipe_path.relative_to(root).as_posix(),
+        "--worker-id",
+        "coordinator",
+        "--role",
+        "coordinator",
+        "--repetitions",
+        str(repetitions),
+    ]
+    completed = subprocess.run(
+        command, check=False, capture_output=True, text=True, timeout=120
+    )
+    if completed.returncode != 0:
+        raise SystemExit(
+            "coordinator re-execution rejected the worker claim: "
+            + completed.stderr[-4000:]
+        )
+    try:
+        output = json.loads(completed.stdout)
+        attestation_path = safe_campaign_path(root, output.get("attestation"))
+    except (json.JSONDecodeError, ValueError) as error:
+        raise SystemExit(f"coordinator replay emitted invalid evidence: {error}") from error
+    validation = validate_attestation(
+        root,
+        attestation_path,
+        expected_finding_id=task_id,
+        expected_worker_id="coordinator",
+        expected_role="coordinator",
+    )
+    if not validation["passed"]:
+        raise SystemExit(
+            "coordinator replay attestation failed: " + ", ".join(validation["errors"])
+        )
+    return {
+        "recipe": recipe_path.relative_to(root).as_posix(),
+        "recipeSha256": sha256(recipe_path),
+        "attestation": attestation_path.relative_to(root).as_posix(),
+        "attestationSha256": validation["attestationSha256"],
+        "runId": validation["record"]["runId"],
+        "repetitions": repetitions,
+    }
 
 
 def validate_route_development_result(
@@ -1092,7 +1485,12 @@ def provision_workspace(
         shutil.copy2(result_template, workspace / "KRINEON_TASK_RESULT.template.json")
     reference_root = workspace / "KRINEON_REFERENCES"
     reference_root.mkdir(exist_ok=True)
-    reference_names = ["critical-rce.md", "approach-families.md", "dependencies.md"]
+    reference_names = [
+        "critical-rce.md",
+        "approach-families.md",
+        "dependencies.md",
+        "rediscovery-benchmark.md",
+    ]
     if campaign.get("profile") == "chrome-v8":
         reference_names.extend(("chrome-v8.md", "chrome-v8-agent.md"))
     for reference_name in reference_names:
@@ -1243,6 +1641,42 @@ def save_registry(root: Path, registry: dict[str, Any]) -> None:
     write_json(registry_path(root), registry)
 
 
+def rediscovery_measurement(root: Path) -> dict[str, Any]:
+    measured: list[dict[str, Any]] = []
+    benchmark_root = root / "benchmarks"
+    if benchmark_root.is_dir():
+        for status_path in sorted(benchmark_root.glob("*/status.json")):
+            try:
+                status = read_json(status_path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            hours = status.get("hoursToFirstRediscovery")
+            if status.get("status") == "measured" and isinstance(hours, (int, float)):
+                measured.append(
+                    {
+                        "name": status.get("name") or status_path.parent.name,
+                        "hoursToFirstRediscovery": float(hours),
+                        "recall": status.get("recall"),
+                        "status": str(status_path.relative_to(root)),
+                    }
+                )
+    if not measured:
+        return {
+            "status": "unmeasured",
+            "profileLaneClaims": "documentation-only",
+            "hoursToFirstRediscovery": None,
+            "benchmarks": [],
+        }
+    best = min(measured, key=lambda item: item["hoursToFirstRediscovery"])
+    return {
+        "status": "measured",
+        "profileLaneClaims": "empirically-measured-on-frozen-local-corpus",
+        "hoursToFirstRediscovery": best["hoursToFirstRediscovery"],
+        "recall": best["recall"],
+        "benchmarks": measured,
+    }
+
+
 def task_markdown(lane: dict[str, Any], campaign: dict[str, Any]) -> str:
     deliverables = "\n".join(f"- {item}" for item in lane["deliverables"])
     definitions = approach_family_definitions()
@@ -1265,6 +1699,16 @@ def task_markdown(lane: dict[str, Any], campaign: dict[str, Any]) -> str:
 - Profile: {campaign.get('profile', 'critical-rce')}
 - Wave: {lane['wave']}
 
+## Search-efficacy status
+
+- Status: `{campaign.get('_rediscoveryMeasurement', {}).get('status', 'unmeasured')}`
+- Profile-lane claim: `{campaign.get('_rediscoveryMeasurement', {}).get('profileLaneClaims', 'documentation-only')}`
+- Hours to first rediscovery: `{campaign.get('_rediscoveryMeasurement', {}).get('hoursToFirstRediscovery')}`
+
+An unmeasured lane is an experiment, not evidence that the methodology works.
+Measure it with `scripts/rediscovery_benchmark.py` against target-owned tests or
+invariants on a frozen local corpus before making efficacy claims.
+
 Read `AUTHORIZATION.md` and `KRINEON_CAMPAIGN.json` before taking any dynamic action.
 Stay within the recorded environment and stop conditions.
 Read `KRINEON_REFERENCES/critical-rce.md` before discovery or chain construction.
@@ -1273,15 +1717,21 @@ assuming a library boundary ends the chain. Pinned dependency worktrees, when
 present, are under `KRINEON_THIRD_PARTY/`.
 {"Read `KRINEON_REFERENCES/chrome-v8.md` and `KRINEON_REFERENCES/chrome-v8-agent.md` before starting." if campaign.get('profile') == 'chrome-v8' else ""}
 
-## Critical/RCE mission
+## Critical/RCE mission and internal search objective
 
-Build only a complete Critical/RCE chain from first-principles analysis of the
-pinned source and its exact-revision runtime behavior. Do not use changelogs,
+Search for and retain unique minimized stacks, target-invariant breaks, and
+verified primitives from first-principles analysis of the pinned source and
+its exact-revision runtime behavior. Advance each retained lead with the
+smallest useful next experiment. A complete Critical/RCE chain is required for
+filing, not for completing this research task. Do not invent missing links.
+Do not use changelogs,
 advisories, git history or blame, historical commits, patched-version
 comparisons, or an internet-based patch diff to locate vulnerabilities. Work
 from public ingress toward a privileged sink, and from execution/native sinks
 back toward attacker-controlled input. A crash, assertion, denial of service,
-isolated primitive, or lower-severity issue is a chain link, not a finding.
+isolated primitive, or lower-severity issue is a research lead, not a fileable
+finding. Read checked-in tests, assertions, fuzz targets, fixtures, and
+invariant comments from the pinned target as local oracles.
 Development servers, development builds, hot-reload paths, test or fixture
 servers, preview-only runtimes, and debug-only paths are also lead-generation
 environments, not findings. The primary terminal must survive a supported
@@ -1546,11 +1996,14 @@ def cmd_plan(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown lanes: {', '.join(sorted(unknown))}")
 
     included = [lane for lane in lanes if not selected or lane["id"] in selected]
+    measurement = rediscovery_measurement(root)
+    task_campaign = dict(campaign)
+    task_campaign["_rediscoveryMeasurement"] = measurement
     included_ids = {lane["id"] for lane in included}
     planned: list[dict[str, Any]] = []
     for lane in included:
         path = root / "tasks" / f"wave-{lane['wave']}-{lane['id']}.md"
-        path.write_text(task_markdown(lane, campaign), encoding="utf-8")
+        path.write_text(task_markdown(lane, task_campaign), encoding="utf-8")
         planned.append(
             {
                 "taskId": lane["id"],
@@ -1588,6 +2041,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "mission": "critical-rce-chain",
             "discoveryPolicy": campaign.get("discoveryPolicy", {}),
             "schedulingPolicy": profile.get("schedulingPolicy", {}),
+            "rediscoveryMeasurement": measurement,
             "generatedAt": utc_now(),
             "maxConcurrency": args.max_concurrency,
             "defaultLeaseSeconds": args.lease_seconds,
@@ -1710,6 +2164,24 @@ def cmd_worker_register(args: argparse.Namespace) -> int:
             existing = connection.execute(
                 "SELECT agent FROM workers WHERE worker_id=?", (args.worker_id,)
             ).fetchone()
+            active = connection.execute(
+                "SELECT COUNT(*) AS count FROM workers WHERE status='active'"
+            ).fetchone()["count"]
+            gate_path = root / "evidence" / "coordinator-gate.json"
+            gate = read_json(gate_path) if gate_path.is_file() else {}
+            if (
+                existing is None
+                and int(active) >= 1
+                and not (
+                    gate.get("producer") == "krineon-coordinator-gate"
+                    and gate.get("status") == "passed"
+                    and gate.get("lyingWorkerRejected") is True
+                )
+            ):
+                raise SystemExit(
+                    "additional workers are disabled until gate-self-test proves that "
+                    "coordinator re-execution rejects a lying worker"
+                )
             if existing is not None and existing["agent"] != args.agent:
                 raise SystemExit(
                     "worker agent identity is immutable; register a new worker ID instead"
@@ -1730,6 +2202,111 @@ def cmd_worker_register(args: argparse.Namespace) -> int:
         return 0
     finally:
         connection.close()
+
+
+def cmd_gate_self_test(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    campaign = require_campaign(root)
+    authorization = campaign.get("authorization")
+    if not isinstance(authorization, dict) or authorization.get("confirmed") is not True:
+        raise SystemExit("gate-self-test requires confirmed local authorization")
+    directory = root / "evidence" / "coordinator-gate"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "always-negative.py"
+    target.write_text(
+        "#!/usr/bin/env python3\nprint('negative-only')\n", encoding="utf-8"
+    )
+    target_relative = target.relative_to(root).as_posix()
+    frozen = campaign.get("frozenTargetArtifacts")
+    if not isinstance(frozen, list):
+        frozen = []
+    frozen = [
+        value
+        for value in frozen
+        if not isinstance(value, dict) or value.get("path") != target_relative
+    ]
+    frozen.append(
+        {
+            "path": target_relative,
+            "sha256": sha256(target),
+            "producer": "krineon-gate-self-test",
+        }
+    )
+    campaign["frozenTargetArtifacts"] = frozen
+    write_json(root / "campaign.json", campaign)
+    task_id = "coordinator-gate-self-test"
+    recipe = directory / "lying-worker-recipe.json"
+    recipe.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "findingId": task_id,
+                "targetArtifacts": [target_relative],
+                "cases": [
+                    {
+                        "name": "baseline",
+                        "command": [sys.executable, target_relative],
+                        "assertions": [
+                            {"id": "baseline", "kind": "stdout-not-contains-challenge"}
+                        ],
+                    },
+                    {
+                        "name": "negative",
+                        "command": [sys.executable, target_relative],
+                        "assertions": [
+                            {"id": "negative", "kind": "stdout-not-contains-challenge"}
+                        ],
+                    },
+                    {
+                        "name": "positive",
+                        "command": [sys.executable, target_relative],
+                        "assertions": [
+                            {"id": "claimed-positive", "kind": "stdout-contains-challenge"}
+                        ],
+                    },
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_result = {
+        "taskResult": {
+            "coordinatorReplay": {
+                "recipe": recipe.relative_to(root).as_posix(),
+                "repetitions": 1,
+            }
+        }
+    }
+    rejected = False
+    diagnostic = ""
+    try:
+        coordinator_reexecute_result(root, fake_result, task_id, [])
+    except SystemExit as error:
+        diagnostic = str(error)
+        rejected = "coordinator re-execution rejected" in diagnostic
+    if not rejected:
+        raise SystemExit(
+            "coordinator gate self-test failed to reject the false positive claim: "
+            + diagnostic
+        )
+    record = {
+        "schemaVersion": 1,
+        "producer": "krineon-coordinator-gate",
+        "status": "passed",
+        "testedAt": utc_now(),
+        "lyingWorkerRejected": True,
+        "target": {"path": target_relative, "sha256": sha256(target)},
+        "recipe": {
+            "path": recipe.relative_to(root).as_posix(),
+            "sha256": sha256(recipe),
+        },
+        "diagnostic": diagnostic,
+    }
+    write_json(root / "evidence" / "coordinator-gate.json", record)
+    print("coordinator gate: passed; false worker claim was rejected by re-execution")
+    return 0
 
 
 def cmd_worker_stop(args: argparse.Namespace) -> int:
@@ -2155,6 +2732,250 @@ def insert_dynamic_task(
     set_task_approach_families(connection, task_id, approach_families)
 
 
+def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, str]:
+    state_rank = 1 if str(row["state"]) == "disproved" else 0
+    grade_rank = LEAD_GRADE_ORDER.get(str(row["evidence_grade"]), 99)
+    return (state_rank, grade_rank, str(row["lead_id"]))
+
+
+def ingest_research_leads(
+    root: Path,
+    connection: sqlite3.Connection,
+    *,
+    task: sqlite3.Row,
+    worker_id: str,
+    leads: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    retained: list[dict[str, Any]] = []
+    for lead in leads:
+        identity = str(lead["semanticIdentity"])
+        deterministic_id = "L" + hashlib.sha256(identity.encode()).hexdigest()[:15]
+        now = utc_now()
+        prior = connection.execute(
+            "SELECT * FROM research_leads WHERE semantic_identity=?", (identity,)
+        ).fetchone()
+        if prior is None:
+            payload = dict(lead)
+            payload["originTasks"] = [str(task["task_id"])]
+            payload["originWorkers"] = [worker_id]
+            payload["scheduledExperimentDigests"] = []
+            connection.execute(
+                "INSERT INTO research_leads(lead_id,semantic_identity,kind,evidence_grade,state,"
+                "title,payload_json,first_task_id,first_worker_id,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    deterministic_id,
+                    identity,
+                    lead["kind"],
+                    lead["evidenceGrade"],
+                    lead["status"],
+                    lead["title"],
+                    json.dumps(payload, sort_keys=True),
+                    str(task["task_id"]),
+                    worker_id,
+                    now,
+                    now,
+                ),
+            )
+            lead_id = deterministic_id
+            created = True
+        else:
+            lead_id = str(prior["lead_id"])
+            payload = json.loads(prior["payload_json"])
+            payload["originTasks"] = sorted(
+                set(payload.get("originTasks", [])) | {str(task["task_id"])}
+            )
+            payload["originWorkers"] = sorted(
+                set(payload.get("originWorkers", [])) | {worker_id}
+            )
+            payload["evidence"] = sorted(
+                set(payload.get("evidence", [])) | set(lead.get("evidence", []))
+            )
+            payload["sourceReferences"] = sorted(
+                set(payload.get("sourceReferences", []))
+                | set(lead.get("sourceReferences", []))
+            )
+            prior_grade = str(prior["evidence_grade"])
+            new_grade = str(lead["evidenceGrade"])
+            if LEAD_GRADE_ORDER.get(new_grade, 99) < LEAD_GRADE_ORDER.get(prior_grade, 99):
+                payload.update(lead)
+                grade = new_grade
+            else:
+                grade = prior_grade
+                payload["nextExperiment"] = lead["nextExperiment"]
+                payload["status"] = lead["status"]
+            connection.execute(
+                "UPDATE research_leads SET evidence_grade=?,state=?,title=?,payload_json=?,"
+                "updated_at=? WHERE lead_id=?",
+                (
+                    grade,
+                    lead["status"],
+                    lead["title"],
+                    json.dumps(payload, sort_keys=True),
+                    now,
+                    lead_id,
+                ),
+            )
+            created = False
+        connection.execute(
+            "INSERT OR IGNORE INTO task_research_leads(task_id,lead_id,relationship) "
+            "VALUES(?,?,'observed')",
+            (str(task["task_id"]), lead_id),
+        )
+
+        scheduled_task: str | None = None
+        experiment_digest = canonical_digest(
+            {
+                "lead": lead_id,
+                "experiment": lead["nextExperiment"],
+                "grade": lead["evidenceGrade"],
+            }
+        )
+        row = connection.execute(
+            "SELECT payload_json,state FROM research_leads WHERE lead_id=?", (lead_id,)
+        ).fetchone()
+        payload = json.loads(row["payload_json"])
+        scheduled = list(payload.get("scheduledExperimentDigests", []))
+        if row["state"] != "disproved" and experiment_digest not in scheduled:
+            suffix = len(scheduled) + 1
+            scheduled_task = f"lead-{lead_id.lower()}-{suffix}"
+            packet = root / "tasks" / f"dynamic-{scheduled_task}.md"
+            packet.write_text(
+                f"""# Research-lead experiment: {lead_id}
+
+## Retained observation
+
+- Kind: `{lead['kind']}`
+- Evidence grade: `{lead['evidenceGrade']}`
+- Semantic identity: `{identity}`
+- Title: {lead['title']}
+
+## Next experiment
+
+{lead['nextExperiment']}
+
+## Success contract
+
+Confirm or falsify this one observation, minimize it further, improve its
+evidence grade, or connect one adjacent predecessor/successor link. A complete
+RCE chain is **not** required to complete this task. Never invent missing chain
+links to unlock later work. Return another `taskResult.researchLeads` entry when
+the observation survives or materially changes; mark it disproved when a
+control falsifies it.
+
+Checked-in tests, assertions, comments that state invariants, and test fixtures
+from the pinned target revision are valid local oracles. Do not inspect patch
+history, security commits, advisories, or other revisions to locate a bug.
+""",
+                encoding="utf-8",
+            )
+            insert_dynamic_task(
+                connection,
+                task_id=scheduled_task,
+                wave=max(1, int(task["wave"])),
+                lane="research-lead-validation",
+                title=f"Validate {lead_id}: {lead['title']}",
+                packet=packet.relative_to(root).as_posix(),
+                priority=1600 - LEAD_GRADE_ORDER.get(str(lead["evidenceGrade"]), 99),
+                dependencies=[],
+                excluded_workers=[],
+                max_attempts=2,
+                timeout_seconds=int(task["timeout_seconds"]),
+                approach_families=list(lead["approachFamilies"]),
+                task_kind="research-lead-validation",
+            )
+            connection.execute(
+                "UPDATE tasks SET lead_id=? WHERE task_id=?", (lead_id, scheduled_task)
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO task_research_leads(task_id,lead_id,relationship) "
+                "VALUES(?,?,'validates')",
+                (scheduled_task, lead_id),
+            )
+            scheduled.append(experiment_digest)
+            payload["scheduledExperimentDigests"] = scheduled
+            connection.execute(
+                "UPDATE research_leads SET payload_json=?,updated_at=? WHERE lead_id=?",
+                (json.dumps(payload, sort_keys=True), now, lead_id),
+            )
+        record_event(
+            connection,
+            "research-lead-ingested",
+            task_id=str(task["task_id"]),
+            worker_id=worker_id,
+            payload={
+                "leadId": lead_id,
+                "semanticIdentity": identity,
+                "kind": lead["kind"],
+                "evidenceGrade": lead["evidenceGrade"],
+                "created": created,
+                "scheduledTask": scheduled_task,
+            },
+        )
+        retained.append(
+            {
+                "leadId": lead_id,
+                "created": created,
+                "evidenceGrade": lead["evidenceGrade"],
+                "scheduledTask": scheduled_task,
+            }
+        )
+    return retained
+
+
+def cmd_lead_status(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        rows = sorted(
+            connection.execute("SELECT * FROM research_leads").fetchall(),
+            key=lead_rank_key,
+        )
+        leads = []
+        for rank, row in enumerate(rows, start=1):
+            payload = json.loads(row["payload_json"])
+            leads.append(
+                {
+                    "rank": rank,
+                    "leadId": row["lead_id"],
+                    "kind": row["kind"],
+                    "evidenceGrade": row["evidence_grade"],
+                    "state": row["state"],
+                    "title": row["title"],
+                    "semanticIdentity": row["semantic_identity"],
+                    "nextExperiment": payload.get("nextExperiment"),
+                    "originTasks": payload.get("originTasks", []),
+                }
+            )
+        result = {
+            "rankingBasis": [
+                "active before disproved",
+                "verified primitive",
+                "runtime-reproduced invariant break",
+                "unique minimized stack cluster",
+                "source-confirmed invariant break",
+                "stable semantic identity breaks equal-grade ties",
+            ],
+            "impactClaimed": False,
+            "leads": leads,
+        }
+        if args.json:
+            print(json.dumps(result, indent=2))
+        elif not leads:
+            print("no retained research leads")
+        else:
+            print(f"{'RANK':>4} {'LEAD':<18} {'GRADE':<20} {'STATE':<10} TITLE")
+            print("-" * 100)
+            for lead in leads:
+                print(
+                    f"{lead['rank']:>4} {lead['leadId']:<18} "
+                    f"{lead['evidenceGrade']:<20} {lead['state']:<10} {lead['title']}"
+                )
+        return 0
+    finally:
+        connection.close()
+
+
 def cmd_task_add(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     require_campaign(root)
@@ -2191,13 +3012,16 @@ alternative routes, and cheapest discriminator. Submit structured evidence;
 do not stop at a prose statement that the lane is blocked. Self-resolvable
 technical blockers automatically become fresh-agent breakout tasks.
 
-## Critical/RCE discovery policy
+## Search and filing policy
 
-Pursue only missing links in a complete Critical/RCE chain. Analyze the pinned
-source and exact-revision runtime from first principles. Do not use changelogs,
+Preserve unique stack clusters, invariant violations, and verified primitives
+even before they compose into Critical/RCE. Analyze the pinned source and
+exact-revision runtime from first principles. A complete chain is the report
+bar, not the queue-admission bar. Do not use changelogs,
 advisories, Git history or blame, historical commits, patched-version
 comparisons, or internet-derived patch diffs. Do not promote crash-only, DoS,
-or lower-severity outcomes.
+or lower-severity outcomes as reports. Target-owned tests and invariants in the
+pinned revision are permitted and encouraged local oracles.
 
 ## Evidence contract
 
@@ -3096,6 +3920,61 @@ def update_finding_from_submission(
             raise SystemExit("replay result originator does not match finding record")
         if replay_record.get("reviewer") != worker_id:
             raise SystemExit("replay result reviewer does not match submitting worker")
+        attestation_reference = replay_record.get("attestation")
+        if not isinstance(attestation_reference, dict):
+            raise SystemExit("independent replay requires a machine attestation")
+        try:
+            attestation_path = safe_campaign_path(root, attestation_reference.get("path"))
+        except ValueError as error:
+            raise SystemExit(f"independent replay attestation path is invalid: {error}") from error
+        attestation_result = validate_attestation(
+            root,
+            attestation_path,
+            expected_finding_id=finding_id,
+            expected_worker_id=worker_id,
+            expected_role="reviewer",
+        )
+        if attestation_reference.get("sha256") != attestation_result.get(
+            "attestationSha256"
+        ):
+            attestation_result["errors"].append("attestation reference hash mismatch")
+            attestation_result["passed"] = False
+        if not attestation_result["passed"]:
+            raise SystemExit(
+                "independent replay machine attestation failed: "
+                + ", ".join(attestation_result["errors"])
+            )
+        proof_contract = finding_origin_attestation_contract(root, finding)
+        if proof_contract is None:
+            raise SystemExit(
+                "independent replay requires a passing originator attestation in the path proof"
+            )
+        if (
+            attestation_result["record"]["recipe"]["sha256"]
+            != proof_contract["recipeSha256"]
+        ):
+            raise SystemExit("independent replay recipe differs from the path proof")
+        if attestation_result["targetHashes"] != proof_contract["targetHashes"]:
+            raise SystemExit("independent replay targets differ from the path proof")
+        if set(attestation_result["challengeHashes"]) & set(
+            proof_contract["challengeHashes"]
+        ):
+            raise SystemExit("independent replay reused the originator's challenge")
+        if set(attestation_result["processIds"]) & set(proof_contract["processIds"]):
+            raise SystemExit("independent replay reused the originator's process identity")
+        for prior in finding.get("independentReplays", []):
+            if not isinstance(prior, dict) or prior.get("passed") is not True:
+                continue
+            if set(prior.get("challengeHashes", [])) & set(
+                attestation_result["challengeHashes"]
+            ):
+                raise SystemExit("independent replay reused an earlier challenge")
+            if set(prior.get("processIds", [])) & set(attestation_result["processIds"]):
+                raise SystemExit("independent replay reused an earlier process identity")
+            if prior.get("recipeSha256") != attestation_result["record"]["recipe"]["sha256"]:
+                raise SystemExit("independent replay did not execute the same recipe")
+            if prior.get("targetHashes") != attestation_result["targetHashes"]:
+                raise SystemExit("independent replay did not execute the same target artifacts")
         record = {
             "taskId": task_id,
             "originator": originator,
@@ -3106,6 +3985,13 @@ def update_finding_from_submission(
             "sha256": digest,
             "submittedAt": utc_now(),
             "passed": True,
+            "attestation": attestation_path.relative_to(root).as_posix(),
+            "attestationSha256": attestation_result["attestationSha256"],
+            "attestationRunId": attestation_result["record"]["runId"],
+            "recipeSha256": attestation_result["record"]["recipe"]["sha256"],
+            "targetHashes": attestation_result["targetHashes"],
+            "challengeHashes": attestation_result["challengeHashes"],
+            "processIds": attestation_result["processIds"],
         }
         replays = finding.setdefault("independentReplays", [])
         if not any(item.get("sha256") == digest for item in replays):
@@ -3191,8 +4077,12 @@ def cmd_submit(args: argparse.Namespace) -> int:
         if args.finding_id and replay_of and args.finding_id != replay_of:
             raise SystemExit("--finding-id and --replay-of must not conflict")
         finding_id = replay_of or args.finding_id
+        validated_leads: list[dict[str, Any]] = []
+        coordinator_replay: dict[str, Any] | None = None
         if args.outcome == "completed":
-            validate_completed_result(result, str(task["task_id"]))
+            validated_leads = validate_completed_result(
+                root, result, str(task["task_id"])
+            )
             if task["task_kind"] == "route-development":
                 validate_route_development_result(
                     result, str(task["route_id"]), int(task["research_round"])
@@ -3226,6 +4116,9 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 "v8-finding-scoped-replay-scheduler",
             }:
                 validate_replay_scheduler_result(root, result)
+            coordinator_replay = coordinator_reexecute_result(
+                root, result, str(task["task_id"]), validated_leads
+            )
         result_dir = root / "results" / task["task_id"]
         result_dir.mkdir(parents=True, exist_ok=True)
         result_name = f"attempt-{task['attempt']}-{digest[:16]}.json"
@@ -3247,6 +4140,17 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 result,
                 replay=bool(replay_of),
             )
+        ingested_leads = (
+            ingest_research_leads(
+                root,
+                connection,
+                task=task,
+                worker_id=args.worker_id,
+                leads=validated_leads,
+            )
+            if args.outcome == "completed" and validated_leads
+            else []
+        )
         next_state = {
             "completed": "completed",
             "failed": "failed",
@@ -3306,6 +4210,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 "automaticUnblockTask": automatic_unblock,
                 "intermediateChainTask": intermediate_chain_task,
                 "nextRoundPlanningTask": next_round_planning_task,
+                "researchLeads": ingested_leads,
+                "coordinatorReplay": coordinator_replay,
             },
         )
         if task["unblocks_task_id"] and args.outcome == "completed":
@@ -3340,6 +4246,11 @@ def cmd_submit(args: argparse.Namespace) -> int:
             print(f"scheduled intermediate-bug chain task: {intermediate_chain_task}")
         if next_round_planning_task:
             print(f"scheduled next-round planning task: {next_round_planning_task}")
+        for lead in ingested_leads:
+            print(
+                f"retained research lead {lead['leadId']} ({lead['evidenceGrade']}); "
+                f"next task: {lead['scheduledTask'] or 'none'}"
+            )
         return 0
     except Exception:
         connection.rollback()
@@ -3402,11 +4313,13 @@ Assigned reviewer must be a different registered agent identity, not an alias
 of the originating runtime.
 
 Reproduce from the pinned campaign revision without using private originator
-state. Preserve the baseline, negative, and positive controls, raw evidence,
-environment metadata, hashes, reliability, and cleanup. Submit a JSON result
-whose `independentReplay` object contains `findingId`, `originator`, `reviewer`,
-and `passed: true` only after a clean replay, alongside the completed-task
-result contract copied into the workspace.
+state. Run the retained recipe through `scripts/reality_runner.py` as this
+reviewer so baseline, negative, and positive controls execute in distinct fresh
+processes with new harness-generated challenges. Submit a JSON result whose
+`independentReplay` object contains `findingId`, `originator`, `reviewer`,
+`passed: true`, and the machine attestation path plus SHA-256. Prose, copied
+originator output, screenshots, or `passed: true` without a recomputable
+attestation are rejected.
 
 Replay the source-derived Critical/RCE chain as submitted. Do not mine
 changelogs, advisories, Git history, patched versions, or internet patch diffs
@@ -3749,11 +4662,57 @@ def finding_path(root: Path, finding_id: str) -> Path:
     return path
 
 
+def finding_origin_attestation_contract(
+    root: Path, finding: dict[str, Any]
+) -> dict[str, Any] | None:
+    finding_id = str(finding.get("id") or "").strip()
+    originator = str(finding.get("originator") or "").strip()
+    path_proof = finding.get("pathProof")
+    if not finding_id or not originator or not isinstance(path_proof, dict):
+        return None
+    expected = f"evidence/path-proofs/{finding_id}.json"
+    if path_proof.get("path") != expected:
+        return None
+    proof_path = root / expected
+    if not proof_path.is_file():
+        return None
+    try:
+        proof = read_json(proof_path)
+        review = proof.get("review") if isinstance(proof.get("review"), dict) else {}
+        reference = review.get("originatorAttestation")
+        if not isinstance(reference, dict):
+            return None
+        attestation_path = safe_campaign_path(root, reference.get("path"))
+        result = validate_attestation(
+            root,
+            attestation_path,
+            expected_finding_id=finding_id,
+            expected_worker_id=originator,
+            expected_role="originator",
+        )
+        if (
+            not result["passed"]
+            or reference.get("sha256") != result.get("attestationSha256")
+        ):
+            return None
+        return {
+            "recipeSha256": result["record"]["recipe"]["sha256"],
+            "targetHashes": result["targetHashes"],
+            "challengeHashes": result["challengeHashes"],
+            "processIds": result["processIds"],
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
     originator = str(finding.get("originator") or "").strip()
     finding_id = str(finding.get("id") or "").strip()
     replays = finding.get("independentReplays")
     if not originator or not finding_id or not isinstance(replays, list):
+        return False
+    proof_contract = finding_origin_attestation_contract(root, finding)
+    if proof_contract is None:
         return False
     database = orchestration_path(root)
     if not database.is_file():
@@ -3766,6 +4725,8 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
         if originator_worker is None:
             return False
         verified_reviewer_agents: set[str] = set()
+        seen_challenges = set(proof_contract["challengeHashes"])
+        seen_processes = set(proof_contract["processIds"])
         for replay in replays:
             if not isinstance(replay, dict) or replay.get("passed") is not True:
                 continue
@@ -3777,6 +4738,37 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
                 continue
             result_path = root / result_name
             if not result_path.is_file() or sha256(result_path) != digest:
+                continue
+            attestation_name = str(replay.get("attestation") or "").strip()
+            if not attestation_name:
+                continue
+            try:
+                attestation_path = safe_campaign_path(root, attestation_name)
+            except ValueError:
+                continue
+            attestation_result = validate_attestation(
+                root,
+                attestation_path,
+                expected_finding_id=finding_id,
+                expected_worker_id=reviewer,
+                expected_role="reviewer",
+            )
+            if (
+                not attestation_result["passed"]
+                or replay.get("attestationSha256")
+                != attestation_result.get("attestationSha256")
+                or replay.get("recipeSha256")
+                != attestation_result["record"].get("recipe", {}).get("sha256")
+                or replay.get("targetHashes") != attestation_result.get("targetHashes")
+                or replay.get("challengeHashes") != attestation_result.get("challengeHashes")
+                or replay.get("processIds") != attestation_result.get("processIds")
+                or replay.get("recipeSha256") != proof_contract["recipeSha256"]
+                or replay.get("targetHashes") != proof_contract["targetHashes"]
+            ):
+                continue
+            if seen_challenges & set(attestation_result["challengeHashes"]):
+                continue
+            if seen_processes & set(attestation_result["processIds"]):
                 continue
             task = connection.execute(
                 "SELECT * FROM tasks WHERE task_id=?", (task_id,)
@@ -3810,8 +4802,14 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
                 and payload.get("originator") == originator
                 and payload.get("reviewer") == reviewer
                 and payload.get("passed") is True
+                and isinstance(payload.get("attestation"), dict)
+                and payload["attestation"].get("path") == attestation_name
+                and payload["attestation"].get("sha256")
+                == attestation_result.get("attestationSha256")
             ):
                 verified_reviewer_agents.add(str(worker["agent"]))
+                seen_challenges.update(attestation_result["challengeHashes"])
+                seen_processes.update(attestation_result["processIds"])
         return len(verified_reviewer_agents) >= 2
     finally:
         connection.close()
@@ -4093,6 +5091,10 @@ def gate_result(
                     missing_fields.append(f"dynamicTriage.indexMismatch:{crash_id}")
                 if assessment.get("machinePromotionEligible") is not False:
                     missing_fields.append(f"dynamicTriage.unsafeMachinePromotion:{crash_id}")
+                if recommendation == "requires-primitive-verification":
+                    missing_fields.append(
+                        f"dynamicTriage.unverifiedPrimitive:{crash_id}"
+                    )
                 if recommendation == "reject-crash-only" and not str(
                     dynamic_triage.get("overrideReason") or ""
                 ).strip():
@@ -4256,7 +5258,15 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def iter_artifacts(root: Path) -> Iterable[Path]:
-    for dirname in ("evidence", "findings", "reports", "results", "dynamic", "chrome-v8"):
+    for dirname in (
+        "evidence",
+        "findings",
+        "reports",
+        "results",
+        "dynamic",
+        "chrome-v8",
+        "benchmarks",
+    ):
         base = root / dirname
         if not base.exists():
             continue
@@ -4437,6 +5447,13 @@ def build_parser() -> argparse.ArgumentParser:
     queue.add_argument("campaign_dir")
     queue.set_defaults(func=cmd_queue)
 
+    gate_self_test = sub.add_parser(
+        "gate-self-test",
+        help="prove coordinator re-execution rejects a false worker claim before scale-out",
+    )
+    gate_self_test.add_argument("campaign_dir")
+    gate_self_test.set_defaults(func=cmd_gate_self_test)
+
     worker_register = sub.add_parser("worker-register", help="register or reactivate a worker identity")
     worker_register.add_argument("campaign_dir")
     worker_register.add_argument("worker_id", type=validate_identity)
@@ -4573,6 +5590,14 @@ def build_parser() -> argparse.ArgumentParser:
     approach_status.add_argument("campaign_dir")
     approach_status.add_argument("--json", action="store_true")
     approach_status.set_defaults(func=cmd_approach_status)
+
+    lead_status = sub.add_parser(
+        "lead-status",
+        help="rank unique minimized stacks, invariant breaks, and verified primitives",
+    )
+    lead_status.add_argument("campaign_dir")
+    lead_status.add_argument("--json", action="store_true")
+    lead_status.set_defaults(func=cmd_lead_status)
 
     register = sub.add_parser("register", help="register a stable candidate ID")
     register.add_argument("campaign_dir")

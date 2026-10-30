@@ -1,23 +1,27 @@
 {
   "schemaVersion": 1,
   "name": "chrome-v8",
-  "description": "Authorized Chrome and V8 source research using local d8 builds, structured fuzzing, sanitizer replay, and sandbox-enabled Chromium validation.",
+  "description": "Authorized Chrome and V8 source research that retains unique minimized stacks and invariant breaks internally while reserving filing for complete Critical/RCE chains.",
   "schedulingPolicy": {
     "allocation": "dynamic-evidence-driven",
     "capacity": "runtime-advertised",
     "fixedWorkersPerLane": false,
     "allowRuntimeExpansion": true,
     "preferFourOrMoreWorkersWhenAvailable": true,
+    "scaleOutGate": "coordinator-reexecution-liar-test",
     "approachFamilyBalancing": "active-load-then-coverage-before-priority",
     "allowPromiseBasedDominance": false,
-    "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link"
+    "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link",
+    "internalObjective": "lexicographically rank active verified primitives, runtime invariant breaks, unique minimized stack clusters, and source invariant breaks",
+    "filingObjective": "complete independently replayed Critical/RCE chain only",
+    "partialEvidenceAdvancesQueue": true
   },
   "lanes": [
     {
       "wave": 0,
       "id": "chrome-v8-setup",
       "title": "Chrome/V8 revision, build, and safety coordinator",
-      "objective": "Pin the V8 and Chromium revisions, record authorization, create the release/ASan/debug/full-Chromium build matrix, hash every load-bearing artifact, and prohibit testing against third-party browsing sessions or data.",
+      "objective": "Pin the V8 and Chromium revisions, record authorization, freeze one component with verified ASan/UBSan instrumentation, create the release/ASan/debug/full-Chromium build matrix, hash every load-bearing artifact, run the coordinator lie-gate before registering a second worker, inventory checked-in target tests and assertions as current-revision oracles, and prohibit testing against third-party browsing sessions or data. Do not mine patch history or other revisions.",
       "deliverables": [
         "completed Chrome/V8 build matrix",
         "exact V8 and Chromium commits",
@@ -29,12 +33,12 @@
     {
       "wave": 1,
       "id": "v8-static-analysis-lead-generation",
-      "title": "Executable V8 static-analysis lead generator",
-      "objective": "Run scripts/static_analysis_pipeline.py against the pinned V8 checkout with every available relevant analyzer. Execute the bundled Joern reachability and missing-validation queries, produce a Tree-sitter syntax census, retain Trailmark entrypoints, and derive explicit Z3 specs from implementation constraints. Ingest normalized results into durable static-lead-validation tasks with commit, command, tool-output, and artifact provenance. Analyzer output is a hypothesis, never exploit evidence.",
+      "title": "Executable V8 differential-witness lead generator",
+      "objective": "Use the pinned V8 source and optional structural tools to nominate incompatible consumers, but queue no syntax census or CPG name hit. Run two exact consumers or tiers on the same hashed JavaScript, Wasm, or protocol input through scripts/differential_witness.py, require an equal control and a recorded disagreement, and ingest only the executed witness. Bind any Z3 model to exact pinned-source expressions and feed its concrete output into both consumers.",
       "deliverables": [
         "retained tools/static run record with command, stdout, stderr, and status for every selected analyzer",
-        "CPG query and syntax-census artifacts for engine and embedder boundaries",
-        "concrete Z3 payloads for source-derived numeric or representation constraints",
+        "same-input differential records for engine tiers or producer/consumer boundaries",
+        "concrete Z3 payloads with verified source binding and explicit extraction provenance",
         "idempotent provenance-bound validation tasks in tools/static-leads.json and orchestration.db"
       ],
       "priority": 90,
@@ -163,11 +167,11 @@
       "wave": 2,
       "id": "v8-crash-triage",
       "title": "Crash deduplication, minimization, and security triage",
-      "objective": "Run the operational crash triager to classify the first fault, access direction, PC evidence, and lifetime or bounds class; cluster normalized stacks across corpus growth; score controllability with explicit limitations; minimize without changing the failure class; replay across ASan/debug/release builds; and distinguish assertion-only, crash-only, and resource-exhaustion failures. Attach reviewed machine verdicts to any candidate evidence gate without treating the score as exploit proof.",
+      "objective": "Run the operational crash triager to classify the first fault, access direction, and lifetime or bounds class; cluster normalized stacks across corpus growth; minimize without changing the failure class; replay across ASan/debug/release builds; and distinguish assertion-only, crash-only, and resource-exhaustion failures. Never infer control from the fault class. For a claimed primitive, run harness-generated chosen values through fresh baseline, negative, and positive processes and prove exact bytes or PC, allocation generation identity where applicable, and measured stability.",
       "deliverables": [
         "minimized JavaScript or Wasm testcase",
         "symbolized first-fault evidence and normalized stack-cluster ID",
-        "controllability score, automated exploitability verdict, and reviewer interpretation",
+        "verified or explicitly unverified control-evidence record and reviewer interpretation",
         "build-by-build truth table",
         "security relevance and flakiness classification"
       ],
@@ -231,7 +235,7 @@
       "wave": 4,
       "id": "v8-root-synthesis",
       "title": "Chrome/V8 root-cause synthesis and disclosure package",
-      "objective": "Package only a complete engine-to-bounded-execution chain or a program-defined Critical browser boundary with concrete impact. Require a passing linked path proof whose ordered steps, complete branch inventory, attacker mechanisms, retained evidence, contradiction checks, empty assumptions list, and independent registered reviewer are revalidated by the candidate gate. If the result remains a crash or partial primitive, retain it as blocked rather than produce a lower-severity report.",
+      "objective": "Package only a complete engine-to-bounded-execution chain or a program-defined Critical browser boundary with concrete impact. Require a passing linked path proof whose steps and complete branch inventory are bound to assertions recomputed from raw process output, whose source and targets are hashed, and whose independent reviewer reran the same recipe with new challenges and fresh processes. If the result remains a crash or partial primitive, retain it as blocked rather than produce a lower-severity report.",
       "deliverables": [
         "root-cause-first report",
         "minimal safe reproducer",

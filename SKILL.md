@@ -6,10 +6,13 @@ description: Run authorized, aggressive multi-agent source audits that build com
 # Krineon Security Research
 
 Run an evidence-driven campaign against code and systems the user is authorized
-to test. Krineon has one objective: derive a complete Critical/RCE chain from
-the pinned code, prove every link, and reproduce a bounded real terminal. A
-crash, primitive, lower-severity bug, or denial of service is retained only as
-a possible link; Krineon does not package it as a finding. Read
+to test. Krineon's **filing objective** is a complete Critical/RCE chain from
+the pinned code with every link proved and a bounded real terminal. Its
+**internal search objective** is different: retain, deduplicate, rank, and
+advance unique minimized stacks, violated target invariants, and verified
+primitives even when no complete chain exists. A partial result is a research
+lead, not a finding, and no worker must invent missing links to unlock later
+work. Krineon does not package lower-impact leads as reports. Read
 [references/critical-rce.md](references/critical-rce.md) for the promotion bar.
 
 ## Start from program rules
@@ -63,58 +66,96 @@ python3 scripts/research_harness.py plan CAMPAIGN_DIR \
   --max-concurrency auto --lease-seconds 900 --task-timeout-seconds 7200
 python3 scripts/research_harness.py queue CAMPAIGN_DIR
 python3 scripts/tool_probe.py --output CAMPAIGN_DIR/tools/tool-probe.json
+python3 scripts/component_freeze.py COMPONENT.json CAMPAIGN_DIR/frozen/COMPONENT
+python3 scripts/research_harness.py gate-self-test CAMPAIGN_DIR
 python3 scripts/static_analysis_pipeline.py run CAMPAIGN_DIR \
-  --language TARGET_LANGUAGE --ingest
+  --tool differential --differential-spec PAIR.json --ingest
+python3 scripts/framework_adapter.py CAMPAIGN_DIR ADAPTER.json \
+  CAMPAIGN_DIR/evidence/framework/production
 ```
 
-The static pipeline actually invokes available Trailmark, Tree-sitter, and
-Joern analyzers, retains every command and raw output under
-`tools/static/RUN_ID/`, and converts normalized leads into idempotent
-`static-lead-validation` tasks in the durable queue. Add one or more
-`--z3-spec` files when a source-derived numeric constraint is available. A
-static hit or satisfiable model is never a finding: the generated task requires
-manual source confirmation and a stock-build runtime discriminator.
+Static tools may identify candidate boundaries, but Krineon queues no census or
+CPG hit. The pipeline executes two pinned consumers against the same hashed
+input and admits only a recorded disagreement with an equal control. Add
+`--z3-spec` only when the constraint is bound to an exact pinned-source fragment
+and feed its output to both consumers. A differential or satisfiable model is
+never a finding: the generated task still requires source confirmation,
+attacker control, and a stock-build chain link.
 
 ## Campaign workflow
 
 1. Confirm scope and pin exact source and runtime artifacts.
 2. Map entry points, trust boundaries, state owners, execution/native sinks,
-   and code-loading authority directly from the pinned tree.
+   and code-loading authority directly from the pinned tree. Read its checked-in
+   tests, assertions, invariant comments, fuzz targets, and fixtures as local
+   oracles. They are part of the target revision, not prohibited history.
 3. Derive high-leverage dependency revisions from the target's lockfiles,
    manifests, generated bundles, build graph, or runtime linkage. Pin selected
    sources in the campaign's mandatory `third_party/` directory and audit
    target-to-library boundaries. Read
    [references/dependencies.md](references/dependencies.md).
-4. Launch the maximum safe number of complementary discovery agents and keep
+4. Run `gate-self-test`. Register only one worker until coordinator
+   re-execution rejects the intentionally false claim. Then launch the maximum
+   safe number of complementary discovery agents and keep
    dependency-ready slots occupied. Read
    [references/orchestration.md](references/orchestration.md).
-5. Execute Trailmark, Tree-sitter, Joern, and source-derived Z3 constraints
-   through the static pipeline. Feed every normalized lead into the durable
-   validation queue with run, commit, command, and artifact provenance; do not
-   let leads terminate as prose. Use targeted source search and runtime
-   instrumentation as complementary assistants. Read
+5. Use source-derived tools to identify consumer pairs, then execute two real
+   consumers on the same input through the differential pipeline. Feed only
+   recorded disagreements into the durable validation queue with run, commit,
+   command, and artifact provenance. Read
    [references/tool-assisted-analysis.md](references/tool-assisted-analysis.md).
-6. Register every hypothesis, including blocked and disproved routes. Avoid
+6. Register every hypothesis, including blocked and disproved routes. Emit
+   `taskResult.researchLeads` for unique minimized stack clusters, invariant
+   breaks, and verified primitives. The coordinator automatically deduplicates
+   and schedules their next experiments without requiring a finding record.
+   Avoid
    silently recycling rejected ideas under new names.
    Treat profile lanes as starting axes, create focused runtime tasks for new
    branches, and use the structured blocker-resolution loop in
    [references/blocker-resolution.md](references/blocker-resolution.md).
-7. Promote only a complete Critical/RCE chain with a stock or supported ingress,
+7. For Next.js, React, or Node web targets, build and launch the actual
+   production configuration through `scripts/framework_adapter.py`. Pin its
+   lockfile, runtime, compiler, environment, generated bundles, surface
+   evidence, and deployed artifact. Drive it with structured raw HTTP,
+   independent attacker/victim sessions, concurrent requests, and
+   proxy/framework/origin differential replay through
+   `scripts/http_protocol_harness.py`. Read
+   [references/framework-adapters.md](references/framework-adapters.md) and
+   [references/http-protocol-harness.md](references/http-protocol-harness.md).
+   Run `scripts/framework_analysis_pipeline.py` on that built artifact to map
+   routes, middleware ordering, directive crossings, module identities, cache
+   and revalidation operations, runtime environment branches, and source lines
+   to shipped bundles. Treat every output as an unexecuted runtime hypothesis,
+   never a vulnerability verdict. Read
+   [references/framework-analysis.md](references/framework-analysis.md).
+   For JavaScript coverage, persistent Node workers, browser/server coverage
+   merging, source-map attribution, and semantic framework generators, read
+   [references/javascript-coverage-generation.md](references/javascript-coverage-generation.md).
+8. Promote only a complete Critical/RCE chain with a stock or supported ingress,
    no application-authored unsafe sink, a harmless real terminal, baseline and
    negative controls, independent replay, and execution against a supported
    production-equivalent or release build. Before candidate promotion, require
-   a machine-audited source-to-sink proof that enumerates every conditional,
+   an executable source-to-sink proof that enumerates every conditional,
    gives the concrete attacker mechanism for each branch outcome, contains no
    unresolved assumptions or contradictions, and is reviewed by a different
    identity. Development servers and development builds are lead-generation
    environments only. Read
    [references/false-positive-control.md](references/false-positive-control.md)
    and [references/evidence-gates.md](references/evidence-gates.md).
-8. Only after the chain is complete, check scope, current official documentation,
-   upstream tests, eligibility, and duplicate risk. Never use that filing review
-   to mine fixes or diff patched code. Read [references/pre-filing.md](references/pre-filing.md).
-9. Write a root-cause-first report with measured impact and explicit
+9. Target-owned tests and invariants are available throughout discovery. Only
+   after the chain is complete, perform the external filing review for scope,
+   current official documentation, eligibility, duplicate risk, and final
+   upstream-test coverage. Never use that review to mine fixes or diff patched
+   code. Read [references/pre-filing.md](references/pre-filing.md).
+10. Write a root-cause-first report with measured impact and explicit
    preconditions. Read [references/reporting.md](references/reporting.md).
+
+Measure search efficacy rather than inferring it from lane descriptions. Use
+`scripts/rediscovery_benchmark.py` with evaluator-held target-owned oracles and
+a frozen local corpus. Until a run records hours to first rediscovery and
+recall, profile lanes are unmeasured hypotheses and their efficacy claims are
+documentation only. Read
+[references/rediscovery-benchmark.md](references/rediscovery-benchmark.md).
 
 ## Operational multi-agent rule
 
@@ -238,6 +279,9 @@ reopening must pass through the unblock evidence gate.
   and attack case differing only in the disputed condition.
 - Prefer stock builds, supported configuration, real protocol values, and
   actual harmless effects over synthetic callbacks or modified harness state.
+- For web targets, retain the adapter manifest and raw protocol run. A source
+  fixture, development server, one-off `curl`, or reconstructed request does
+  not establish production reachability when the production adapter can run.
 - Never issue a finding whose primary terminal exists only in a development
   environment, development build, hot-reload server, test server, fixture
   server, preview-only runtime, or debug-only path. Reproduce it in a supported
@@ -252,10 +296,11 @@ reopening must pass through the unblock evidence gate.
   advisories, git history or blame, historical commits, patched-version
   comparisons, or internet-derived patch diffs.
 - Do not promote reasoning prose directly. Record the exact source-to-sink
-  steps, every conditional on that path, the concrete attacker-selected outcome
-  and runtime evidence for each condition, falsification controls, and an empty
-  assumptions list in the linked path proof. A different identity must resolve
-  all contradiction challenges before the candidate gate can pass.
+  steps, every conditional on that path, the concrete attacker-selected outcome,
+  and a recomputed machine assertion for each condition. A prose file or a
+  second identity restating the first result is insufficient. Retain an empty
+  assumptions list, and require originator and reviewer runs with independent
+  challenges and processes before the candidate gate can pass.
 
 ## Bounded dynamic validation
 
@@ -278,19 +323,32 @@ python3 scripts/dynamic_harness.py regression CAMPAIGN_DIR
 python3 scripts/dynamic_harness.py triage CAMPAIGN_DIR --crash-id CRASH_ID --json
 ```
 
-Every saved crash is automatically classified by first fault, access direction,
-normalized stack cluster, and evidence-based controllability. The triager emits
-an automated exploitability verdict with explicit limitations under
+Every saved crash is classified by first fault, access direction, and normalized
+stack cluster. A UAF, write, or apparent PC crash is only a lead. Do not assign
+controllability from the bug class. Use `reality_runner.py` and
+`primitive_verifier.py` to require harness-chosen values, fresh-process controls,
+repetition, and allocation generation identity where relevant. The triager emits
+an automated verdict with explicit limitations under
 `dynamic/crashes/CRASH_ID/triage.json` and maintains cross-corpus clusters in
 `dynamic/triage/index.json`. Use `triage --finding-id F001 --reviewed-by ID
---review-note NOTE` to attach one reviewed verdict to the candidate gate. A
-score prioritizes escalation work; it never proves attacker control, RCE,
-production reachability, or filing eligibility.
+--review-note NOTE` to attach one reviewed verdict to the candidate gate. An
+unverified memory or PC lead cannot clear that gate.
+Do not wait for candidate registration to preserve useful output. Completed
+tasks return unique stacks, invariant breaks, and verified primitives in
+`taskResult.researchLeads`; inspect their evidence-first order with
+`research_harness.py lead-status`. This ranking drives follow-up research but
+never establishes severity or filing eligibility.
+Read [references/reality-evidence.md](references/reality-evidence.md) before
+authoring a primitive or path-proof recipe.
 
-For coverage feedback, a target or wrapper writes one edge ID per line to
-`KRINEON_COVERAGE_FILE`. New-coverage inputs persist in the target corpus and
-are loaded by later runs. The POSIX resource limits and process-group cleanup
-are not a security sandbox; use a disposable VM or container for unsafe code.
+For the generic smoke runner, a target or wrapper may write one edge ID per
+line to `KRINEON_COVERAGE_FILE`. Do not require that manual contract for
+JavaScript: use `scripts/js_coverage_harness.py`, which obtains inspector and
+`NODE_V8_COVERAGE` ranges automatically, collects Istanbul counters when
+present, merges browser CDP coverage, and remaps generated ranges to original
+sources. New-coverage inputs persist in the target corpus and are loaded by
+later runs. The POSIX resource limits and process-group cleanup are not a
+security sandbox; use a disposable VM or container for unsafe code.
 `regression` verifies reproduction against the original pinned target. Krineon
 does not require or use a patched-version comparison.
 
@@ -372,6 +430,8 @@ python3 scripts/research_harness.py register CAMPAIGN_DIR F001 \
   --title "Candidate title" --lane cross-lane-chain-composition \
   --originator worker-a
 python3 scripts/path_proof.py init CAMPAIGN_DIR F001
+python3 scripts/reality_runner.py CAMPAIGN_DIR F001 \
+  --recipe evidence/recipes/F001.json --worker-id worker-a --role originator
 python3 scripts/path_proof.py audit CAMPAIGN_DIR F001 --update-gate --json
 python3 scripts/research_harness.py schedule-replay CAMPAIGN_DIR F001
 python3 scripts/research_harness.py gate CAMPAIGN_DIR F001 --level reportable

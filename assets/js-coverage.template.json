@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "profile": "next-production",
+  "projectRoot": "/replace/with/owned/production-build",
+  "runtime": "node",
+  "module": ".next/server/app/api/fuzz/route.js",
+  "export": "fuzz",
+  "inputMode": "buffer",
+  "inputs": ["corpus/**/*"],
+  "workers": 4,
+  "maxInputs": 100000,
+  "maxInputBytes": 16777216,
+  "inputTimeoutSeconds": 5,
+  "plateauSeconds": 300,
+  "additionalV8CoverageFiles": []
+}
+
