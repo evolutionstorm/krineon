@@ -159,7 +159,10 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
                 self.run_cli("approve", str(campaign), "--proposal", str(proposal)).stdout
             )
 
-            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            try:
+                server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            except PermissionError:
+                self.skipTest("managed test sandbox forbids loopback listeners")
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:

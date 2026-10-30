@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from build_provenance import verify_manifest
 from chromium_replay import (
     ChromiumReplayError,
     OwnedPageServer,
@@ -36,7 +37,15 @@ from platform_support import host_platform, normalize_architecture
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DYNAMIC_HARNESS = PROJECT_ROOT / "scripts" / "dynamic_harness.py"
 SAFE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
-BUILD_ROLES = ("release", "asan", "debug", "jitless", "sandboxed-chrome", "other")
+BUILD_ROLES = (
+    "release",
+    "asan",
+    "debug",
+    "jitless",
+    "sandboxed-chrome",
+    "fuzzilli-reprl",
+    "other",
+)
 BUILD_KINDS = ("d8", "chrome")
 
 
@@ -169,10 +178,35 @@ def build_by_name(database: dict[str, Any], name: str) -> dict[str, Any]:
     raise ChromeV8Error(f"unknown registered build: {name}")
 
 
-def verify_build(build: dict[str, Any]) -> list[str]:
+def verify_build(root: Path, build: dict[str, Any]) -> list[str]:
     problems: list[str] = []
     if not str(build.get("revision") or "").strip():
         problems.append("missing revision")
+    provenance = build.get("provenance")
+    if not isinstance(provenance, dict):
+        problems.append("missing independently generated build provenance")
+    else:
+        manifest_path = Path(str(provenance.get("path") or ""))
+        if not manifest_path.is_file():
+            problems.append("build provenance manifest is absent")
+        elif sha256_file(manifest_path) != provenance.get("sha256"):
+            problems.append("build provenance manifest changed")
+        else:
+            try:
+                record, manifest_problems = verify_manifest(root, manifest_path)
+                problems.extend("provenance: " + value for value in manifest_problems)
+                manifest_build = record.get("build", {})
+                source = record.get("source", {})
+                if manifest_build.get("name") != build.get("name"):
+                    problems.append("provenance build name mismatch")
+                if manifest_build.get("kind") != build.get("kind"):
+                    problems.append("provenance build kind mismatch")
+                if manifest_build.get("role") != build.get("role"):
+                    problems.append("provenance build role mismatch")
+                if source.get("revision") != build.get("revision"):
+                    problems.append("provenance source revision mismatch")
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                problems.append(f"invalid build provenance: {error}")
     records = build.get("artifacts")
     if not isinstance(records, list) or not records:
         problems.append("no artifacts")
@@ -199,6 +233,7 @@ def verify_build(build: dict[str, Any]) -> list[str]:
 def cmd_register_build(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     database = require_builds(root)
+    campaign = require_profile(root)
     if not SAFE_NAME.fullmatch(args.name):
         raise ChromeV8Error("build name must use letters, digits, dot, underscore, or dash")
     existing = [item for item in database.get("builds", []) if item.get("name") == args.name]
@@ -206,6 +241,29 @@ def cmd_register_build(args: argparse.Namespace) -> int:
         raise ChromeV8Error(f"build already registered: {args.name}; use --replace explicitly")
 
     binary = resolve_file(args.binary, label="binary")
+    manifest_path = resolve_file(args.provenance_manifest, label="provenance manifest")
+    manifest, manifest_problems = verify_manifest(root, manifest_path)
+    if manifest_problems:
+        raise ChromeV8Error(
+            "build provenance did not verify: " + "; ".join(manifest_problems)
+        )
+    manifest_build = manifest.get("build", {})
+    source = manifest.get("source", {})
+    if manifest_build.get("name") != args.name:
+        raise ChromeV8Error("provenance build name does not match registration")
+    if manifest_build.get("kind") != args.kind or manifest_build.get("role") != args.role:
+        raise ChromeV8Error("provenance build kind or role does not match registration")
+    if Path(str((manifest_build.get("binary") or {}).get("path") or "")).resolve() != binary:
+        raise ChromeV8Error("provenance binary does not match registration")
+    revision = str(source.get("revision") or "")
+    if not revision:
+        raise ChromeV8Error("provenance source revision is absent")
+    if args.revision and args.revision != revision:
+        raise ChromeV8Error("--revision disagrees with independently derived revision")
+    if args.kind == "d8" and str(campaign.get("commit") or "") != revision:
+        raise ChromeV8Error(
+            "d8 source revision does not match the campaign's pinned V8 commit"
+        )
     requested_architecture = normalize_architecture(
         platform.machine() if args.architecture == "auto" else args.architecture
     )
@@ -225,33 +283,42 @@ def cmd_register_build(args: argparse.Namespace) -> int:
     for value in args.artifact or []:
         path = resolve_file(value, label="artifact")
         artifacts[str(path)] = artifact(path)
-    gn_args = None
-    if args.gn_args_file:
-        path = resolve_file(args.gn_args_file, label="GN args file")
-        gn_args = artifact(path)
-        artifacts[str(path)] = gn_args
-
-    checkout = ""
-    if args.checkout:
-        checkout_path = Path(args.checkout).expanduser().resolve()
-        if not checkout_path.is_dir():
-            raise ChromeV8Error(f"checkout is not a directory: {checkout_path}")
-        checkout = str(checkout_path)
+    config = manifest.get("configuration", {})
+    gn_args = config.get("gnArgs")
+    if not isinstance(gn_args, dict):
+        raise ChromeV8Error("provenance does not contain GN arguments")
+    gn_path = resolve_file(str(gn_args.get("path") or ""), label="manifest GN args")
+    artifacts[str(gn_path)] = artifact(gn_path)
+    checkout = str(source.get("checkout") or "")
+    if args.checkout and Path(args.checkout).expanduser().resolve() != Path(checkout).resolve():
+        raise ChromeV8Error("--checkout disagrees with build provenance")
+    manifest_flags = [str(value) for value in manifest_build.get("runtimeFlags", [])]
+    if list(args.flag or []) != manifest_flags:
+        raise ChromeV8Error("runtime flags disagree with build provenance")
 
     record = {
         "name": args.name,
         "kind": args.kind,
         "role": args.role,
-        "revision": args.revision,
+        "revision": revision,
         "architecture": requested_architecture,
         "architectureEvidence": architecture_evidence,
         "host": host_platform(),
         "binary": str(binary),
         "cwd": str(cwd),
         "checkout": checkout,
-        "flags": args.flag or [],
+        "flags": manifest_flags,
         "gnArgs": gn_args,
         "artifacts": list(artifacts.values()),
+        "provenance": {
+            "path": str(manifest_path),
+            "sha256": sha256_file(manifest_path),
+            "signature": str(manifest_path.with_suffix(manifest_path.suffix + ".sig")),
+            "sourceRevision": revision,
+            "dependencyDigest": source.get("dependencyDigest"),
+            "patchSha256": (source.get("appliedPatch") or {}).get("sha256"),
+            "effectiveCommandsSha256": config.get("effectiveCommandsSha256"),
+        },
         "registeredAt": utc_now(),
     }
     database["builds"] = [
@@ -270,7 +337,7 @@ def audit_payload(root: Path, database: dict[str, Any]) -> dict[str, Any]:
     roles: set[str] = set()
     browser_ready = False
     for build in database.get("builds", []):
-        problems = verify_build(build)
+        problems = verify_build(root, build)
         if build.get("kind") == "d8":
             roles.add(str(build.get("role")))
         if build.get("kind") == "chrome" and build.get("role") == "sandboxed-chrome":
@@ -291,6 +358,27 @@ def audit_payload(root: Path, database: dict[str, Any]) -> dict[str, Any]:
         )
     required = set(database.get("requiredRoles", []))
     missing_roles = sorted(required.difference(roles))
+    comparison_builds = [
+        build
+        for build in database.get("builds", [])
+        if build.get("kind") == "d8" and build.get("role") in required
+    ]
+    comparison_identities = {
+        (
+            str((build.get("provenance") or {}).get("sourceRevision") or ""),
+            str((build.get("provenance") or {}).get("dependencyDigest") or ""),
+            str((build.get("provenance") or {}).get("patchSha256") or ""),
+        )
+        for build in comparison_builds
+    }
+    comparison_consistent = len(comparison_identities) <= 1 and bool(comparison_builds)
+    if not comparison_consistent:
+        for row in rows:
+            if row["role"] in required:
+                row["problems"].append(
+                    "comparison builds do not share source, dependency, and patch provenance"
+                )
+                row["valid"] = False
     return {
         "schemaVersion": 1,
         "at": utc_now(),
@@ -298,8 +386,10 @@ def audit_payload(root: Path, database: dict[str, Any]) -> dict[str, Any]:
         "builds": rows,
         "missingD8Roles": missing_roles,
         "browserPromotionReady": browser_ready,
+        "comparisonBuildsSameRevision": comparison_consistent,
         "passed": bool(rows)
         and not missing_roles
+        and comparison_consistent
         and all(row["valid"] for row in rows),
         "campaign": str(root),
     }
@@ -346,7 +436,7 @@ def parse_run_id(output: str) -> str:
 def run_build(
     root: Path, build: dict[str, Any], testcase: Path, args: argparse.Namespace
 ) -> dict[str, Any]:
-    problems = verify_build(build)
+    problems = verify_build(root, build)
     if problems:
         raise ChromeV8Error(f"registered build {build['name']} is stale: " + "; ".join(problems))
     command = [
@@ -530,7 +620,7 @@ def cmd_browser_replay(args: argparse.Namespace) -> int:
         raise ChromeV8Error(
             "browser replay requires a registered chrome build with role sandboxed-chrome"
         )
-    problems = verify_build(build)
+    problems = verify_build(root, build)
     if problems:
         raise ChromeV8Error(f"registered build {build['name']} is stale: " + "; ".join(problems))
     flags = [str(value) for value in build.get("flags", [])] + list(args.chrome_flag or [])
@@ -725,7 +815,8 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--kind", choices=BUILD_KINDS, required=True)
     register.add_argument("--role", choices=BUILD_ROLES, required=True)
     register.add_argument("--binary", required=True)
-    register.add_argument("--revision", required=True)
+    register.add_argument("--revision")
+    register.add_argument("--provenance-manifest", required=True)
     register.add_argument(
         "--architecture",
         default="auto",
@@ -733,7 +824,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     register.add_argument("--checkout")
     register.add_argument("--cwd")
-    register.add_argument("--gn-args-file")
     register.add_argument("--artifact", action="append")
     register.add_argument("--flag", action="append")
     register.add_argument("--replace", action="store_true")

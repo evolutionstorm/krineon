@@ -72,12 +72,15 @@ An observed difference is still a research lead. Feed the exact hypothesis to
 `js_coverage_harness.py`, or `chromium_replay.py`. Only the normal candidate
 and independent-replay gates can promote a later complete chain.
 
-The first automated semantic step is intentionally narrower than this
-structural map. `semantic_hypothesis_loop.py` consumes only Next.js
-middleware-route relations with authorization evidence. It makes attacker
-control, checks, dominance uncertainty, competing interpretations, and state
-ownership explicit, then generates an authorization-to-route agreement oracle.
-See [semantic experiments](semantic-experiments.md). Do not describe the other
+The automated HTTP semantic step is intentionally narrower than this
+structural map. `semantic_hypothesis_loop.py` consumes Next.js middleware-route
+relations with authorization evidence. It makes attacker control, checks,
+dominance uncertainty, competing interpretations, and state ownership
+explicit, then generates an authorization-to-route agreement oracle. The same
+proposal format accepts workerd candidates only from the dedicated lifetime
+extractor and its executable trace contract. See
+[semantic experiments](semantic-experiments.md) and
+[workerd native lifetime research](workerd-native.md). Do not describe other
 framework-analysis families as autonomous semantic vulnerability discovery.
 
 ## Production binding

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive and execute Next.js authorization-to-route semantic experiments."""
+"""Derive executable semantic experiments from framework and native analyses."""
 
 from __future__ import annotations
 
@@ -217,11 +217,61 @@ def unknown_transformation_experiments(
     return experiments
 
 
+def derive_workerd_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    for value in analysis.get("candidates", []):
+        if not isinstance(value, dict):
+            continue
+        candidate_id = str(value.get("id") or "")
+        family = str(value.get("family") or "")
+        if not candidate_id or not family:
+            continue
+        models.append(
+            {
+                "id": "SH-" + hashlib.sha256(candidate_id.encode()).hexdigest()[:20],
+                "state": "proposed",
+                "ecosystem": "workerd",
+                "boundary": family,
+                "sourceCandidate": value,
+                "attackerControlledValues": [
+                    {
+                        "name": "owned test input",
+                        "value": "candidate-specific JavaScript or request sequence",
+                        "ingress": "authorized disposable workerd fixture",
+                    }
+                ],
+                "competingExplanations": [
+                    {"id": "E-safe", "claim": "the implementation preserves the ownership or affinity invariant"},
+                    {"id": "E-violation", "claim": "the emitted runtime event sequence violates that invariant"},
+                    {"id": "E-observer", "claim": "the instrumentation changes or misidentifies the state transition"},
+                ],
+                "oracle": value.get("oracle"),
+                "experiment": {
+                    "kind": "instrumented-workerd-lifetime-trace",
+                    "instrumentation": value.get("instrumentation", []),
+                    "executeWith": "an unchanged production-equivalent workerd target plus a separately reviewed trace patch",
+                    "evaluateWith": "scripts/workerd_lifetime_oracle.py",
+                    "requiredControls": [
+                        "same input without the lifetime-changing transition",
+                        "same transition without the stale use or cross-context callback",
+                        "independent replay of the raw JSONL trace",
+                    ],
+                },
+                "evidenceFacts": [str(value.get("source") or "")],
+                "revision": 0,
+                "eliminatedMechanisms": [],
+            }
+        )
+    return models
+
+
 def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    if analysis.get("producer") == "krineon-workerd-lifetime-analysis":
+        return derive_workerd_models(analysis)
     if analysis.get("producer") != "krineon-framework-analysis":
-        raise RuntimeError("input is not a Krineon framework analysis record")
+        raise RuntimeError("input is not a supported Krineon analysis record")
     if analysis.get("framework") != "nextjs":
-        raise RuntimeError("the first semantic pilot supports only Next.js")
+        raise RuntimeError("framework semantic HTTP execution currently supports Next.js")
     facts = {str(row.get("id")): row for row in analysis.get("facts", []) if isinstance(row, dict)}
     models: list[dict[str, Any]] = []
     for relation in analysis.get("relations", []):
@@ -527,6 +577,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     selected = [model for model in record.get("models", []) if isinstance(model, dict) and (not args.hypothesis or model.get("id") == args.hypothesis)]
     if not selected:
         raise RuntimeError("no matching semantic hypothesis")
+    if any(model.get("ecosystem") != "nextjs" for model in selected):
+        raise RuntimeError(
+            "native proposals use their recorded trace runner and workerd_lifetime_oracle.py, not the Next.js HTTP executor"
+        )
     started = time.monotonic()
     results: list[dict[str, Any]] = []
     for model in selected:

@@ -3,17 +3,19 @@
 
 An attestation is useful only when its assertions can be recomputed from raw
 process output, its recipe and target artifacts still hash to the recorded
-values, and every case was launched as a distinct process.  This module does
-not claim that an instrumented observer is infallible; it makes the observer,
-command, target, challenges, and raw observations reviewable instead of
-accepting prose as execution evidence.
+values, and every case was launched as a distinct process. Chosen-PC
+assertions are accepted only from an independently executed system debugger.
+Target-authored stdout is never an authority for that claim.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +81,60 @@ def integer_address(value: Any) -> int | None:
     return None
 
 
+def parse_debugger_observation(value: bytes, kind: str) -> dict[str, Any] | None:
+    """Parse a stopped process and PC from raw GDB or LLDB output."""
+
+    text = value.decode("utf-8", "replace")
+    if kind == "gdb":
+        pid_matches = re.findall(
+            r"(?:process|LWP|KRINEON_TARGET_PID=)\s*(\d+)", text, re.IGNORECASE
+        )
+        pc_matches = re.findall(
+            r"^\s*(?:pc|rip|eip)\s+0x([0-9a-fA-F]+)\b",
+            text,
+            re.MULTILINE,
+        )
+    elif kind == "lldb":
+        pid_matches = re.findall(r"(?:Process\s+|KRINEON_TARGET_PID=)(\d+)", text)
+        pc_matches = re.findall(
+            r"\b(?:pc|rip|eip)\s*=\s*0x([0-9a-fA-F]+)\b", text
+        )
+    else:
+        return None
+    if not pid_matches or not pc_matches:
+        return None
+    return {
+        "source": "trusted-debugger",
+        "kind": kind,
+        "targetPid": int(pid_matches[-1]),
+        "observedHex": pc_matches[-1].lower().lstrip("0") or "0",
+    }
+
+
+def trusted_debugger_binary(root: Path, path: Path, kind: str) -> tuple[bool, str]:
+    """Require an OS-managed debugger rather than a campaign-supplied observer."""
+
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root.resolve())
+        return False, "debugger is inside the worker-controlled campaign"
+    except ValueError:
+        pass
+    except OSError as error:
+        return False, f"debugger is unavailable: {error}"
+    if kind not in {"gdb", "lldb"} or resolved.name not in {kind, kind + ".exe"}:
+        return False, "debugger kind and executable name disagree"
+    metadata = resolved.stat()
+    if os.name == "posix":
+        if metadata.st_uid != 0:
+            return False, "debugger is not owned by the operating-system administrator"
+        if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False, "debugger is group- or world-writable"
+    if not resolved.is_file():
+        return False, "debugger is not a regular file"
+    return True, "trusted system debugger"
+
+
 def _allocation(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -115,6 +171,7 @@ def evaluate_assertion(
     challenge_hex: str,
     stdout: bytes,
     stderr: bytes,
+    trusted_observer: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Recompute one assertion from raw process observations."""
 
@@ -132,6 +189,27 @@ def evaluate_assertion(
         matched = present if kind == "stdout-contains-challenge" else not present
         return matched, {"challengePresent": present}
 
+    if kind == "controlled-pc":
+        if not isinstance(trusted_observer, dict) or trusted_observer.get("source") != "trusted-debugger":
+            return False, {
+                "error": "controlled-pc requires independently parsed trusted debugger output"
+            }
+        if trusted_observer.get("targetPid") != process_id:
+            return False, {
+                "error": "debugger target PID does not identify the launched subject",
+                "targetPid": trusted_observer.get("targetPid"),
+                "launchedPid": process_id,
+            }
+        observed = str(trusted_observer.get("observedHex") or "").lower().lstrip("0") or "0"
+        expected = challenge_hex.lower().lstrip("0") or "0"
+        matched = observed == expected
+        return matched, {
+            "observer": trusted_observer.get("kind"),
+            "observedHex": observed,
+            "challengeHex": expected,
+            "targetPid": process_id,
+        }
+
     observation = json_observation(stdout)
     if observation is None:
         return False, {"error": "stdout has no JSON observation"}
@@ -144,19 +222,6 @@ def evaluate_assertion(
     if kind == "no-memory-write":
         observed = observation.get("writeObserved") is True
         return not observed, {"writeObserved": observed}
-    if kind == "controlled-pc":
-        control = observation.get("programCounter")
-        if not isinstance(control, dict):
-            return False, {"error": "programCounter observation is absent"}
-        requested = str(control.get("requestedHex") or "").lower()
-        observed = str(control.get("observedHex") or "").lower()
-        expected = challenge_hex.lower()
-        matched = requested == expected and observed == expected
-        return matched, {
-            "requestedHex": requested,
-            "observedHex": observed,
-            "challengeHex": expected,
-        }
     if kind == "controlled-write":
         original = _allocation(observation.get("originalAllocation"))
         replacement = _allocation(observation.get("replacementAllocation"))
@@ -377,6 +442,52 @@ def validate_attestation(
                 errors.append(prefix + ":stdout-hash")
             if sha256_bytes(stderr) != raw.get("stderrSha256"):
                 errors.append(prefix + ":stderr-hash")
+            controlled_pc_required = any(
+                value.get("kind") == "controlled-pc"
+                for value in assertions_by_id.values()
+            )
+            trusted_observer: dict[str, Any] | None = None
+            retained_observer = (
+                run.get("observer") if isinstance(run.get("observer"), dict) else None
+            )
+            if controlled_pc_required:
+                if retained_observer is None:
+                    errors.append(prefix + ":trusted-debugger-missing")
+                else:
+                    kind = str(retained_observer.get("kind") or "")
+                    debugger = Path(str(retained_observer.get("path") or ""))
+                    trusted, reason = trusted_debugger_binary(root, debugger, kind)
+                    if retained_observer.get("source") != "trusted-debugger" or not trusted:
+                        errors.append(prefix + ":trusted-debugger:" + reason)
+                    try:
+                        if sha256_file(debugger) != retained_observer.get("sha256"):
+                            errors.append(prefix + ":trusted-debugger-hash")
+                        version = subprocess.run(
+                            [str(debugger), "--version"],
+                            check=False,
+                            capture_output=True,
+                            timeout=10,
+                        )
+                        version_bytes = version.stdout + version.stderr
+                        if (
+                            version.returncode != 0
+                            or sha256_bytes(version_bytes)
+                            != retained_observer.get("versionSha256")
+                        ):
+                            errors.append(prefix + ":trusted-debugger-version")
+                        debugger_raw_path = safe_campaign_path(
+                            root, retained_observer.get("rawPath")
+                        )
+                        debugger_raw = debugger_raw_path.read_bytes()
+                        if sha256_bytes(debugger_raw) != retained_observer.get("rawSha256"):
+                            errors.append(prefix + ":trusted-debugger-raw-hash")
+                        trusted_observer = parse_debugger_observation(debugger_raw, kind)
+                        if trusted_observer is None:
+                            errors.append(prefix + ":trusted-debugger-unparseable")
+                    except (OSError, ValueError):
+                        errors.append(prefix + ":trusted-debugger-artifact")
+            elif retained_observer is not None:
+                errors.append(prefix + ":unexpected-observer")
             recorded_assertions = run.get("assertions")
             recorded_by_id = {
                 str(item.get("id")): item
@@ -393,6 +504,7 @@ def validate_attestation(
                     challenge_hex=challenge_hex,
                     stdout=stdout,
                     stderr=stderr,
+                    trusted_observer=trusted_observer,
                 )
                 retained = recorded_by_id.get(assertion_id, {})
                 if retained.get("matched") is not matched or retained.get("observed") != observed:

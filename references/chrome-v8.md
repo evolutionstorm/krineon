@@ -59,23 +59,36 @@ Create at least three builds of the same pinned revision:
   source-level explanation;
 - `sandboxed-chrome`: a full Chromium binary for the later browser lane.
 
-Register the binary, its revision, GN args, runtime data files, and default
-flags. Use `--flag=--value` for flags beginning with a dash.
+First capture a coordinator-signed provenance manifest from the real Git
+checkout and Ninja graph. The capture derives source and dependency revisions,
+the working-tree patch, effective GN args, compiler identity, effective
+commands, binary architecture, sandbox settings, and runtime flags. ASan and
+Fuzzilli roles must also pass a live runtime or REPRL handshake. A hand-written
+label is not build provenance.
 
 ```bash
+python3 scripts/build_provenance.py capture CAMPAIGN release \
+  --kind d8 --role release \
+  --checkout /owned/checkouts/v8 \
+  --build-dir /owned/checkouts/v8/out/release \
+  --binary /owned/checkouts/v8/out/release/d8 \
+  --target d8 \
+  --output CAMPAIGN/chrome-v8/provenance/release.json
+
 python3 scripts/chrome_v8_harness.py register-build CAMPAIGN release \
   --kind d8 --role release --revision V8_COMMIT \
   --binary /owned/checkouts/v8/out/release/d8 \
-  --gn-args-file /owned/checkouts/v8/out/release/args.gn \
+  --provenance-manifest CAMPAIGN/chrome-v8/provenance/release.json \
   --artifact /owned/checkouts/v8/out/release/snapshot_blob.bin
 
 python3 scripts/chrome_v8_harness.py audit CAMPAIGN --json
 ```
 
-The audit recomputes hashes and fails if a registered artifact changed. It also
-requires release, ASan, and debug `d8` roles. Registering sandboxed Chrome is
-reported separately because an engine matrix is useful before a full browser
-build exists.
+The audit verifies the manifest signature and re-derives Git and dependency
+revisions, patch state, Ninja commands, compiler identity, architecture, and
+role-specific instrumentation. It fails comparison builds unless release,
+ASan, and debug use the same source, dependency, and patch identity. Merely
+leaving the binary unchanged cannot make false metadata pass.
 
 ## Run a bounded testcase matrix
 
@@ -113,10 +126,18 @@ Register a full Chromium binary built from the pinned revision, then provide a
 small owned page directory containing a positive case and a negative control:
 
 ```bash
+python3 scripts/build_provenance.py capture CAMPAIGN chrome-release \
+  --kind chrome --role sandboxed-chrome \
+  --checkout /owned/chromium/src \
+  --build-dir /owned/chromium/src/out/Release \
+  --binary /owned/chromium/src/out/Release/chrome \
+  --target chrome \
+  --output CAMPAIGN/chrome-v8/provenance/chrome-release.json
+
 python3 scripts/chrome_v8_harness.py register-build CAMPAIGN chrome-release \
   --kind chrome --role sandboxed-chrome --revision CHROMIUM_COMMIT \
   --binary /owned/chromium/src/out/Release/chrome \
-  --gn-args-file /owned/chromium/src/out/Release/args.gn
+  --provenance-manifest CAMPAIGN/chrome-v8/provenance/chrome-release.json
 
 python3 scripts/chrome_v8_harness.py browser-replay CAMPAIGN \
   --build chrome-release \

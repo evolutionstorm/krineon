@@ -203,6 +203,8 @@ Load only references relevant to the active target:
 - Chrome/V8 release, sanitizer, debug, and owned-page Chromium replay:
   [Chrome/V8](references/chrome-v8.md) and
   [the worker profile](agents/chrome-v8-agent.md).
+- workerd/V8 GC, handle, JavaScript reentry, cancellation, ArrayBuffer, and
+  IoContext lifetime candidates: [workerd native research](references/workerd-native.md).
 - Native Apple Silicon execution, Mach-O architecture evidence, and Darwin
   Seatbelt validation: [macOS arm64](references/macos-arm64.md).
 - Search efficacy on a frozen local corpus with evaluator-held target oracles:

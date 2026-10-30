@@ -18,7 +18,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from reality_evidence import evaluate_assertion, sha256_bytes, sha256_file
+from reality_evidence import (
+    evaluate_assertion,
+    parse_debugger_observation,
+    sha256_bytes,
+    sha256_file,
+    trusted_debugger_binary,
+)
 
 
 SAFE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{1,63}")
@@ -104,6 +110,117 @@ def resolved_argument(root: Path, cwd: Path, value: str) -> Path | None:
     return None
 
 
+def controlled_pc_assertion(case: dict[str, Any]) -> bool:
+    assertions = case.get("assertions")
+    return isinstance(assertions, list) and any(
+        isinstance(value, dict) and value.get("kind") == "controlled-pc"
+        for value in assertions
+    )
+
+
+def execute_with_debugger(
+    *,
+    root: Path,
+    case: dict[str, Any],
+    command: list[str],
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: float,
+    stdin: bytes,
+) -> tuple[int | None, int, int, bool, bytes, dict[str, Any] | None, dict[str, Any]]:
+    """Run a chosen-PC case under a system-managed GDB or LLDB observer."""
+
+    if stdin:
+        raise RuntimeError("controlled-pc debugger cases require an empty stdinTemplate")
+    assertions = case.get("assertions", [])
+    if any(value.get("kind") != "controlled-pc" for value in assertions):
+        raise RuntimeError("controlled-pc debugger cases may contain only controlled-pc assertions")
+    observer = case.get("observer")
+    if not isinstance(observer, dict) or observer.get("kind") != "debugger":
+        raise RuntimeError("controlled-pc requires observer.kind=debugger")
+    kind = str(observer.get("tool") or "")
+    located = shutil.which(kind)
+    if located is None:
+        raise RuntimeError(f"required system debugger is unavailable: {kind}")
+    debugger = Path(located).resolve()
+    trusted, reason = trusted_debugger_binary(root, debugger, kind)
+    if not trusted:
+        raise RuntimeError("untrusted controlled-pc observer: " + reason)
+    version = subprocess.run(
+        [str(debugger), "--version"],
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
+    version_bytes = version.stdout + version.stderr
+    if version.returncode != 0:
+        raise RuntimeError("system debugger version probe failed")
+    if kind == "gdb":
+        observer_command = [
+            str(debugger),
+            "-q",
+            "-nx",
+            "-batch",
+            "-ex",
+            "set pagination off",
+            "-ex",
+            "run",
+            "-ex",
+            "info inferiors",
+            "-ex",
+            "info registers",
+            "--args",
+            *command,
+        ]
+    else:
+        observer_command = [
+            str(debugger),
+            "--batch",
+            "-o",
+            "run",
+            "-o",
+            "process status",
+            "-o",
+            "register read pc rip eip",
+            "--",
+            *command,
+        ]
+    process = subprocess.Popen(
+        observer_command,
+        cwd=cwd,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+        start_new_session=True,
+    )
+    timed_out = False
+    try:
+        debugger_stdout, debugger_stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        debugger_stdout, debugger_stderr = process.communicate()
+    raw = debugger_stdout + b"\n--- STDERR ---\n" + debugger_stderr
+    observation = parse_debugger_observation(raw, kind)
+    target_pid = int(observation.get("targetPid")) if observation else -1
+    retained = {
+        "source": "trusted-debugger",
+        "kind": kind,
+        "path": str(debugger),
+        "sha256": sha256_file(debugger),
+        "versionSha256": sha256_bytes(version_bytes),
+        "observerPid": process.pid,
+        "command": observer_command,
+        "rawBytes": raw,
+    }
+    return process.returncode, target_pid, process.pid, timed_out, raw, observation, retained
+
+
 def execute_case(
     *,
     root: Path,
@@ -160,30 +277,56 @@ def execute_case(
         "KRINEON_REPETITION": str(repetition),
     }
     started = time.time_ns()
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=environment,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        shell=False,
-        start_new_session=True,
-    )
-    timed_out = False
-    try:
-        stdout, stderr = process.communicate(stdin, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
+    observer_record: dict[str, Any] | None = None
+    trusted_observer: dict[str, Any] | None = None
+    if controlled_pc_assertion(case):
+        (
+            return_code,
+            target_pid,
+            observer_pid,
+            timed_out,
+            observer_raw,
+            trusted_observer,
+            observer_record,
+        ) = execute_with_debugger(
+            root=root,
+            case=case,
+            command=command,
+            cwd=cwd,
+            environment=environment,
+            timeout=timeout,
+            stdin=stdin,
+        )
+        stdout = b""
+        stderr = b""
+    else:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            start_new_session=True,
+        )
+        timed_out = False
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            process.kill()
-        try:
-            stdout, stderr = process.communicate(timeout=5)
+            stdout, stderr = process.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
+            timed_out = True
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                process.kill()
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+        return_code = process.returncode
+        target_pid = process.pid
+        observer_pid = process.pid
     finished = time.time_ns()
     run_dir = output_dir / name / f"{repetition:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +334,19 @@ def execute_case(
     stderr_path = run_dir / "stderr.bin"
     stdout_path.write_bytes(stdout)
     stderr_path.write_bytes(stderr)
+    retained_observer: dict[str, Any] | None = None
+    if observer_record is not None:
+        observer_path = run_dir / "debugger.bin"
+        observer_path.write_bytes(observer_raw)
+        retained_observer = {
+            key: value for key, value in observer_record.items() if key != "rawBytes"
+        }
+        retained_observer.update(
+            {
+                "rawPath": observer_path.relative_to(root).as_posix(),
+                "rawSha256": sha256_bytes(observer_raw),
+            }
+        )
     retained_assertions: list[dict[str, Any]] = []
     assertions = case.get("assertions")
     if not isinstance(assertions, list) or not assertions:
@@ -200,11 +356,12 @@ def execute_case(
             raise RuntimeError(f"case {name} contains an invalid assertion")
         matched, observed = evaluate_assertion(
             assertion,
-            return_code=process.returncode,
-            process_id=process.pid,
+            return_code=return_code,
+            process_id=target_pid,
             challenge_hex=challenge,
             stdout=stdout,
             stderr=stderr,
+            trusted_observer=trusted_observer,
         )
         retained_assertions.append({
             "id": str(assertion["id"]),
@@ -213,7 +370,8 @@ def execute_case(
             "observed": observed,
         })
     return {
-        "pid": process.pid,
+        "pid": target_pid,
+        "observerPid": observer_pid,
         "freshProcess": True,
         "startedNs": started,
         "finishedNs": finished,
@@ -227,7 +385,7 @@ def execute_case(
         "cwd": cwd.relative_to(root).as_posix(),
         "challengeHex": challenge,
         "stdinSha256": sha256_bytes(stdin),
-        "returnCode": process.returncode,
+        "returnCode": return_code,
         "timedOut": timed_out,
         "raw": {
             "stdoutPath": stdout_path.relative_to(root).as_posix(),
@@ -235,6 +393,7 @@ def execute_case(
             "stderrPath": stderr_path.relative_to(root).as_posix(),
             "stderrSha256": sha256_bytes(stderr),
         },
+        "observer": retained_observer,
         "assertions": retained_assertions,
         "passed": not timed_out and all(item["matched"] for item in retained_assertions),
     }
@@ -264,7 +423,15 @@ def run(args: argparse.Namespace) -> int:
     subject_path, subject_argv_index = subject_binding(root, recipe, target_paths)
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:10]
     output_dir = root / "evidence" / "machine-runs" / args.finding_id / run_id
-    challenges = [secrets.token_hex(args.challenge_bytes) for _ in range(args.repetitions)]
+    has_controlled_pc = any(controlled_pc_assertion(case) for case in cases)
+    if has_controlled_pc and args.challenge_bytes != 8:
+        raise RuntimeError("controlled-pc requires --challenge-bytes 8")
+    challenges = [
+        ("0000" + secrets.token_hex(6))
+        if has_controlled_pc
+        else secrets.token_hex(args.challenge_bytes)
+        for _ in range(args.repetitions)
+    ]
     retained_cases: dict[str, list[dict[str, Any]]] = {}
     for case in cases:
         name = str(case["name"])

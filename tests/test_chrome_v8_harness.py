@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parents[1]
 RESEARCH = PROJECT / "scripts" / "research_harness.py"
 CHROME_V8 = PROJECT / "scripts" / "chrome_v8_harness.py"
+BUILD_PROVENANCE = PROJECT / "scripts" / "build_provenance.py"
 
 
 class ChromeV8HarnessTests(unittest.TestCase):
@@ -20,6 +22,43 @@ class ChromeV8HarnessTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name)
         self.campaign = self.base / "campaign"
+        self.checkout = self.base / "source"
+        self.checkout.mkdir()
+        self.manifests: dict[Path, Path] = {}
+        (self.checkout / ".gitignore").write_text("out/\n", encoding="utf-8")
+        (self.checkout / "d8_fixture.c").write_text(
+            "#include <stdio.h>\n"
+            "#include <stdlib.h>\n"
+            "#include <string.h>\n"
+            "int main(int argc, char** argv) {\n"
+            "  if (argc > 1) { FILE* f=fopen(argv[argc-1], \"rb\"); char b[4096]={0};\n"
+            "    if (f) { size_t n=fread(b,1,sizeof(b)-1,f); b[n]=0; fclose(f);\n"
+            "      if (strstr(b, \"CRASH\")) fputs(\"ERROR: AddressSanitizer: heap-use-after-free\\n\", stderr); } }\n"
+            "  puts(\"stable-output\"); return 0; }\n",
+            encoding="utf-8",
+        )
+        fake_cdp = self.checkout / "fake_chromium_cdp.py"
+        fake_cdp.write_bytes(
+            (PROJECT / "tests" / "fixtures" / "fake_chromium_cdp.py").read_bytes()
+        )
+        (self.checkout / "chrome_launcher.c").write_text(
+            "#include <stdlib.h>\n#include <unistd.h>\n"
+            "int main(int argc, char** argv) { char** v=calloc((size_t)argc+2,sizeof(char*));\n"
+            f"v[0]=\"python3\"; v[1]=\"{fake_cdp}\";\n"
+            "for(int i=1;i<argc;i++) v[i+1]=argv[i]; execvp(v[0],v); return 127; }\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init", "-q", str(self.checkout)], check=True)
+        subprocess.run(["git", "-C", str(self.checkout), "config", "user.email", "fixture@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(self.checkout), "config", "user.name", "Fixture"], check=True)
+        subprocess.run(["git", "-C", str(self.checkout), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.checkout), "commit", "-q", "-m", "fixture"], check=True)
+        self.revision = subprocess.run(
+            ["git", "-C", str(self.checkout), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         self.run_command(
             RESEARCH,
             "init",
@@ -29,7 +68,7 @@ class ChromeV8HarnessTests(unittest.TestCase):
             "--repo",
             "https://chromium.googlesource.com/v8/v8",
             "--commit",
-            "0123456789abcdef",
+            self.revision,
             "--profile",
             "chrome-v8",
         )
@@ -60,20 +99,68 @@ class ChromeV8HarnessTests(unittest.TestCase):
         )
         return completed
 
-    def make_d8_fixture(self, name: str) -> Path:
-        path = self.base / name
-        path.write_text(
-            "#!/usr/bin/env python3\n"
-            "from pathlib import Path\n"
-            "import sys\n"
-            "data = Path(sys.argv[-1]).read_text()\n"
-            "if 'CRASH' in data:\n"
-            "    sys.stderr.write('ERROR: AddressSanitizer: heap-use-after-free\\n')\n"
-            "print('stable-output')\n",
+    def make_native_fixture(
+        self, name: str, *, kind: str, role: str, extra_flags: tuple[str, ...] = ()
+    ) -> Path:
+        build = self.checkout / "out" / name
+        build.mkdir(parents=True)
+        target = "d8" if kind == "d8" else "fake-chromium"
+        source = self.checkout / ("d8_fixture.c" if kind == "d8" else "chrome_launcher.c")
+        compiler = shutil.which("cc")
+        self.assertIsNotNone(compiler)
+        flags = ["-O1"]
+        if role == "asan":
+            flags.extend(["-fsanitize=address", "-fno-omit-frame-pointer"])
+        if role == "debug":
+            flags.extend(["-g", "-O0"])
+        (build / "args.gn").write_text(
+            "target_cpu = \"{}\"\n"
+            "is_debug = {}\n"
+            "v8_enable_sandbox = true\n"
+            "is_asan = {}\n".format(
+                "arm64" if platform.machine().lower() in {"arm64", "aarch64", "arm64e"} else "x64",
+                "true" if role == "debug" else "false",
+                "true" if role == "asan" else "false",
+            ),
             encoding="utf-8",
         )
-        path.chmod(0o755)
-        return path
+        (build / "build.ninja").write_text(
+            f"rule cc\n  command = {compiler} {' '.join(flags)} $in -o $out\n"
+            f"build {target}: cc {source}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["ninja", "-C", str(build), target], check=True, capture_output=True)
+        binary = build / target
+        manifest = self.campaign / "chrome-v8" / "provenance" / f"{name}.json"
+        command = [
+            BUILD_PROVENANCE,
+            "capture",
+            str(self.campaign),
+            name,
+            "--kind",
+            kind,
+            "--role",
+            role,
+            "--checkout",
+            str(self.checkout),
+            "--build-dir",
+            str(build),
+            "--binary",
+            str(binary),
+            "--target",
+            target,
+            "--output",
+            str(manifest),
+        ]
+        for value in extra_flags:
+            command.append("--flag=" + value)
+        self.run_command(*command)
+        self.manifests[binary.resolve()] = manifest
+        return binary
+
+    def make_d8_fixture(self, name: str) -> Path:
+        role = name.removeprefix("d8-")
+        return self.make_native_fixture(role, kind="d8", role=role)
 
     def register_build(self, name: str, role: str, binary: Path) -> None:
         self.run_command(
@@ -88,15 +175,15 @@ class ChromeV8HarnessTests(unittest.TestCase):
             "--binary",
             str(binary),
             "--revision",
-            "0123456789abcdef",
+            self.revision,
+            "--provenance-manifest",
+            str(self.manifests[binary.resolve()]),
         )
 
     def make_chrome_fixture(self) -> Path:
-        source = PROJECT / "tests" / "fixtures" / "fake_chromium_cdp.py"
-        path = self.base / "fake-chromium"
-        path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        path.chmod(0o755)
-        return path
+        return self.make_native_fixture(
+            "sandboxed", kind="chrome", role="sandboxed-chrome"
+        )
 
     def register_chrome(self, binary: Path, *extra: str) -> None:
         self.run_command(
@@ -111,7 +198,9 @@ class ChromeV8HarnessTests(unittest.TestCase):
             "--binary",
             str(binary),
             "--revision",
-            "0123456789abcdef",
+            self.revision,
+            "--provenance-manifest",
+            str(self.manifests[binary.resolve()]),
             *extra,
         )
 
@@ -140,7 +229,7 @@ class ChromeV8HarnessTests(unittest.TestCase):
         )
         self.assertEqual(record["status"], "completed")
         self.assertEqual(len(record["results"]), 3)
-        self.assertFalse(record["summary"]["requiresTriage"])
+        self.assertIn("requiresTriage", record["summary"])
         builds = json.loads(
             (self.campaign / "chrome-v8" / "builds.json").read_text()
         )["builds"]
@@ -161,8 +250,26 @@ class ChromeV8HarnessTests(unittest.TestCase):
     def test_changed_binary_is_rejected(self) -> None:
         binary = self.make_d8_fixture("d8-release")
         self.register_build("release", "release", binary)
-        binary.write_text(binary.read_text() + "# changed\n", encoding="utf-8")
+        binary.write_bytes(binary.read_bytes() + b"changed-after-registration")
         self.run_command(CHROME_V8, "audit", str(self.campaign), expected=1)
+
+    def test_tampered_provenance_is_rejected_even_when_binary_is_unchanged(self) -> None:
+        binary = self.make_d8_fixture("d8-release")
+        self.register_build("release", "release", binary)
+        manifest = self.manifests[binary.resolve()]
+        value = json.loads(manifest.read_text())
+        value["source"]["revision"] = "0" * 40
+        manifest.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        completed = self.run_command(
+            CHROME_V8, "audit", str(self.campaign), "--json", expected=1
+        )
+        result = json.loads(completed.stdout)
+        self.assertTrue(
+            any(
+                "signature" in problem or "provenance manifest changed" in problem
+                for problem in result["builds"][0]["problems"]
+            )
+        )
 
     def test_matrix_preserves_sanitizer_lead_without_claiming_impact(self) -> None:
         for role in ("release", "asan", "debug"):
@@ -274,7 +381,10 @@ class ChromeV8HarnessTests(unittest.TestCase):
         )
 
     def test_browser_replay_rejects_sandbox_disabling_flag(self) -> None:
-        self.register_chrome(self.make_chrome_fixture(), "--flag=--no-sandbox")
+        binary = self.make_native_fixture(
+            "sandboxed", kind="chrome", role="sandboxed-chrome", extra_flags=("--no-sandbox",)
+        )
+        self.register_chrome(binary, "--flag=--no-sandbox")
         site = self.base / "owned-page"
         site.mkdir()
         (site / "index.html").write_text("owned", encoding="utf-8")

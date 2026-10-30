@@ -96,16 +96,35 @@ python3 scripts/primitive_verifier.py CAMPAIGN CRASH_ID \
 python3 scripts/dynamic_harness.py triage CAMPAIGN --crash-id CRASH_ID
 ```
 
-`controlled-pc` similarly requires the requested and observed PC to equal the
-fresh challenge across repeated processes. A sanitizer address, one constant
-marker, or repeated crashes at one address do not establish control.
+`controlled-pc` does not accept a JSON observation written by the target. The
+case must declare an operating-system-managed GDB or LLDB observer:
+
+```json
+{
+  "name": "positive",
+  "command": ["evidence/bin/owned-probe", "{challengeHex}"],
+  "stdinTemplate": "",
+  "observer": {"kind": "debugger", "tool": "gdb"},
+  "assertions": [{"id": "chosen-pc", "kind": "controlled-pc"}]
+}
+```
+
+Run PC recipes with `--challenge-bytes 8`. The runner chooses a fresh canonical
+48-bit address, launches the subject under a root-owned, non-writable system
+debugger, and retains raw debugger output plus debugger binary and version
+hashes. Validation re-checks the trust policy, hashes, target PID, and register
+value. An echo program that prints the requested PID or PC cannot pass. A
+sanitizer address, one constant marker, or repeated crashes at one address do
+not establish control.
 
 ## Trust boundary
 
-This machinery makes evidence recomputable; it does not magically make a
-custom observer correct. Retain the observer as a hashed target artifact,
-review its source, and prefer debugger, sanitizer, allocator, or engine-native
-observations that do not derive the claimed value from the expected result.
+This machinery makes evidence recomputable; it does not magically make every
+custom allocator or engine observer correct. Chosen-PC evidence is deliberately
+limited to trusted debugger output. For allocation identity and engine state,
+retain instrumentation as a separate reviewed artifact and require a second,
+independent invariant that does not derive the claimed value from the expected
+result.
 The adversarial reviewer should try to replace the target with an echo program;
 if the recipe would still pass, the assertion is not a useful security proof.
 The reviewer must also identify how the observer itself could lie or

@@ -1,7 +1,9 @@
 # Semantic hypothesis experiments
 
-Krineon's first semantic pilot is deliberately narrow: Next.js authorization
-to route execution. The structural framework analyzer identifies route,
+Krineon's HTTP semantic pilot is deliberately narrow: Next.js authorization
+to route execution. Native workerd lifetime proposals use the separate trace
+contract in [workerd native lifetime research](workerd-native.md); the HTTP
+runner does not execute them. The structural framework analyzer identifies route,
 middleware, and authentication evidence. The semantic loop turns only that
 evidence into a falsifiable model of one boundary:
 
@@ -9,8 +11,8 @@ evidence into a falsifiable model of one boundary:
 > the same request representation to the same protected resource.
 
 This is not a claim that Krineon derives security oracles for every framework,
-browser, native library, or sandbox. Add another boundary only after this one
-has measured value on a frozen corpus.
+browser, native library, or sandbox. Each additional boundary needs its own
+executable oracle and measured value on a frozen corpus.
 
 ## Model contract
 

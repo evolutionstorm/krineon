@@ -210,15 +210,18 @@ Krineon includes focused support for these targets and techniques:
 - Next.js, React, and Node.js production artifacts
 - Raw HTTP, cache, authentication, routing, and protocol differentials
 - Chrome and V8 release, sanitizer, debug, and owned-page browser replay
+- Signed build provenance with live sanitizer and REPRL capability checks
+- workerd GC, handle, reentry, cancellation, ArrayBuffer, and IoContext oracles
 - Tree-sitter, Joern, Trailmark, and Z3 assisted analysis
 - AFL++, libFuzzer, and Fuzzilli campaigns
 - V8, Istanbul, and source-map-aware JavaScript coverage
 - First-fault crash clustering, minimization, and bounded replay
 
 Static tools generate hypotheses. Runtime evidence decides whether a candidate
-advances. The semantic pilot is limited to the Next.js
-authorization-to-route-execution boundary; other entries in this list are
-execution adapters and analysis aids.
+advances. Executable semantic models cover the Next.js
+authorization-to-route-execution boundary and workerd native lifetime
+boundaries; other entries in this list are execution adapters and analysis
+aids.
 
 ## Finding requirements
 
@@ -265,4 +268,5 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Execution-boundary and typed chain reasoning](references/chain-reasoning.md)
 - [Held-out multi-stage evaluation](references/multistage-evaluation.md)
 - [Chrome and V8 campaigns](references/chrome-v8.md)
+- [workerd native lifetime research](references/workerd-native.md)
 - [Safety rules](references/safety.md)
