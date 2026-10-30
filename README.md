@@ -167,6 +167,24 @@ and bounded tests in an owned local environment. Do not test live systems.
 For a headless OMP campaign, configure `--wait-async` and an appropriate
 `--max-time` value so the session retains active workers.
 
+## Update Krineon
+
+Update the original Krineon clone used by the symbolic link:
+
+```bash
+git -C /path/to/krineon status --short
+git -C /path/to/krineon pull --ff-only
+```
+
+Run the pull only when the status output is empty. If it shows local changes,
+preserve or commit them before updating. The Codex, OpenCode, and OMP symbolic
+links use the updated files automatically, so you do not need to reinstall the
+skill. Restart the active client after the update so it reloads the skill.
+
+Do not change Krineon versions during an active campaign. Record the current
+revision with `git -C /path/to/krineon rev-parse HEAD`, finish or checkpoint the
+campaign, and then update.
+
 ## What Krineon does
 
 Krineon runs the following campaign:
