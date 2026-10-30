@@ -175,8 +175,10 @@ primitive must create a concrete missing-link experiment. Allocate budget by
 validated root causes and security explanations eliminated per unit cost, then
 by minimized stacks and coverage; task volume is not progress.
 
-Record negative knowledge only with exact input, conditions, guard, consumer,
-observation, evidence, and reopening criteria. Alternate broad exploration
+Record negative knowledge only with an exact experimental scope: mechanism,
+relevant inputs, configuration, state, prerequisite version, guard, consumer,
+observation, evidence, and reopening criteria. Sharing a producer or consumer
+does not share a falsification. Alternate broad exploration
 with one bounded focused investigation only after typed retained evidence
 unlocks a missing-link experiment. Measure invariant breaks, controlled
 capabilities, new consumers, resolved acquisition prerequisites, compatible

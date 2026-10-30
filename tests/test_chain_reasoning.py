@@ -93,6 +93,50 @@ def boundary(requirement: dict[str, object]) -> dict[str, object]:
 
 
 class ChainReasoningTests(unittest.TestCase):
+    def test_state_reduction_preserves_incomparable_remaining_execution_budgets(self) -> None:
+        root_capability = capability("root-capability")
+        reusable = capability("reusable-value")
+        intermediate = capability("intermediate")
+        executable = capability("module-selection", "manifest-valid")
+
+        root = primitive("root", [root_capability], [], inputs=True)
+        root["constraints"]["providedState"] = ["seed-state"]
+        one_shot = primitive("a-one-shot", [reusable], [root_capability])
+        conditional = primitive("b-conditional", [reusable], [root_capability])
+        conditional["constraints"]["requiredState"] = ["seed-state"]
+        consume = primitive("c-consume", [intermediate], [reusable])
+        consume["invalidatesCapabilities"] = ["reusable-value"]
+        consume["constraints"]["invalidatedState"] = ["seed-state"]
+        terminal = primitive(
+            "d-terminal", [executable], [reusable, intermediate]
+        )
+        for value in (root, one_shot, conditional, consume, terminal):
+            value["maxExecutions"] = 1
+
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "maximumConfigurations": 200,
+                "prerequisiteVersion": "fixture-v1",
+                "primitives": [root, one_shot, conditional, consume, terminal],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertIn(
+            [
+                "root",
+                "b-conditional",
+                "c-consume",
+                "a-one-shot",
+                "d-terminal",
+                "boundary:critical-exec",
+            ],
+            result["completeBoundaryPaths"],
+        )
+        self.assertTrue(
+            result["searchStrategy"]["futureExecutionBudgetDominance"]
+        )
+
     def test_backward_relevance_survives_unrelated_operation_growth(self) -> None:
         raw = capability("raw", "controlled")
         one = capability("one")
@@ -482,6 +526,13 @@ class ChainReasoningTests(unittest.TestCase):
                         "observation": "403",
                         "evidence": ["evidence/run.json"],
                         "reopeningConditions": [],
+                        "experimentalScope": {
+                            "mechanism": "case-fold",
+                            "relevantInputs": ["/ADMIN"],
+                            "configuration": ["production"],
+                            "state": ["anonymous"],
+                            "prerequisiteVersion": "fixture-v1",
+                        },
                     }
                 ],
                 "negativeKnowledge",

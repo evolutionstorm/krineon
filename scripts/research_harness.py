@@ -3943,6 +3943,7 @@ def experiment_frontier_identity(experiment: dict[str, Any]) -> str:
         "uncertainty": experiment.get("uncertainty", []),
         "sourceEvidence": experiment.get("sourceEvidence", []),
         "kind": experiment.get("kind", "missing-link"),
+        "experimentalScope": experiment.get("experimentalScope"),
     }
     return "EF-" + canonical_digest(identity)[:20]
 
@@ -3950,22 +3951,38 @@ def experiment_frontier_identity(experiment: dict[str, Any]) -> str:
 def scoped_negative_matches_experiment(
     experiment: dict[str, Any], negative: dict[str, Any]
 ) -> bool:
-    """Apply a negative only to the exact consumer/mechanism it falsified."""
+    """Apply a negative only to the exact experiment scope it falsified."""
 
     consumer = str(negative.get("consumer") or "")
     if consumer and consumer != str(experiment.get("consumer") or ""):
         return False
-    mechanism = str(negative.get("mechanism") or "")
-    missing_type = str((experiment.get("missingCapability") or {}).get("type") or "")
-    identities = {
-        str(experiment.get("id") or ""),
-        str(experiment.get("producer") or ""),
-        missing_type,
+    experiment_scope = experiment.get("experimentalScope")
+    negative_scope = negative.get("experimentalScope")
+    if not isinstance(experiment_scope, dict) or not isinstance(negative_scope, dict):
+        return False
+    required = {
+        "mechanism",
+        "relevantInputs",
+        "configuration",
+        "state",
+        "prerequisiteVersion",
     }
-    same_producer = str(negative.get("primitive") or "") == str(
-        experiment.get("producer") or ""
-    )
-    return bool(same_producer or (mechanism and mechanism in identities))
+    if not required.issubset(experiment_scope) or not required.issubset(negative_scope):
+        return False
+    version = str(experiment_scope.get("prerequisiteVersion") or "")
+    if version in {"", "unknown", "unspecified-prerequisite-version"}:
+        return False
+
+    def canonical_scope(value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "mechanism": str(value.get("mechanism") or ""),
+            "relevantInputs": sorted(set(map(str, value.get("relevantInputs") or []))),
+            "configuration": sorted(set(map(str, value.get("configuration") or []))),
+            "state": sorted(set(map(str, value.get("state") or []))),
+            "prerequisiteVersion": str(value.get("prerequisiteVersion") or ""),
+        }
+
+    return canonical_scope(experiment_scope) == canonical_scope(negative_scope)
 
 
 def reconcile_experiment_frontier(connection: sqlite3.Connection) -> None:

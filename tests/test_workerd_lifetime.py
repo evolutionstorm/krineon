@@ -97,7 +97,7 @@ class WorkerdLifetimeTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1, completed.stderr)
             record = json.loads(output.read_text())
             self.assertEqual(
-                {value["family"] for value in record["violations"]},
+                {value["family"] for value in record["confirmedDisagreements"]},
                 {
                     "missing-gc-visitation",
                     "traced-handle-move",
@@ -107,8 +107,92 @@ class WorkerdLifetimeTests(unittest.TestCase):
                     "iocontext-affinity",
                 },
             )
+            self.assertEqual(record["outcome"], "confirmed-invariant-disagreement")
             self.assertFalse(record["vulnerabilityVerdictProduced"])
             self.assertRegex(record["trace"]["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_runtime_oracle_distinguishes_preservation_from_missing_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def invoke(name: str, events: list[dict[str, object]], expected: int) -> dict:
+                trace = root / f"{name}.jsonl"
+                output = root / f"{name}.json"
+                trace.write_text(
+                    "".join(json.dumps(value) + "\n" for value in events),
+                    encoding="utf-8",
+                )
+                completed = subprocess.run(
+                    [sys.executable, str(ORACLE), "--trace", str(trace), "--output", str(output)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, expected, completed.stderr)
+                return json.loads(output.read_text())
+
+            preserved = invoke(
+                "preserved",
+                [
+                    {"event": "register-traced", "object": "holder", "field": "value"},
+                    {"event": "gc-begin"},
+                    {"event": "gc-visit", "object": "holder", "field": "value"},
+                    {"event": "gc-end"},
+                    {"event": "handle-use", "object": "holder", "field": "value", "alive": True},
+                    {"event": "handle-move", "from": "h1", "to": "h2", "generation": 1},
+                    {"event": "handle-use", "handle": "h1", "generation": 2},
+                    {"event": "owner-register", "object": "owner", "generation": 1},
+                    {"event": "borrow", "object": "owner", "pointer": "p1", "generation": 1},
+                    {"event": "js-reentry"},
+                    {"event": "owner-generation", "object": "owner", "generation": 1},
+                    {"event": "pointer-use", "pointer": "p1"},
+                    {"event": "object-register", "object": "request"},
+                    {"event": "callback-enter", "object": "request"},
+                    {"event": "buffer-register", "object": "buffer", "generation": 1},
+                    {"event": "pointer-acquire", "object": "buffer", "pointer": "p2", "generation": 1},
+                    {"event": "buffer-generation", "object": "buffer", "generation": 1},
+                    {"event": "pointer-use", "pointer": "p2"},
+                    {"event": "io-schedule", "callback": "cb", "context": "io-a"},
+                    {"event": "callback-enter", "callback": "cb", "context": "io-a", "explicitTransfer": False},
+                    {"event": "trace-end"},
+                ],
+                0,
+            )
+            self.assertEqual(preserved["outcome"], "observed-invariant-preservation")
+            self.assertFalse(preserved["confirmedDisagreements"])
+            self.assertFalse(preserved["inconclusive"])
+
+            incomplete = invoke(
+                "incomplete",
+                [
+                    {"event": "owner-register", "object": "owner", "generation": 1},
+                    {"event": "borrow", "object": "owner", "pointer": "p1", "generation": 1},
+                    {"event": "js-reentry"},
+                    {"event": "pointer-use", "pointer": "p1"},
+                    {"event": "buffer-register", "object": "buffer", "generation": 1},
+                    {"event": "pointer-acquire", "object": "buffer", "pointer": "p2", "generation": 1},
+                    {"event": "pointer-use", "pointer": "p2"},
+                    {"event": "trace-end"},
+                ],
+                3,
+            )
+            self.assertEqual(incomplete["outcome"], "inconclusive-missing-telemetry")
+            self.assertFalse(incomplete["confirmedDisagreements"])
+            self.assertEqual(
+                {value["family"] for value in incomplete["inconclusive"]},
+                {
+                    "borrowed-pointer-js-reentry",
+                    "arraybuffer-detach-resize-ownership",
+                },
+            )
+            borrow = next(
+                value
+                for value in incomplete["inconclusive"]
+                if value["family"] == "borrowed-pointer-js-reentry"
+            )
+            self.assertEqual(
+                borrow["missingTelemetry"], ["owner-generation after js-reentry"]
+            )
 
     def test_target_authored_json_cannot_prove_controlled_pc(self) -> None:
         challenge = "0000414141414141"

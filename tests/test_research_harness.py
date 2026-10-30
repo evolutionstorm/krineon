@@ -16,6 +16,7 @@ from scripts.research_harness import (
     connect_orchestration,
     rebuild_campaign_capability_graph,
     schedule_experiment_frontier,
+    scoped_negative_matches_experiment,
     validate_research_lead,
 )
 
@@ -36,6 +37,9 @@ class HarnessTests(unittest.TestCase):
             connection = connect_orchestration(campaign)
 
             def experiment(identifier: str, score: int) -> dict[str, object]:
+                mechanism = (
+                    f"producer-{identifier}->boundary:exec:capability-{identifier}"
+                )
                 return {
                     "id": identifier,
                     "producer": "producer-" + identifier,
@@ -53,6 +57,13 @@ class HarnessTests(unittest.TestCase):
                     "uncertainty": [],
                     "ranking": {"score": score},
                     "sourceEvidence": ["src/fixture.js:1"],
+                    "experimentalScope": {
+                        "mechanism": mechanism,
+                        "relevantInputs": ["request bytes"],
+                        "configuration": ["production"],
+                        "state": ["fresh"],
+                        "prerequisiteVersion": "fixture-v1",
+                    },
                 }
 
             analysis = {
@@ -85,6 +96,13 @@ class HarnessTests(unittest.TestCase):
                     "mechanism": "capability-second",
                     "consumer": "boundary:exec",
                     "reopeningConditions": ["different producer or guard state"],
+                    "experimentalScope": {
+                        "mechanism": "producer-second->boundary:exec:capability-second",
+                        "relevantInputs": ["request bytes"],
+                        "configuration": ["production"],
+                        "state": ["fresh"],
+                        "prerequisiteVersion": "fixture-v1",
+                    },
                 }
             ]
             second_task = schedule_experiment_frontier(
@@ -108,6 +126,39 @@ class HarnessTests(unittest.TestCase):
                 ],
             )
             connection.close()
+
+    def test_negative_scope_does_not_cross_mechanism_configuration_or_version(self) -> None:
+        experiment = {
+            "producer": "shared-producer",
+            "consumer": "boundary:exec",
+            "experimentalScope": {
+                "mechanism": "new-production-mechanism",
+                "relevantInputs": ["multipart body"],
+                "configuration": ["production", "sandbox=enabled"],
+                "state": ["authenticated=false", "cache=warm"],
+                "prerequisiteVersion": "v2",
+            },
+        }
+        base_negative = {
+            "primitive": "shared-producer",
+            "consumer": "boundary:exec",
+            "mechanism": "old-debug-mechanism",
+            "experimentalScope": {
+                "mechanism": "old-debug-mechanism",
+                "relevantInputs": ["debug fixture"],
+                "configuration": ["debug", "sandbox=disabled"],
+                "state": ["authenticated=true", "cache=cold"],
+                "prerequisiteVersion": "v1",
+            },
+        }
+        self.assertFalse(scoped_negative_matches_experiment(experiment, base_negative))
+        exact = json.loads(json.dumps(base_negative))
+        exact["experimentalScope"] = json.loads(
+            json.dumps(experiment["experimentalScope"])
+        )
+        self.assertTrue(scoped_negative_matches_experiment(experiment, exact))
+        exact["experimentalScope"]["prerequisiteVersion"] = "v3"
+        self.assertFalse(scoped_negative_matches_experiment(experiment, exact))
 
     def run_cli(self, *args: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
         completed = subprocess.run(

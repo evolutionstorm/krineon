@@ -48,10 +48,14 @@ objects, state, ordering, lifetime, deployment, acquisition, and context
 conditions are jointly satisfied in one execution.
 
 The analyzer deduplicates equivalent semantic states instead of treating every
-operation ordering as distinct. It prioritizes primitives found by backward
-relevance from the Critical boundary while retaining unrelated frontier states.
-Equivalent independent orderings are reduced; histories remain in witnesses
-where ordering changes security-relevant behavior. If the budget ends first,
+operation ordering as distinct. Its reduction is future-aware: two states are
+equivalent only when their current effects match and one state's remaining
+per-primitive execution budgets dominate the other. Incomparable budgets stay
+on the frontier, preventing traversal order or primitive names from erasing a
+later generation-dependent composition. It prioritizes primitives found by
+backward relevance from the Critical boundary while retaining unrelated
+frontier states. Equivalent independent orderings are reduced; histories
+remain in witnesses where ordering changes security-relevant behavior. If the budget ends first,
 the result contains a checkpoint, retained frontier, and mandatory continuation
 experiment. Resume that checkpoint rather than restarting or treating
 truncation as a negative result.
@@ -70,7 +74,9 @@ durable experiment frontier records `pending`, `running`, `confirmed`,
 `refuted`, `inconclusive`, and `superseded` states. It schedules the
 highest-value eligible experiment, even when the graph itself is unchanged or
 a higher-ranked experiment already finished. Scoped negatives refute only their
-matching producer/consumer mechanism. A materially changed mechanism gets a new
+matching experimental scope. Scope includes mechanism, relevant inputs,
+configuration, state, and prerequisite version. A shared producer or consumer
+does not imply a shared falsification. A materially changed scope gets a new
 identity and can reopen investigation without erasing the earlier result.
 
 ## Preserve state history
@@ -119,10 +125,12 @@ queue.
 
 ## Retain scoped negative knowledge
 
-A negative result must name the mechanism, exact inputs, test conditions,
-enforcing guard, downstream consumer, observation, evidence, and conditions
-that would justify reopening it. It eliminates that mechanism only in that
-scope. It does not establish that the feature, parser, or boundary is safe.
+A negative result must name an `experimentalScope` containing the mechanism,
+relevant inputs, configuration, state, and prerequisite version. It must also
+retain the enforcing guard, downstream consumer, observation, evidence, and
+conditions that would justify reopening it. Falsification matching is exact
+across all scope dimensions and fails open when the version is unspecified. It
+does not establish that the feature, parser, or boundary is safe.
 
 ## Measure chain progress
 

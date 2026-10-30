@@ -34,12 +34,16 @@ python3 scripts/workerd_lifetime_oracle.py \
   --output CAMPAIGN/evidence/workerd/oracle.json
 ```
 
-The oracle is stateful. For example, it reports a borrowed-pointer invariant
-only when a recorded JavaScript reentry is followed by an owner-generation
-change and then a use of the old pointer. It reports IoContext affinity only
-when callback execution differs from the recorded scheduling context and no
-explicit transfer was recorded. Similar event sequences cover GC visitation,
-handle moves, cancellation, and ArrayBuffer ownership.
+The oracle is stateful and has three outcomes: confirmed invariant
+disagreement, observed invariant preservation, and inconclusive because
+required telemetry is missing. For example, a borrowed-pointer disagreement
+requires a recorded JavaScript reentry, an explicit later owner-generation
+observation, and then use of the old pointer. Absence of the later generation
+event is inconclusive, not evidence that the generation changed. ArrayBuffer
+assessment similarly requires an identity and a generation observation after
+pointer acquisition. IoContext assessment requires scheduling context,
+callback context, and an explicit transfer indicator. Similar complete event
+sequences cover GC visitation, handle moves, and cancellation.
 
 An oracle violation is still a lead. Preserve the trace patch separately from
 the target, run an enforcing negative control, replay with another observer,

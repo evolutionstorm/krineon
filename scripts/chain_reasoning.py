@@ -312,6 +312,9 @@ def normalize_negative_knowledge(value: Any, field: str) -> list[dict[str, Any]]
         prefix = f"{field}[{index}]"
         if not isinstance(item, dict):
             raise RuntimeError(f"{prefix} must be an object")
+        scope = normalize_experimental_scope(
+            item.get("experimentalScope"), f"{prefix}.experimentalScope"
+        )
         rows.append(
             {
                 "mechanism": require_text(item.get("mechanism"), f"{prefix}.mechanism"),
@@ -331,9 +334,30 @@ def normalize_negative_knowledge(value: Any, field: str) -> list[dict[str, Any]]
                     item.get("reopeningConditions"),
                     f"{prefix}.reopeningConditions",
                 ),
+                "experimentalScope": scope,
             }
         )
     return rows
+
+
+def normalize_experimental_scope(value: Any, field: str) -> dict[str, Any]:
+    """Normalize the exact scope to which an observation can falsify a route."""
+
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    return {
+        "mechanism": require_text(value.get("mechanism"), f"{field}.mechanism"),
+        "relevantInputs": require_text_list(
+            value.get("relevantInputs"), f"{field}.relevantInputs"
+        ),
+        "configuration": require_text_list(
+            value.get("configuration"), f"{field}.configuration"
+        ),
+        "state": require_text_list(value.get("state"), f"{field}.state"),
+        "prerequisiteVersion": require_text(
+            value.get("prerequisiteVersion"), f"{field}.prerequisiteVersion"
+        ),
+    }
 
 
 def normalize_boundary(value: Any, field: str = "criticalBoundary") -> dict[str, Any]:
@@ -752,10 +776,22 @@ def apply_primitive(
     }
 
 
+def remaining_execution_budgets(
+    configuration: dict[str, Any], execution_limits: dict[str, int]
+) -> dict[str, int]:
+    counts = configuration.get("counts", {})
+    return {
+        identifier: max(0, limit - int(counts.get(identifier, 0)))
+        for identifier, limit in sorted(execution_limits.items())
+    }
+
+
 def configuration_key(
-    configuration: dict[str, Any], ordering_sensitive: set[str] | None = None
+    configuration: dict[str, Any],
+    ordering_sensitive: set[str] | None = None,
+    execution_limits: dict[str, int] | None = None,
 ) -> str:
-    """Return a semantic state key, excluding irrelevant execution history."""
+    """Return current effects plus future operation availability."""
 
     ordering_sensitive = ordering_sensitive or set()
     semantic = {
@@ -774,7 +810,19 @@ def configuration_key(
             & ordering_sensitive
         ),
     }
+    if execution_limits is not None:
+        semantic["remainingExecutionBudgets"] = remaining_execution_budgets(
+            configuration, execution_limits
+        )
     return json.dumps(semantic, sort_keys=True, separators=(",", ":"))
+
+
+def execution_budget_dominates(
+    left: dict[str, int], right: dict[str, int]
+) -> bool:
+    """Return true when left preserves every future operation available to right."""
+
+    return all(left.get(identifier, 0) >= remaining for identifier, remaining in right.items())
 
 
 def backward_relevant_primitives(
@@ -804,6 +852,63 @@ def backward_relevant_primitives(
     return relevant
 
 
+def experimental_scope(
+    producer: dict[str, Any] | None,
+    consumer: dict[str, Any],
+    missing_type: str,
+    prerequisite_version: str,
+    *,
+    state: list[str] | None = None,
+) -> dict[str, Any]:
+    """Describe the exact mechanism/configuration an experiment exercises."""
+
+    producer_id = str(producer.get("id")) if producer else "unresolved-producer"
+    inputs = (
+        list(producer.get("attackerControlledInputs", []))
+        if producer
+        else ["unresolved-source-input"]
+    )
+    configuration = sorted(
+        set(
+            [
+                *(
+                    producer.get("constraints", {}).get("deployment", [])
+                    if producer
+                    else []
+                ),
+                *consumer.get("constraints", {}).get("deployment", []),
+            ]
+        )
+    ) or ["default-configuration"]
+    state_atoms = sorted(
+        set(
+            [
+                *(
+                    producer.get("constraints", {}).get("lifetime", [])
+                    if producer
+                    else []
+                ),
+                *(
+                    producer.get("constraints", {}).get("requiredState", [])
+                    if producer
+                    else []
+                ),
+                *consumer.get("constraints", {}).get("lifetime", []),
+                *consumer.get("constraints", {}).get("ordering", []),
+                *consumer.get("constraints", {}).get("requiredState", []),
+                *(state or []),
+            ]
+        )
+    ) or ["fresh-state"]
+    return {
+        "mechanism": f"{producer_id}->{consumer['id']}:{missing_type}",
+        "relevantInputs": sorted(set(inputs)) or ["no-direct-attacker-input"],
+        "configuration": configuration,
+        "state": state_atoms,
+        "prerequisiteVersion": prerequisite_version,
+    }
+
+
 def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
     if document.get("schemaVersion") != 1:
         raise RuntimeError("chain specification requires schemaVersion 1")
@@ -817,6 +922,9 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
     ]
     if not primitives or not boundaries:
         raise RuntimeError("chain specification requires primitives and boundaries")
+    prerequisite_version = str(
+        document.get("prerequisiteVersion") or "unspecified-prerequisite-version"
+    )
     by_id = {row["id"]: row for row in primitives}
     if len(by_id) != len(primitives):
         raise RuntimeError("primitive IDs must be unique")
@@ -843,6 +951,10 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         if value.startswith(("after:", "before:")) and ":" in value
     }
     relevant_primitives = backward_relevant_primitives(primitives, boundaries)
+    execution_limits = {
+        primitive["id"]: int(primitive["maxExecutions"])
+        for primitive in primitives
+    }
     empty = {
         "sequence": [],
         "executed": [],
@@ -855,17 +967,24 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
     }
     configurations: list[dict[str, Any]] = []
     queue: list[tuple[int, int, int, dict[str, Any]]] = []
-    seen: set[str] = set()
+    budget_frontiers: dict[str, list[dict[str, int]]] = {}
     partial_order_reductions = 0
     serial = 0
 
     def enqueue(configuration: dict[str, Any]) -> None:
         nonlocal serial, partial_order_reductions
-        key = configuration_key(configuration, ordering_sensitive)
-        if key in seen:
+        semantic_key = configuration_key(configuration, ordering_sensitive)
+        budget = remaining_execution_budgets(configuration, execution_limits)
+        frontier = budget_frontiers.setdefault(semantic_key, [])
+        if any(execution_budget_dominates(existing, budget) for existing in frontier):
             partial_order_reductions += 1
             return
-        seen.add(key)
+        frontier[:] = [
+            existing
+            for existing in frontier
+            if not execution_budget_dominates(budget, existing)
+        ]
+        frontier.append(budget)
         serial += 1
         relevant_count = sum(
             1 for value in configuration["sequence"] if value in relevant_primitives
@@ -879,6 +998,7 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         "primitives": primitives,
         "boundaries": boundaries,
         "orderingSensitive": sorted(ordering_sensitive),
+        "executionLimits": execution_limits,
     }
     search_digest = hashlib.sha256(
         json.dumps(
@@ -895,9 +1015,22 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("resumeCheckpoint states and frontier must be lists")
         configurations.extend(prior_states)
         for configuration in [*prior_states, *frontier]:
-            seen.add(configuration_key(configuration, ordering_sensitive))
+            semantic_key = configuration_key(configuration, ordering_sensitive)
+            budget = remaining_execution_budgets(configuration, execution_limits)
+            budgets = budget_frontiers.setdefault(semantic_key, [])
+            if not any(execution_budget_dominates(existing, budget) for existing in budgets):
+                budgets[:] = [
+                    existing
+                    for existing in budgets
+                    if not execution_budget_dominates(budget, existing)
+                ]
+                budgets.append(budget)
         # Frontier states need to be reinserted after seeding the visited set.
         for configuration in frontier:
+            semantic_key = configuration_key(configuration, ordering_sensitive)
+            budget = remaining_execution_budgets(configuration, execution_limits)
+            if budget not in budget_frontiers.get(semantic_key, []):
+                continue
             serial += 1
             relevant_count = sum(
                 1
@@ -922,6 +1055,11 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
     explored_this_run = 0
     while queue and explored_this_run < maximum_configurations:
         _, _, _, configuration = heapq.heappop(queue)
+        semantic_key = configuration_key(configuration, ordering_sensitive)
+        budget = remaining_execution_budgets(configuration, execution_limits)
+        if budget not in budget_frontiers.get(semantic_key, []):
+            partial_order_reductions += 1
+            continue
         configurations.append(configuration)
         explored_this_run += 1
         counts = configuration.get("counts", {})
@@ -1046,6 +1184,12 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
                     "producer": candidate["id"] if candidate else None,
                     "consumer": consumer["id"],
                     "missingCapability": requirement,
+                    "experimentalScope": experimental_scope(
+                        candidate,
+                        consumer,
+                        requirement["type"],
+                        prerequisite_version,
+                    ),
                     "question": (
                         f"Can {candidate['id']} deliver {requirement['type']} to {consumer['id']}"
                         if candidate
@@ -1139,6 +1283,16 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
                                 "limitations": [],
                                 "forbiddenLimitations": [],
                             },
+                            "experimentalScope": experimental_scope(
+                                candidate,
+                                consumer,
+                                "execution-prerequisite",
+                                prerequisite_version,
+                                state=[
+                                    *best_configuration.get("state", []),
+                                    *blockers,
+                                ],
+                            ),
                             "question": (
                                 f"Can one execution satisfy all prerequisites for {consumer['id']}: "
                                 + ", ".join(blockers)
@@ -1194,6 +1348,13 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
                 "properties": ["retained-semantic-frontier"],
                 "limitations": [],
                 "forbiddenLimitations": [],
+            },
+            "experimentalScope": {
+                "mechanism": "retained-frontier->critical-boundary-search:search-continuation",
+                "relevantInputs": ["retained-semantic-frontier"],
+                "configuration": ["normalized-chain-specification:" + search_digest],
+                "state": ["search-budget-exhausted"],
+                "prerequisiteVersion": prerequisite_version,
             },
             "question": "Continue the retained semantic frontier instead of restarting or abandoning a truncated chain search",
             "setupSequence": [],
@@ -1261,6 +1422,7 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         "searchTruncated": search_truncated,
         "searchStrategy": {
             "semanticStateDeduplication": True,
+            "futureExecutionBudgetDominance": True,
             "partialOrderReductions": partial_order_reductions,
             "backwardRelevantPrimitives": sorted(relevant_primitives),
             "historyRetainedOnlyForWitnessesAndOrdering": True,

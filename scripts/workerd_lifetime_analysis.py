@@ -192,7 +192,12 @@ def analyze_file(relative: Path, text: str) -> list[dict[str, Any]]:
                     {"at": source(relative, use_line), "emit": "pointer-use"},
                 ],
                 oracle_events=(
-                    ["buffer-register", "pointer-acquire", "buffer-detach-or-resize", "pointer-use"]
+                    [
+                        "buffer-register",
+                        "pointer-acquire",
+                        "buffer-detach-or-resize or post-acquisition buffer-generation",
+                        "pointer-use",
+                    ]
                     if family.startswith("arraybuffer")
                     else ["owner-register", "borrow", "js-reentry", "owner-generation", "pointer-use"]
                 ),
@@ -228,7 +233,11 @@ def analyze_file(relative: Path, text: str) -> list[dict[str, Any]]:
                         {"at": source(relative, base_line), "emit": "io-schedule"},
                         {"at": "callback entry", "emit": "callback-enter"},
                     ],
-                    oracle_events=["io-context-register", "io-schedule", "callback-enter"],
+                    oracle_events=[
+                        "io-context-register",
+                        "io-schedule",
+                        "callback-enter with context and explicitTransfer",
+                    ],
                 ))
     return values
 
