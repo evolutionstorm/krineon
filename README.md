@@ -15,7 +15,7 @@ Install or provide the following components:
 
 - Git
 - Python 3
-- Codex or OMP (Oh My Pi)
+- Codex, OpenCode, or OMP (Oh My Pi)
 - The target source code or program scope
 - The program rules and authorization boundary
 - A disposable local environment for dynamic testing
@@ -73,6 +73,50 @@ live-system access, or a broader authorization boundary.
 ```
 
 Krineon records an unresolved source or scope choice instead of guessing.
+
+## Start with OpenCode
+
+### Load the skill in OpenCode
+
+For use from any authorized target checkout, install the skill globally:
+
+```bash
+git clone https://github.com/evolutionstorm/krineon.git
+cd krineon
+mkdir -p "$HOME/.config/opencode/skills"
+ln -s "$PWD" "$HOME/.config/opencode/skills/krineon"
+```
+
+If the destination already exists, remove or rename that installation first.
+Quit and restart OpenCode after installing or changing the skill; discovery and
+configuration are loaded at startup.
+
+The repository also includes `.opencode/skills/krineon/SKILL.md`, so OpenCode
+can discover the skill automatically when started inside this checkout. Use
+the global link above when working in a separate target checkout.
+
+Open the authorized target:
+
+```bash
+cd /path/to/authorized-target
+opencode
+```
+
+Start the campaign with this prompt:
+
+```text
+Load the krineon skill. Read PROGRAM_RULES.md and audit this pinned checkout
+for a complete Critical, RCE, sandbox-escape, or zero-day chain. Use source
+review and bounded tests in an owned local environment. Do not test live
+systems. Coordinate independent OpenCode tasks and require machine-backed
+evidence before promotion.
+```
+
+The primary OpenCode agent remains the coordinator. It uses `task` workers and
+the durable Krineon queue; a finished task is not a substitute for a submitted
+result or independent replay. If the skill is not listed, verify its
+frontmatter, the installation path, and that `permission.skill` does not deny
+`krineon`.
 
 ## Start with OMP
 
@@ -177,6 +221,7 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 
 - [Skill instructions](SKILL.md)
 - [Codex runtime adapter](references/codex.md)
+- [OpenCode skill adapter](.opencode/skills/krineon/SKILL.md)
 - [Research methodology](references/methodology.md)
 - [Critical/RCE promotion contract](references/critical-rce.md)
 - [Orchestration and independent replay](references/orchestration.md)

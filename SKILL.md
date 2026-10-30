@@ -1,6 +1,6 @@
 ---
 name: krineon
-description: Run authorized first-principles source audits that coordinate independent agents, retain machine-backed research leads, and promote only complete Critical/RCE chains. Use for full security campaigns against pinned source or owned labs; do not use for unapproved live testing or patch-diff discovery.
+description: Run authorized zero-day, Critical/RCE, source-audit, and local-fuzzing campaigns with independent agents, machine-backed evidence, and replay. Use for full campaigns against pinned source or owned labs, including Next.js, React, and Node.js; not for unapproved live testing, narrow reviews, or patch-diff discovery.
 ---
 
 # Krineon Security Research
@@ -29,6 +29,18 @@ On Codex, invoke `$krineon`, keep the root agent as coordinator, and read the
 identity, `interrupt_agent` for unsafe or superseded work, and `wait_agent` only
 when no useful coordinator work remains. A child final response is a
 notification, not durable task completion.
+
+On OpenCode, load `krineon` through the native `skill` tool and keep the primary
+agent as coordinator. Use the `task` tool for bounded, non-overlapping workers:
+`explore` for read-only analysis and `general` for workers that write artifacts
+or run authorized local experiments. Launch independent tasks in parallel
+within safe capacity. Every task has fresh context, so provide absolute skill,
+campaign, authorization, and workspace paths plus the claim instruction, exact
+revision, deliverables, evidence contract, and stop conditions. Assign a
+distinct registered identity such as `opencode:worker-a` to each fresh task and
+record its returned `task_id` as the runtime handle. Resuming a task preserves
+its identity; independent replay requires a fresh task and worker identity.
+Never register multiple worker names for one OpenCode task or session.
 
 On OMP, invoke `/skill:krineon`, resolve supporting resources through
 `skill://krineon`, and follow the
