@@ -20,6 +20,14 @@ leads later require their own `taskResult.coordinatorReplay`; the coordinator
 executes the frozen artifact itself and ignores a worker-supplied `passed`
 label.
 
+Submission uses a separate `verifying` state. The scheduler commits that state
+and releases its SQLite write lock before coordinator re-execution. Claims,
+heartbeats, cancellation, budget enforcement, lease recovery, and the unique
+active-task constraint all treat `verifying` as leased work. A failed or
+interrupted verification restores the same lease to `running`; a timeout kills
+the controlled process group and makes the task recoverable under the normal
+attempt budget.
+
 After this gate, use every safe worker slot exposed by the runtime continuously.
 Four or more workers may run concurrently when runtime capacity and independent
 work permit. Keep the root agent coordinating and synthesizing while workers

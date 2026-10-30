@@ -263,6 +263,31 @@ def validate_attestation(
         target_hashes.append(actual)
         target_paths.add(path.resolve())
 
+    recipe_subject_value = recipe_record.get("subjectArtifact")
+    recipe_subject_index = recipe_record.get("subjectArgvIndex")
+    try:
+        recipe_subject = safe_campaign_path(root, recipe_subject_value)
+    except ValueError:
+        recipe_subject = None
+        errors.append("recipe:subjectArtifact")
+    if recipe_subject is not None and recipe_subject.resolve() not in target_paths:
+        errors.append("recipe:subject-not-declared-target")
+    if not isinstance(recipe_subject_index, int) or not 0 <= recipe_subject_index <= 32:
+        errors.append("recipe:subjectArgvIndex")
+
+    retained_subject = (
+        record.get("subjectArtifact")
+        if isinstance(record.get("subjectArtifact"), dict)
+        else {}
+    )
+    if recipe_subject is not None:
+        if retained_subject.get("path") != recipe_subject.relative_to(root).as_posix():
+            errors.append("subjectArtifact:path")
+        if retained_subject.get("sha256") != sha256_file(recipe_subject):
+            errors.append("subjectArtifact:hash")
+    if retained_subject.get("argvIndex") != recipe_subject_index:
+        errors.append("subjectArtifact:argv-index")
+
     recipe_cases = recipe_record.get("cases")
     recipe_by_name = {
         str(case.get("name")): case
@@ -301,26 +326,39 @@ def validate_attestation(
             all_pids.append(pid)
             command = run.get("command")
             cwd_value = run.get("cwd")
-            invoked_targets: set[Path] = set()
+            invoked_subject: Path | None = None
             if isinstance(command, list) and isinstance(cwd_value, str):
                 try:
                     cwd_path = safe_campaign_path(root, cwd_value)
-                    for argument in command:
-                        if not isinstance(argument, str):
-                            continue
-                        candidate = Path(argument)
-                        if candidate.is_absolute():
-                            resolved = candidate.resolve()
-                        elif "/" in argument or "\\" in argument:
-                            resolved = (cwd_path / candidate).resolve()
-                        else:
-                            continue
-                        if resolved in target_paths:
-                            invoked_targets.add(resolved)
-                except ValueError:
+                    if (
+                        isinstance(recipe_subject_index, int)
+                        and 0 <= recipe_subject_index < len(command)
+                        and isinstance(command[recipe_subject_index], str)
+                    ):
+                        argument = Path(command[recipe_subject_index])
+                        invoked_subject = (
+                            argument.resolve()
+                            if argument.is_absolute()
+                            else (cwd_path / argument).resolve()
+                        )
+                except (ValueError, OSError):
                     pass
-            if not invoked_targets:
-                errors.append(prefix + ":command-does-not-invoke-target-artifact")
+            if recipe_subject is None or invoked_subject != recipe_subject.resolve():
+                errors.append(prefix + ":command-subject-binding")
+            binding = run.get("executionBinding")
+            binding = binding if isinstance(binding, dict) else {}
+            if recipe_subject is not None and binding.get("subjectArtifact") != recipe_subject.relative_to(root).as_posix():
+                errors.append(prefix + ":execution-binding-subject")
+            if binding.get("subjectArgvIndex") != recipe_subject_index:
+                errors.append(prefix + ":execution-binding-index")
+            try:
+                launcher = Path(str(binding.get("launcher") or "")).resolve()
+                if not launcher.is_file() or sha256_file(launcher) != binding.get("launcherSha256"):
+                    errors.append(prefix + ":execution-binding-launcher")
+                if not isinstance(command, list) or not command or Path(str(command[0])).resolve() != launcher:
+                    errors.append(prefix + ":execution-binding-command")
+            except OSError:
+                errors.append(prefix + ":execution-binding-launcher")
             challenge_hex = str(run.get("challengeHex") or "").lower()
             if not re.fullmatch(r"[0-9a-f]{16,128}", challenge_hex):
                 errors.append(prefix + ":challenge")

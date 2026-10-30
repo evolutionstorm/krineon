@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import platform
 import subprocess
 import sys
 import tempfile
@@ -140,6 +141,18 @@ class ChromeV8HarnessTests(unittest.TestCase):
         self.assertEqual(record["status"], "completed")
         self.assertEqual(len(record["results"]), 3)
         self.assertFalse(record["summary"]["requiresTriage"])
+        builds = json.loads(
+            (self.campaign / "chrome-v8" / "builds.json").read_text()
+        )["builds"]
+        expected_architecture = "arm64" if platform.machine().lower() in {
+            "arm64",
+            "arm64e",
+            "aarch64",
+            "armx64",
+        } else "x86_64"
+        self.assertTrue(
+            all(build["architecture"] == expected_architecture for build in builds)
+        )
         self.run_command(RESEARCH, "hash", str(self.campaign))
         manifest = (self.campaign / "SHA256SUMS").read_text()
         self.assertIn("chrome-v8/builds.json", manifest)

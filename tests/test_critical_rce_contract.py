@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -132,7 +133,95 @@ class CriticalRceContractTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.install_controlled_experiment(campaign, finding_id)
 
+    def install_controlled_experiment(
+        self, campaign: Path, finding_id: str
+    ) -> None:
+        from scripts.research_harness import coordinator_reexecute_result
+
+        campaign_record = json.loads((campaign / "campaign.json").read_text())
+        if "experimentAuthority" not in campaign_record:
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            campaign_record = json.loads((campaign / "campaign.json").read_text())
+        target = campaign / "evidence" / "bin" / "controlled_target.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(
+            (PROJECT / "tests" / "fixtures" / "reality_target.py").read_bytes()
+        )
+        target_name = target.relative_to(campaign).as_posix()
+        frozen = [
+            value
+            for value in campaign_record.get("frozenTargetArtifacts", [])
+            if isinstance(value, dict) and value.get("path") != target_name
+        ]
+        frozen.append(
+            {
+                "path": target_name,
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                "producer": "critical-contract-fixture",
+            }
+        )
+        campaign_record["frozenTargetArtifacts"] = frozen
+        (campaign / "campaign.json").write_text(
+            json.dumps(campaign_record, indent=2) + "\n"
+        )
+        recipe = campaign / "evidence" / "recipes" / f"controlled-{finding_id}.json"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "findingId": finding_id,
+                    "targetArtifacts": [target_name],
+                    "subjectArtifact": target_name,
+                    "subjectArgvIndex": 1,
+                    "cases": [
+                        {
+                            "name": "baseline",
+                            "command": [sys.executable, target_name],
+                            "assertions": [
+                                {"id": "b", "kind": "stdout-not-contains-challenge"}
+                            ],
+                        },
+                        {
+                            "name": "negative",
+                            "command": [sys.executable, target_name],
+                            "assertions": [
+                                {"id": "n", "kind": "stdout-not-contains-challenge"}
+                            ],
+                        },
+                        {
+                            "name": "positive",
+                            "command": [sys.executable, target_name],
+                            "assertions": [
+                                {"id": "p", "kind": "stdout-contains-challenge"}
+                            ],
+                        },
+                    ],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        controlled = coordinator_reexecute_result(
+            campaign,
+            {
+                "taskResult": {
+                    "coordinatorReplay": {
+                        "recipe": recipe.relative_to(campaign).as_posix()
+                    }
+                }
+            },
+            finding_id,
+            [],
+        )
+        finding_path = campaign / "findings" / f"{finding_id}.json"
+        finding = json.loads(finding_path.read_text())
+        finding["controlledExperiments"] = [controlled]
+        finding["gates"]["controlled_experiment_verified"] = True
+        finding_path.write_text(json.dumps(finding, indent=2) + "\n")
     def complete_chain(self, finding: dict[str, object], *, impact_class: str = "rce") -> None:
         gates = finding["gates"]
         assert isinstance(gates, dict)
@@ -264,6 +353,16 @@ class CriticalRceContractTests(unittest.TestCase):
             finding_path = campaign / "findings" / "F001.json"
             finding = json.loads(finding_path.read_text())
             self.assertTrue(CRITICAL_CHAIN_GATES.issubset(finding["gates"]))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            campaign_record = json.loads((campaign / "campaign.json").read_text())
+            campaign_record["authorization"]["confirmed"] = True
+            campaign_record["authorization"]["basis"] = "owned contract fixture"
+            (campaign / "campaign.json").write_text(
+                json.dumps(campaign_record, indent=2) + "\n"
+            )
+            self.install_controlled_experiment(campaign, "F001")
+            finding = json.loads(finding_path.read_text())
 
             # Satisfying the legacy evidence gates must not promote a crash,
             # primitive, or medium/high issue without a complete Critical/RCE

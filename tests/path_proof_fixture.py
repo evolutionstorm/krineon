@@ -51,6 +51,8 @@ def install_machine_path_evidence(
                 "schemaVersion": 1,
                 "findingId": finding_id,
                 "targetArtifacts": ["evidence/bin/reality_target.py"],
+                "subjectArtifact": "evidence/bin/reality_target.py",
+                "subjectArgvIndex": 1,
                 "cases": [
                     {
                         "name": "baseline",

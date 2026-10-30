@@ -1,20 +1,24 @@
 # Krineon
 
-Krineon coordinates authorized, multi-agent source audits that search for
-Critical vulnerabilities, remote code execution (RCE), sandbox escapes, and
-zero-days.
+Krineon coordinates authorized source audits that search for complete Critical
+vulnerabilities, remote code execution (RCE), sandbox escapes, and zero-days.
 
 Krineon analyzes one pinned source tree from first principles. It does not use
 changelogs, advisories, Git history, or patched-version comparisons to discover
 bugs. It retains partial primitives as research leads, but it promotes a
 finding only after a production-equivalent proof and independent replay.
 
+Krineon's current semantic-discovery pilot focuses on one boundary: whether
+Next.js authorization and production route execution resolve the same request
+to the same resource. Support for building or exercising other targets does not
+mean Krineon can yet derive equally strong oracles for them.
+
 ## Requirements
 
 Install or provide the following components:
 
 - Git
-- Python 3
+- Python 3.10 or later
 - Codex, OpenCode, or OMP (Oh My Pi)
 - The target source code or program scope
 - The program rules and authorization boundary
@@ -24,6 +28,21 @@ Krineon works best with Codex and GPT-5.6 Sol at `max` reasoning effort.
 Optional tools such as Tree-sitter, Joern, Trailmark, Z3, AFL++, libFuzzer, and
 Fuzzilli improve coverage. Krineon detects available tools and does not install
 them automatically.
+
+## Supported hosts
+
+Krineon supports these native 64-bit hosts:
+
+- Linux on `x86_64` or `arm64`
+- macOS on Apple Silicon (`arm64`)
+
+Krineon normalizes the common `aarch64` and `armx64` aliases to the canonical
+Apple architecture name, `arm64`.
+
+On macOS, install Xcode and its command-line tools before you build native
+targets. Krineon records Mach-O architecture evidence and validates Chromium's
+Darwin Seatbelt sandbox without relying on Linux `/proc`. See
+[macOS arm64 campaigns](references/macos-arm64.md).
 
 ## Start with Codex
 
@@ -156,15 +175,17 @@ Krineon runs the following campaign:
    deployed artifact.
 2. Maps attacker-controlled inputs, trust boundaries, state ownership,
    representation changes, native parsers, and execution authority.
-3. Launches independent research routes and prevents one approach family from
+3. Derives falsifiable hypotheses for the focused authorization-to-route
+   boundary and runs the cheapest distinguishing experiment on an owned target.
+4. Launches independent research routes and prevents one approach family from
    consuming all worker capacity.
-4. Tracks blockers, primitives, negative results, and possible cross-library
+5. Tracks blockers, primitives, negative results, and possible cross-library
    chains in a durable campaign registry.
-5. Tests promising chains against supported release or production-equivalent
+6. Tests promising chains against supported release or production-equivalent
    builds in an owned environment.
-6. Requires a baseline, an enforcing negative control, a positive case, and
-   fresh-process independent replay.
-7. Produces a report package only when the complete Critical/RCE impact is
+7. Requires coordinator-signed experiments, recomputed raw observations, an
+   enforcing negative control, and fresh-process adversarial replay.
+8. Produces a report package only when the complete Critical/RCE impact is
    demonstrated.
 
 When a route fails, Krineon records the enforcing mechanism and creates a new
@@ -185,7 +206,9 @@ Krineon includes focused support for these targets and techniques:
 - First-fault crash clustering, minimization, and bounded replay
 
 Static tools generate hypotheses. Runtime evidence decides whether a candidate
-advances.
+advances. The semantic pilot is limited to the Next.js
+authorization-to-route-execution boundary; other entries in this list are
+execution adapters and analysis aids.
 
 ## Finding requirements
 
@@ -202,6 +225,8 @@ conditions:
 - The positive case differs from the negative control only in the disputed
   condition.
 - A different agent reproduces the result from the retained artifacts.
+- The reviewer challenges both a hypothesis assumption and a possible observer
+  failure using a different machine-checked assertion.
 - The report states every deployment and attacker precondition.
 
 Development servers, debug-only behavior, prose-only reasoning, and manually
@@ -226,5 +251,6 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Critical/RCE promotion contract](references/critical-rce.md)
 - [Orchestration and independent replay](references/orchestration.md)
 - [Evidence gates](references/evidence-gates.md)
+- [Semantic hypothesis experiments](references/semantic-experiments.md)
 - [Chrome and V8 campaigns](references/chrome-v8.md)
 - [Safety rules](references/safety.md)

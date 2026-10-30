@@ -29,6 +29,10 @@ A candidate must have:
 - concrete Critical/RCE impact, not a crash, DoS, lower-severity issue, or
   unexpected value;
 - explicit preconditions and evidence paths.
+- a coordinator-approved controlled experiment. The gate revalidates the
+  coordinator signature, approval-to-recipe and approval-to-target binding,
+  exact executed subject, bounded fresh-process attestation, and raw output
+  hashes. A stored `controlled_experiment_verified` Boolean is insufficient;
 - a machine-validated source-to-sink path proof. It must exactly enumerate the
   ordered transitions and every conditional on the chosen path, show concrete
   attacker control and observed evidence for every required branch outcome,
@@ -54,7 +58,9 @@ In addition to the candidate gate:
 
 - reproduction is complete on an unmodified supported build;
 - two different researcher or runtime-agent identities independently replayed
-  it through fresh machine attestations, not by accepting or restating prose;
+  it through fresh machine attestations, not by accepting or restating prose.
+  Each reviewer must state how the hypothesis and observer could be wrong and
+  bind an alternate assertion that the coordinator recomputes from raw output;
 - official documentation and upstream tests were checked;
 - current-version behavior was executed without mining or diffing patched code;
 - any duplicate check happened only after independent chain validation;

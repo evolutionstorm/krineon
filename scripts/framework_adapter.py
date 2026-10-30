@@ -229,8 +229,8 @@ def clean_environment(overrides: dict[str, Any], pass_names: list[str], *, runti
     names = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", *map(str, pass_names)}
     environment = {name: os.environ[name] for name in names if name in os.environ}
     environment.setdefault("PATH", os.defpath)
-    environment.setdefault("LANG", "C.UTF-8")
-    environment.setdefault("LC_ALL", "C.UTF-8")
+    environment.setdefault("LANG", "C")
+    environment.setdefault("LC_ALL", "C")
     environment["PATH"] = str(runtime.parent) + os.pathsep + environment["PATH"]
     for key, value in overrides.items():
         environment[str(key)] = str(value).replace("{port}", str(port)).replace("{runtime}", str(runtime))

@@ -286,6 +286,8 @@ class PathProofTests(unittest.TestCase):
                         "schemaVersion": 1,
                         "findingId": "FPATH",
                         "targetArtifacts": ["evidence/bin/unused.py"],
+                        "subjectArtifact": "evidence/bin/unused.py",
+                        "subjectArgvIndex": 1,
                         "cases": [
                             {
                                 "name": name,
@@ -312,7 +314,7 @@ class PathProofTests(unittest.TestCase):
                 "originator",
                 expected=2,
             )
-            self.assertIn("does not invoke a declared target artifact", completed.stderr)
+            self.assertIn("does not invoke subjectArtifact", completed.stderr)
 
 
 if __name__ == "__main__":

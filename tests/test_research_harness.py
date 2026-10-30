@@ -92,6 +92,90 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def install_controlled_path_experiment(
+        self, campaign: Path, finding_id: str
+    ) -> None:
+        from scripts.research_harness import coordinator_reexecute_result
+
+        target = campaign / "evidence" / "bin" / "reality_target.py"
+        target_name = target.relative_to(campaign).as_posix()
+        campaign_record = json.loads((campaign / "campaign.json").read_text())
+        frozen = [
+            value
+            for value in campaign_record.get("frozenTargetArtifacts", [])
+            if isinstance(value, dict) and value.get("path") != target_name
+        ]
+        frozen.append(
+            {
+                "path": target_name,
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                "producer": "path-proof-controlled-fixture",
+            }
+        )
+        campaign_record["frozenTargetArtifacts"] = frozen
+        (campaign / "campaign.json").write_text(
+            json.dumps(campaign_record, indent=2) + "\n"
+        )
+        recipe = (
+            campaign
+            / "evidence"
+            / "recipes"
+            / f"controlled-{finding_id}.json"
+        )
+        recipe.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "findingId": finding_id,
+                    "targetArtifacts": [target_name],
+                    "subjectArtifact": target_name,
+                    "subjectArgvIndex": 1,
+                    "cases": [
+                        {
+                            "name": "baseline",
+                            "command": [sys.executable, target_name],
+                            "assertions": [
+                                {"id": "b", "kind": "stdout-not-contains-challenge"}
+                            ],
+                        },
+                        {
+                            "name": "negative",
+                            "command": [sys.executable, target_name],
+                            "assertions": [
+                                {"id": "n", "kind": "stdout-not-contains-challenge"}
+                            ],
+                        },
+                        {
+                            "name": "positive",
+                            "command": [sys.executable, target_name],
+                            "assertions": [
+                                {"id": "p", "kind": "stdout-contains-challenge"}
+                            ],
+                        },
+                    ],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        controlled = coordinator_reexecute_result(
+            campaign,
+            {
+                "taskResult": {
+                    "coordinatorReplay": {
+                        "recipe": recipe.relative_to(campaign).as_posix()
+                    }
+                }
+            },
+            finding_id,
+            [],
+        )
+        finding_path = campaign / "findings" / f"{finding_id}.json"
+        finding = json.loads(finding_path.read_text())
+        finding["controlledExperiments"] = [controlled]
+        finding["gates"]["controlled_experiment_verified"] = True
+        finding_path.write_text(json.dumps(finding, indent=2) + "\n")
+
     @staticmethod
     def valid_task_result(task_id: str) -> dict[str, object]:
         return {
@@ -154,6 +238,17 @@ class HarnessTests(unittest.TestCase):
             "attestation": {
                 "path": attestation["attestation"],
                 "sha256": attestation["sha256"],
+            },
+            "observerChallenge": {
+                "challengedAssumption": "the positive marker alone identifies the claimed mechanism",
+                "hypothesisFailureMode": "a generic process artifact could mimic the positive observation",
+                "observerFailureMode": "the observer could ignore execution in the negative control",
+                "alternateOracle": {
+                    "case": "negative",
+                    "assertionId": "negative-no-terminal",
+                },
+                "outcome": "survived",
+                "interpretation": "the negative control independently excludes the terminal while the positive case reaches it",
             },
         }
         return result
@@ -311,6 +406,24 @@ class HarnessTests(unittest.TestCase):
                 ["chromium-integration"],
             )
             self.assertTrue((campaign / "chrome-v8" / "builds.json").is_file())
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "mac-worker",
+                "--agent",
+                "codex:mac-worker",
+            )
+            claim = json.loads(
+                self.run_cli("claim", str(campaign), "mac-worker", "--json").stdout
+            )
+            self.assertTrue(
+                (
+                    Path(claim["workspace"])
+                    / "KRINEON_REFERENCES"
+                    / "macos-arm64.md"
+                ).is_file()
+            )
 
     def test_candidate_gate_verifies_linked_owned_page_browser_replay(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -453,6 +566,7 @@ class HarnessTests(unittest.TestCase):
             self.install_valid_path_proof(
                 campaign, "F001", "worker-origin", "worker-review"
             )
+            self.install_controlled_path_experiment(campaign, "F001")
             self.run_cli(
                 "schedule-replay",
                 str(campaign),
@@ -797,6 +911,8 @@ class HarnessTests(unittest.TestCase):
                         "schemaVersion": 1,
                         "findingId": assignment["taskId"],
                         "targetArtifacts": ["evidence/bin/reality_target.py"],
+                        "subjectArtifact": "evidence/bin/reality_target.py",
+                        "subjectArgvIndex": 1,
                         "cases": [
                             {
                                 "name": "baseline",
@@ -913,6 +1029,8 @@ class HarnessTests(unittest.TestCase):
                         "schemaVersion": 1,
                         "findingId": assignment["taskId"],
                         "targetArtifacts": ["evidence/bin/always_negative.py"],
+                        "subjectArtifact": "evidence/bin/always_negative.py",
+                        "subjectArgvIndex": 1,
                         "cases": [
                             {
                                 "name": "baseline",
@@ -1268,6 +1386,28 @@ class HarnessTests(unittest.TestCase):
                 expected=1,
             )
             self.assertIn("machine attestation", rejected.stderr)
+            no_challenge = self.valid_replay_result(
+                campaign, "replay-F001", "F001", "origin", "review"
+            )
+            no_challenge["independentReplay"].pop("observerChallenge")
+            no_challenge_path = campaign / "replay-without-observer-challenge.json"
+            no_challenge_path.write_text(json.dumps(no_challenge) + "\n")
+            rejected = self.run_cli(
+                "submit",
+                str(campaign),
+                "review",
+                "replay-F001",
+                "--lease-token",
+                review_claim["leaseToken"],
+                "--result",
+                str(no_challenge_path),
+                "--idempotency-key",
+                "replay-F001-no-observer-challenge",
+                "--replay-of",
+                "F001",
+                expected=1,
+            )
+            self.assertIn("challenge the hypothesis and observer", rejected.stderr)
             replay_result = campaign / "replay.json"
             replay_result.write_text(
                 json.dumps(
@@ -1339,6 +1479,109 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(
                 {item["reviewerAgent"] for item in finding["independentReplays"]},
                 {"codex:review", "codex:review-2"},
+            )
+
+    def test_controlled_experiment_gate_recomputes_signed_raw_evidence(self) -> None:
+        from scripts.research_harness import (
+            controlled_experiment_is_machine_verified,
+            coordinator_reexecute_result,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            campaign_record = json.loads((campaign / "campaign.json").read_text())
+            campaign_record["authorization"]["confirmed"] = True
+            campaign_record["authorization"]["basis"] = "owned controlled fixture"
+            target = campaign / "evidence" / "bin" / "reality_target.py"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(
+                (PROJECT / "tests" / "fixtures" / "reality_target.py").read_bytes()
+            )
+            target_name = target.relative_to(campaign).as_posix()
+            campaign_record["frozenTargetArtifacts"] = [
+                {
+                    "path": target_name,
+                    "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                    "producer": "test-controlled-runner",
+                }
+            ]
+            (campaign / "campaign.json").write_text(
+                json.dumps(campaign_record, indent=2) + "\n"
+            )
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            recipe = campaign / "evidence" / "recipes" / "controlled-task.json"
+            recipe.parent.mkdir(parents=True, exist_ok=True)
+            recipe.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "findingId": "controlled-task",
+                        "targetArtifacts": [target_name],
+                        "subjectArtifact": target_name,
+                        "subjectArgvIndex": 1,
+                        "cases": [
+                            {
+                                "name": "baseline",
+                                "command": [sys.executable, target_name],
+                                "assertions": [
+                                    {
+                                        "id": "baseline",
+                                        "kind": "stdout-not-contains-challenge",
+                                    }
+                                ],
+                            },
+                            {
+                                "name": "negative",
+                                "command": [sys.executable, target_name],
+                                "assertions": [
+                                    {
+                                        "id": "negative",
+                                        "kind": "stdout-not-contains-challenge",
+                                    }
+                                ],
+                            },
+                            {
+                                "name": "positive",
+                                "command": [sys.executable, target_name],
+                                "assertions": [
+                                    {
+                                        "id": "positive",
+                                        "kind": "stdout-contains-challenge",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            controlled = coordinator_reexecute_result(
+                campaign,
+                {
+                    "taskResult": {
+                        "coordinatorReplay": {
+                            "recipe": recipe.relative_to(campaign).as_posix(),
+                            "repetitions": 1,
+                        }
+                    }
+                },
+                "controlled-task",
+                [],
+            )
+            self.assertIsNotNone(controlled)
+            finding = {"controlledExperiments": [controlled]}
+            self.assertTrue(
+                controlled_experiment_is_machine_verified(campaign, finding)
+            )
+            observation = json.loads(
+                (campaign / controlled["controlledObservation"]).read_text()
+            )
+            raw = campaign / observation["rawArtifacts"][0]["path"]
+            raw.write_bytes(raw.read_bytes() + b"tampered")
+            self.assertFalse(
+                controlled_experiment_is_machine_verified(campaign, finding)
             )
 
     def test_replay_excludes_agent_aliases_and_worker_identity_is_immutable(self) -> None:
@@ -2613,6 +2856,8 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("autoninja", payload["commands"])
         self.assertIn("llvm-symbolizer", payload["commands"])
         self.assertIn("swift", payload["commands"])
+        self.assertIn("xcrun", payload["commands"])
+        self.assertIn(payload["platform"]["architecture"], {"arm64", "x86_64"})
         self.assertIn("z3", payload["pythonModules"])
 
 

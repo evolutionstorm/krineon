@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -29,6 +30,7 @@ from chromium_replay import (
     safe_entry,
     validate_browser_flags,
 )
+from platform_support import host_platform, normalize_architecture
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -111,6 +113,55 @@ def artifact(path: Path) -> dict[str, Any]:
     return {"path": str(path), "sha256": sha256_file(path), "size": path.stat().st_size}
 
 
+def inspect_binary_architectures(binary: Path) -> dict[str, Any]:
+    observations: list[dict[str, Any]] = []
+    architectures: set[str] = set()
+    lipo = shutil.which("lipo")
+    if platform.system() == "Darwin" and lipo:
+        completed = subprocess.run(
+            [lipo, "-archs", str(binary)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = (completed.stdout or completed.stderr).strip()
+        observations.append(
+            {"tool": lipo, "returnCode": completed.returncode, "output": output[:1000]}
+        )
+        if completed.returncode == 0:
+            architectures.update(
+                normalize_architecture(value) for value in output.split()
+            )
+    file_tool = shutil.which("file")
+    if file_tool:
+        completed = subprocess.run(
+            [file_tool, "-b", str(binary)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = (completed.stdout or completed.stderr).strip()
+        observations.append(
+            {
+                "tool": file_tool,
+                "returnCode": completed.returncode,
+                "output": output[:1000],
+            }
+        )
+        if completed.returncode == 0:
+            lowered = output.lower()
+            if "arm64" in lowered or "aarch64" in lowered:
+                architectures.add("arm64")
+            if "x86_64" in lowered or "x86-64" in lowered:
+                architectures.add("x86_64")
+    return {
+        "architectures": sorted(value for value in architectures if value != "unknown"),
+        "observations": observations,
+    }
+
+
 def build_by_name(database: dict[str, Any], name: str) -> dict[str, Any]:
     for build in database.get("builds", []):
         if build.get("name") == name:
@@ -134,6 +185,14 @@ def verify_build(build: dict[str, Any]) -> list[str]:
         actual = sha256_file(path)
         if actual != record.get("sha256"):
             problems.append(f"artifact digest changed: {path}")
+    binary = Path(str(build.get("binary") or ""))
+    if binary.is_file():
+        detected = inspect_binary_architectures(binary).get("architectures", [])
+        expected = normalize_architecture(str(build.get("architecture") or ""))
+        if detected and expected not in detected:
+            problems.append(
+                f"binary architecture mismatch: expected {expected}, detected {', '.join(detected)}"
+            )
     return problems
 
 
@@ -147,6 +206,18 @@ def cmd_register_build(args: argparse.Namespace) -> int:
         raise ChromeV8Error(f"build already registered: {args.name}; use --replace explicitly")
 
     binary = resolve_file(args.binary, label="binary")
+    requested_architecture = normalize_architecture(
+        platform.machine() if args.architecture == "auto" else args.architecture
+    )
+    if not re.fullmatch(r"[a-z0-9_]+", requested_architecture):
+        raise ChromeV8Error("architecture must use letters, digits, or underscore")
+    architecture_evidence = inspect_binary_architectures(binary)
+    detected_architectures = architecture_evidence["architectures"]
+    if detected_architectures and requested_architecture not in detected_architectures:
+        raise ChromeV8Error(
+            "registered architecture does not match binary: "
+            f"requested {requested_architecture}, detected {', '.join(detected_architectures)}"
+        )
     cwd = Path(args.cwd).expanduser().resolve() if args.cwd else binary.parent
     if not cwd.is_dir():
         raise ChromeV8Error(f"working directory is not a directory: {cwd}")
@@ -172,7 +243,9 @@ def cmd_register_build(args: argparse.Namespace) -> int:
         "kind": args.kind,
         "role": args.role,
         "revision": args.revision,
-        "architecture": args.architecture,
+        "architecture": requested_architecture,
+        "architectureEvidence": architecture_evidence,
+        "host": host_platform(),
         "binary": str(binary),
         "cwd": str(cwd),
         "checkout": checkout,
@@ -208,6 +281,10 @@ def audit_payload(root: Path, database: dict[str, Any]) -> dict[str, Any]:
                 "kind": build.get("kind"),
                 "role": build.get("role"),
                 "revision": build.get("revision"),
+                "architecture": build.get("architecture"),
+                "detectedArchitectures": build.get("architectureEvidence", {}).get(
+                    "architectures", []
+                ),
                 "problems": problems,
                 "valid": not problems,
             }
@@ -310,6 +387,7 @@ def run_build(
         "build": build["name"],
         "role": build["role"],
         "revision": build["revision"],
+        "architecture": build.get("architecture"),
         "runId": run_id,
         "result": result_path.relative_to(root).as_posix(),
         "outcome": result.get("outcome"),
@@ -509,6 +587,8 @@ def cmd_browser_replay(args: argparse.Namespace) -> int:
             "kind": build["kind"],
             "role": build["role"],
             "revision": build["revision"],
+            "architecture": build.get("architecture"),
+            "architectureEvidence": build.get("architectureEvidence"),
             "binary": artifact(Path(build["binary"])),
             "registeredFlags": list(build.get("flags", [])),
             "replayFlags": list(args.chrome_flag or []),
@@ -646,7 +726,11 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--role", choices=BUILD_ROLES, required=True)
     register.add_argument("--binary", required=True)
     register.add_argument("--revision", required=True)
-    register.add_argument("--architecture", default="x86_64")
+    register.add_argument(
+        "--architecture",
+        default="auto",
+        help="target architecture; auto records the normalized host architecture",
+    )
     register.add_argument("--checkout")
     register.add_argument("--cwd")
     register.add_argument("--gn-args-file")

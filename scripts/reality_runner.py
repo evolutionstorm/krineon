@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
@@ -74,6 +75,35 @@ def artifact_manifest(root: Path, recipe: dict[str, Any]) -> list[dict[str, Any]
     return result
 
 
+def subject_binding(
+    root: Path,
+    recipe: dict[str, Any],
+    target_paths: set[Path],
+) -> tuple[Path, int]:
+    value = recipe.get("subjectArtifact")
+    subject = safe_relative(root, str(value or ""))
+    if subject.resolve() not in target_paths:
+        raise RuntimeError("subjectArtifact must name a declared target artifact")
+    index = recipe.get("subjectArgvIndex")
+    if not isinstance(index, int) or index < 0 or index > 32:
+        raise RuntimeError("subjectArgvIndex must be an integer between 0 and 32")
+    return subject.resolve(), index
+
+
+def resolved_argument(root: Path, cwd: Path, value: str) -> Path | None:
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if "/" in value or "\\" in value:
+        path = (cwd / candidate).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            return None
+        return path
+    return None
+
+
 def execute_case(
     *,
     root: Path,
@@ -83,6 +113,8 @@ def execute_case(
     repetition: int,
     timeout: float,
     target_paths: set[Path],
+    subject_path: Path,
+    subject_argv_index: int,
 ) -> dict[str, Any]:
     name = str(case["name"])
     command_value = case.get("command")
@@ -105,27 +137,24 @@ def execute_case(
     cwd = safe_relative(root, str(case.get("cwd") or "."))
     if not cwd.is_dir():
         raise RuntimeError(f"case {name} working directory is absent")
-    invoked_targets: set[Path] = set()
-    for argument in command:
-        candidate = Path(argument)
-        if candidate.is_absolute():
-            resolved = candidate.resolve()
-        elif "/" in argument or "\\" in argument:
-            resolved = (cwd / candidate).resolve()
-        else:
-            continue
-        if resolved in target_paths:
-            invoked_targets.add(resolved)
-    if not invoked_targets:
+    if subject_argv_index >= len(command):
         raise RuntimeError(
-            f"case {name} command does not invoke a declared target artifact"
+            f"case {name} command has no subject argument at index {subject_argv_index}"
+        )
+    invoked_subject = resolved_argument(
+        root, cwd, command[subject_argv_index]
+    )
+    if invoked_subject != subject_path:
+        raise RuntimeError(
+            f"case {name} command does not invoke subjectArtifact at argv index "
+            f"{subject_argv_index}"
         )
     stdin_template = str(case.get("stdinTemplate") or "")
     stdin = replace_tokens(stdin_template, challenge, name, repetition).encode()
     environment = {
         "PATH": os.environ.get("PATH", os.defpath),
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
+        "LANG": "C",
+        "LC_ALL": "C",
         "KRINEON_CHALLENGE_HEX": challenge,
         "KRINEON_CASE": name,
         "KRINEON_REPETITION": str(repetition),
@@ -139,14 +168,22 @@ def execute_case(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         shell=False,
+        start_new_session=True,
     )
     timed_out = False
     try:
         stdout, stderr = process.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        process.kill()
-        stdout, stderr = process.communicate()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
     finished = time.time_ns()
     run_dir = output_dir / name / f"{repetition:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -181,6 +218,12 @@ def execute_case(
         "startedNs": started,
         "finishedNs": finished,
         "command": command,
+        "executionBinding": {
+            "subjectArtifact": subject_path.relative_to(root).as_posix(),
+            "subjectArgvIndex": subject_argv_index,
+            "launcher": str(resolved_executable),
+            "launcherSha256": sha256_file(resolved_executable),
+        },
         "cwd": cwd.relative_to(root).as_posix(),
         "challengeHex": challenge,
         "stdinSha256": sha256_bytes(stdin),
@@ -218,6 +261,7 @@ def run(args: argparse.Namespace) -> int:
     target_paths = {
         safe_relative(root, str(artifact["path"])).resolve() for artifact in artifacts
     }
+    subject_path, subject_argv_index = subject_binding(root, recipe, target_paths)
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:10]
     output_dir = root / "evidence" / "machine-runs" / args.finding_id / run_id
     challenges = [secrets.token_hex(args.challenge_bytes) for _ in range(args.repetitions)]
@@ -236,6 +280,8 @@ def run(args: argparse.Namespace) -> int:
                 repetition=index,
                 timeout=args.timeout,
                 target_paths=target_paths,
+                subject_path=subject_path,
+                subject_argv_index=subject_argv_index,
             )
             for index in range(args.repetitions)
         ]
@@ -257,6 +303,11 @@ def run(args: argparse.Namespace) -> int:
             "sha256": sha256_file(recipe_path),
         },
         "targetArtifacts": artifacts,
+        "subjectArtifact": {
+            "path": subject_path.relative_to(root).as_posix(),
+            "sha256": sha256_file(subject_path),
+            "argvIndex": subject_argv_index,
+        },
         "challengeSha256s": [sha256_bytes(bytes.fromhex(value)) for value in challenges],
         "cases": retained_cases,
     }

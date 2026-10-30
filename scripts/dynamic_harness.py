@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from crash_triage import triage_campaign, triage_one
+from platform_support import host_platform, resource_limit_plan
 
 
 ENGINE_VERSION = "2"
@@ -195,8 +196,8 @@ def build_config(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 
     environment = {
         "PATH": os.environ.get("PATH", os.defpath),
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
+        "LANG": "C",
+        "LC_ALL": "C",
         "PYTHONHASHSEED": "0",
     }
     environment.update(parse_env(args.env or ()))
@@ -264,12 +265,24 @@ def apply_resource_limits(config: dict[str, Any]) -> Any:
     def limits() -> None:
         import resource
 
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        cpu_seconds = max(1, math.ceil(config["timeoutMs"] / 1000) + 1)
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
-        if config["memoryMb"]:
+        operations: list[tuple[int, tuple[int, int]]] = []
+        if hasattr(resource, "RLIMIT_CORE"):
+            operations.append((resource.RLIMIT_CORE, (0, 0)))
+        if hasattr(resource, "RLIMIT_CPU"):
+            cpu_seconds = max(1, math.ceil(config["timeoutMs"] / 1000) + 1)
+            operations.append(
+                (resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+            )
+        if config["memoryMb"] and hasattr(resource, "RLIMIT_AS"):
             address_space = config["memoryMb"] * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
+            operations.append((resource.RLIMIT_AS, (address_space, address_space)))
+        for limit, value in operations:
+            try:
+                resource.setrlimit(limit, value)
+            except (OSError, ValueError):
+                # The retained resource plan marks Darwin address-space limits
+                # as best effort. Wall-clock cleanup remains authoritative.
+                continue
 
     return limits
 
@@ -283,7 +296,7 @@ def read_path_capped(path: Path, limit: int) -> tuple[bytes, bool]:
 def kill_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
 
@@ -503,6 +516,8 @@ def execute_input(config: dict[str, Any], input_data: bytes, case_dir: Path | No
 
         result: dict[str, Any] = {
             "schemaVersion": 1,
+            "platform": host_platform(),
+            "resourceLimits": resource_limit_plan(config),
             "inputSha256": sha256_bytes(input_data),
             "inputSize": len(input_data),
             "returnCode": return_code,

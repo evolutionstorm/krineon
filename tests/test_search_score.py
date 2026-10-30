@@ -13,6 +13,46 @@ SCORE = PROJECT / "scripts" / "search_score.py"
 
 
 class SearchScoreTests(unittest.TestCase):
+    def test_unsigned_semantic_observation_cannot_inflate_search_score(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "campaign.json").write_text("{}\n")
+            fake = root / "fake-observation.json"
+            fake.write_text(
+                json.dumps(
+                    {
+                        "producer": "krineon-semantic-observation",
+                        "cost": {"wallSeconds": 1},
+                        "results": [
+                            {"evaluation": {"informationGain": 1000000}}
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            output = root / "score.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCORE),
+                    "snapshot",
+                    str(root),
+                    "--profile",
+                    "missing",
+                    "--benchmark",
+                    "missing",
+                    "--output",
+                    str(output),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            score = json.loads(output.read_text())["score"]
+            self.assertEqual(score["semanticObservations"], 0)
+            self.assertEqual(score["securityInformationGain"], 0)
+
     def test_ablation_deletes_subsystem_that_moves_no_metric(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

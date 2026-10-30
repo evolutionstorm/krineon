@@ -5,12 +5,23 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
+
+try:
+    from .experiment_control import (
+        verify_controlled_observation,
+        verify_signed_record,
+    )
+    from .path_proof import validate_path_proof
+except ImportError:  # Direct script execution.
+    from experiment_control import verify_controlled_observation, verify_signed_record
+    from path_proof import validate_path_proof
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -80,6 +91,119 @@ def rediscovery_hours(root: Path, benchmark: str) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def validated_root_cause_metrics(root: Path) -> dict[str, Any]:
+    identities: set[str] = set()
+    process_seconds = 0.0
+    findings_root = root / "findings"
+    for path in findings_root.glob("*.json") if findings_root.is_dir() else []:
+        try:
+            finding = read_json(path)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            continue
+        root_cause = " ".join(str(finding.get("rootCause") or "").split()).lower()
+        controlled_passed = False
+        for experiment in finding.get("controlledExperiments", []):
+            if not isinstance(experiment, dict):
+                continue
+            observation_value = experiment.get("controlledObservation")
+            signature_value = experiment.get("controlledObservationSignature")
+            if not isinstance(observation_value, str) or not isinstance(
+                signature_value, str
+            ):
+                continue
+            observation_path = root / observation_value
+            signature_path = root / signature_value
+            if not observation_path.is_file() or not signature_path.is_file():
+                continue
+            try:
+                verification = verify_controlled_observation(
+                    root, observation_path, signature_path
+                )
+                if verification.get("passed") is not True:
+                    continue
+                controlled_passed = True
+                observation = verification["record"]
+                attestation_value = observation.get("attestation", {}).get("path")
+                attestation = read_json(root / str(attestation_value))
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                continue
+            for runs in attestation.get("cases", {}).values():
+                for run in runs if isinstance(runs, list) else []:
+                    if not isinstance(run, dict):
+                        continue
+                    started = run.get("startedNs")
+                    finished = run.get("finishedNs")
+                    if isinstance(started, int) and isinstance(finished, int) and finished >= started:
+                        process_seconds += (finished - started) / 1_000_000_000
+        proof_reference = finding.get("pathProof")
+        proof_passed = False
+        if isinstance(proof_reference, dict):
+            proof_value = proof_reference.get("path")
+            if isinstance(proof_value, str):
+                proof_path = root / proof_value
+                try:
+                    proof = read_json(proof_path)
+                    proof_passed = validate_path_proof(
+                        proof,
+                        expected_finding_id=str(finding.get("id") or ""),
+                        expected_originator=str(finding.get("originator") or ""),
+                        campaign_root=root,
+                    )["passed"]
+                except (OSError, ValueError, RuntimeError, json.JSONDecodeError, SystemExit):
+                    proof_passed = False
+        if root_cause and controlled_passed and proof_passed:
+            identities.add(hashlib.sha256(root_cause.encode()).hexdigest())
+    hours = process_seconds / 3600
+    return {
+        "validatedRootCauses": len(identities),
+        "controlledProcessHours": hours,
+        "validatedRootCausesPerCpuHour": (
+            len(identities) / hours if identities and hours > 0 else None
+        ),
+    }
+
+
+def semantic_information_metrics(root: Path) -> dict[str, Any]:
+    information_gain = 0
+    wall_seconds = 0.0
+    observations = 0
+    for path in root.rglob("*.json"):
+        if any(part in {"worktrees", "third_party"} for part in path.parts):
+            continue
+        try:
+            record = read_json(path)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            continue
+        if record.get("producer") != "krineon-semantic-observation":
+            continue
+        signature_path = path.with_suffix(path.suffix + ".sig")
+        signed, _, _ = verify_signed_record(
+            root,
+            path,
+            signature_path,
+            producer="krineon-semantic-observation",
+        )
+        if not signed:
+            continue
+        observations += 1
+        cost = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+        if isinstance(cost.get("wallSeconds"), (int, float)):
+            wall_seconds += float(cost["wallSeconds"])
+        for result in record.get("results", []):
+            evaluation = result.get("evaluation") if isinstance(result, dict) else None
+            if isinstance(evaluation, dict) and isinstance(evaluation.get("informationGain"), int):
+                information_gain += int(evaluation["informationGain"])
+    return {
+        "semanticObservations": observations,
+        "securityInformationGain": information_gain,
+        "informationGainPerHour": (
+            information_gain / (wall_seconds / 3600)
+            if information_gain and wall_seconds > 0
+            else None
+        ),
+    }
+
+
 def score_vector(root: Path, profile: str, benchmark: str) -> dict[str, Any]:
     coverage = latest_coverage(root, profile)
     metrics = coverage.get("metrics") if isinstance(coverage, dict) else {}
@@ -92,6 +216,8 @@ def score_vector(root: Path, profile: str, benchmark: str) -> dict[str, Any]:
         ),
         "uniqueStackClusters": unique_stack_count(root),
         "hoursToFirstRediscovery": rediscovery_hours(root, benchmark),
+        **validated_root_cause_metrics(root),
+        **semantic_information_metrics(root),
     }
 
 
@@ -107,6 +233,10 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
             "newEdgesPerHour": "higher-is-better",
             "uniqueStackClusters": "higher-is-better",
             "hoursToFirstRediscovery": "lower-is-better",
+            "validatedRootCauses": "higher-is-better",
+            "validatedRootCausesPerCpuHour": "higher-is-better-primary",
+            "securityInformationGain": "higher-is-better",
+            "informationGainPerHour": "higher-is-better",
         },
     }
     output = (
@@ -146,8 +276,26 @@ def cmd_compare(args: argparse.Namespace) -> int:
             after.get("hoursToFirstRediscovery"),
             lower=True,
         ),
+        "validatedRootCauses": improved(
+            before.get("validatedRootCauses"), after.get("validatedRootCauses")
+        ),
+        "validatedRootCausesPerCpuHour": improved(
+            before.get("validatedRootCausesPerCpuHour"),
+            after.get("validatedRootCausesPerCpuHour"),
+        ),
+        "securityInformationGain": improved(
+            before.get("securityInformationGain"), after.get("securityInformationGain")
+        ),
+        "informationGainPerHour": improved(
+            before.get("informationGainPerHour"), after.get("informationGainPerHour")
+        ),
     }
-    moved = any(deltas.values())
+    primary_moved = deltas["validatedRootCausesPerCpuHour"] or deltas["validatedRootCauses"]
+    proxy_moved = any(
+        value for key, value in deltas.items()
+        if key not in {"validatedRootCausesPerCpuHour", "validatedRootCauses"}
+    )
+    moved = primary_moved or proxy_moved
     decision = {
         "schemaVersion": 1,
         "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -155,11 +303,15 @@ def cmd_compare(args: argparse.Namespace) -> int:
         "before": before,
         "after": after,
         "improvements": deltas,
-        "verdict": "keep" if moved else "delete",
+        "verdict": (
+            "keep" if primary_moved else "provisional-keep" if proxy_moved else "delete"
+        ),
         "reason": (
-            "moved at least one evidence-rate metric"
-            if moved
-            else "moved neither edge velocity, unique stacks, nor rediscovery time"
+            "improved validated root causes per measured cost"
+            if primary_moved
+            else "improved a search proxy but has not yet improved validated root causes per cost"
+            if proxy_moved
+            else "moved neither validated root causes per cost nor a retained search proxy"
         ),
     }
     output = root / "metrics" / "ablations" / f"{args.subsystem}.json"

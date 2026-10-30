@@ -21,6 +21,8 @@ hashed target artifacts and exactly three cases: `baseline`, `negative`, and
   "schemaVersion": 1,
   "findingId": "F001",
   "targetArtifacts": ["evidence/bin/owned-probe"],
+  "subjectArtifact": "evidence/bin/owned-probe",
+  "subjectArgvIndex": 0,
   "cases": [
     {
       "name": "baseline",
@@ -57,7 +59,19 @@ python3 scripts/reality_runner.py CAMPAIGN F001 \
 ```
 
 The validator re-reads the recipe and raw bytes, re-hashes the targets, and
-recomputes assertions. Editing `matched: true` does not make an assertion pass.
+recomputes assertions. `subjectArgvIndex` binds the actual executed argument to
+the reviewed target, so merely mentioning a target path in an unused argument
+does not satisfy the gate. Editing `matched: true` does not make an assertion
+pass.
+
+For queue submissions, the worker proposes the recipe. The coordinator records
+and signs an approval containing the recipe hash, frozen target hashes, exact
+subject binding, repetitions, and timeout. It then executes the recipe outside
+the scheduler write transaction. Each process starts in its own process group;
+a timeout kills the group, including descendants. The controlled runner signs
+an observation that binds the approval, machine attestation, and every raw
+stdout and stderr hash. Candidate promotion verifies those signatures and
+hashes again. The worker workspace never receives the private signing key.
 
 ## Memory and PC observations
 
@@ -94,3 +108,7 @@ review its source, and prefer debugger, sanitizer, allocator, or engine-native
 observations that do not derive the claimed value from the expected result.
 The adversarial reviewer should try to replace the target with an echo program;
 if the recipe would still pass, the assertion is not a useful security proof.
+The reviewer must also identify how the observer itself could lie or
+misclassify the result and bind an alternate assertion from the reviewer run.
+Repeating the original assertion without that observer challenge does not pass
+independent replay.

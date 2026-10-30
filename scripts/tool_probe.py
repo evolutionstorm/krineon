@@ -6,13 +6,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import platform
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from platform_support import host_platform
 
 
 COMMANDS: dict[str, list[list[str]]] = {
@@ -36,13 +37,30 @@ COMMANDS: dict[str, list[list[str]]] = {
     "minidump_stackwalk": [["minidump_stackwalk", "--version"]],
     "cargo": [["cargo", "--version"]],
     "node": [["node", "--version"]],
-    "chromium": [["chromium", "--version"]],
-    "google-chrome": [["google-chrome", "--version"]],
+    "chromium": [
+        ["chromium", "--version"],
+        ["/Applications/Chromium.app/Contents/MacOS/Chromium", "--version"],
+    ],
+    "google-chrome": [
+        ["google-chrome", "--version"],
+        ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--version"],
+        ["/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary", "--version"],
+    ],
     "afl-fuzz": [["afl-fuzz", "-V"]],
     "afl-showmap": [["afl-showmap", "-h"]],
     "llvm-profdata": [["llvm-profdata", "--version"]],
     "llvm-cov": [["llvm-cov", "--version"]],
     "FuzzilliCli": [["FuzzilliCli", "--help"]],
+    "xcrun": [["xcrun", "--find", "clang"]],
+    "lldb": [["lldb", "--version"]],
+    "atos": [["xcrun", "--find", "atos"], ["atos", "-h"]],
+    "codesign": [["xcrun", "--find", "codesign"], ["codesign", "--help"]],
+    "lipo": [["xcrun", "--find", "lipo"], ["lipo", "-version"]],
+    "otool": [["xcrun", "--find", "otool"], ["otool", "-h"]],
+    "dwarfdump": [
+        ["xcrun", "--find", "dwarfdump"],
+        ["dwarfdump", "--version"],
+    ],
 }
 
 PYTHON_MODULES = (
@@ -65,20 +83,23 @@ def version_label(name: str, output: str, executable: str) -> str:
 
 
 def command_probe(name: str, variants: list[list[str]]) -> dict[str, Any]:
-    executable = shutil.which(variants[0][0])
     result: dict[str, Any] = {
-        "installed": executable is not None,
+        "installed": False,
         "available": False,
-        "path": executable,
+        "path": None,
         "version": None,
     }
-    if executable is None:
-        return result
     last_error = ""
     for command in variants:
+        executable = shutil.which(command[0])
+        if executable is None:
+            continue
+        result["installed"] = True
+        result["path"] = executable
+        resolved_command = [executable, *command[1:]]
         try:
             completed = subprocess.run(
-                command,
+                resolved_command,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -94,18 +115,15 @@ def command_probe(name: str, variants: list[list[str]]) -> dict[str, Any]:
             result["probeExitCode"] = completed.returncode
             return result
         last_error = f"exit {completed.returncode}: {output or 'without output'}"
+    if not result["installed"]:
+        return result
     result["probeError"] = last_error
     return result
 
 
 def build_inventory() -> dict[str, Any]:
     return {
-        "platform": {
-            "system": platform.system(),
-            "release": platform.release(),
-            "machine": platform.machine(),
-            "python": platform.python_version(),
-        },
+        "platform": host_platform(),
         "commands": {name: command_probe(name, variants) for name, variants in COMMANDS.items()},
         "pythonModules": {
             name: {"available": importlib.util.find_spec(name) is not None}
@@ -119,6 +137,7 @@ def build_inventory() -> dict[str, Any]:
             "z3": "scripts/z3_boundary_solver.py distinguishes generic models from hashed source-bound constraints; manual transcription is labelled and a model is not runtime proof.",
             "trailmark": "The static pipeline invokes single-revision structure and entrypoint analysis; diff modes are prohibited.",
             "chromeV8": "For chrome-v8 campaigns, record GN, Ninja, Clang, symbolizer, Swift/Fuzzilli, and minidump availability without installing them.",
+            "darwinArm64": "On Apple Silicon, retain arm64 Mach-O architecture evidence, Xcode tool versions, and Darwin Seatbelt checks for browser promotion.",
             "browserReplay": "scripts/chrome_v8_harness.py browser-replay uses direct CDP and does not require Playwright; register an exact sandboxed-chrome binary first.",
             "externalFuzzing": "scripts/fuzzer_orchestrator.py operates pinned AFL++, libFuzzer, and Fuzzilli targets with verified instrumentation, native parallelism, corpus sync, crash forwarding, and coverage rebuilds.",
             "authority": "Source semantics and controlled runtime evidence decide the security claim.",

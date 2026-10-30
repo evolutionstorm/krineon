@@ -99,6 +99,15 @@ equal control. Bind solver constraints to an exact source fragment and execute
 the result through both consumers. Read
 [tool-assisted analysis](references/tool-assisted-analysis.md).
 
+Semantic discovery currently has one deliberately narrow pilot: Next.js
+authorization to production route execution. It models attacker-controlled
+path representations, the checks that classify them, the route resolver that
+consumes them, and ownership of each intermediate representation. It then
+generates the cheapest experiment that separates agreement, normalization
+bypass, public alias, and unprotected-baseline explanations. Do not claim this
+depth for other ecosystems until an equally concrete boundary adapter exists.
+Read [semantic experiments](references/semantic-experiments.md).
+
 ## Campaign orchestration
 
 Use Krineon's durable scheduler as the source of truth. Before scaling, run its
@@ -123,6 +132,13 @@ slots. Read [orchestration](references/orchestration.md),
 [Codex operation](references/codex.md), and
 [approach families](references/approach-families.md).
 
+Workers propose experiments. They do not execute self-approved evidence for
+promotion. The coordinator signs the exact recipe and target hashes, releases
+the scheduler write lock, and a controlled runner executes the approved recipe
+with bounded process-group timeouts. The runner signs raw observations using a
+private key kept outside worker workspaces. Promotion recomputes signatures,
+hashes, subject binding, and assertions instead of trusting a stored Boolean.
+
 ## Persistence without fabrication
 
 A failed approach or “no findings” result is not a campaign stop condition.
@@ -141,6 +157,13 @@ budget, or program exclusions. Stop only for an explicit user stop, missing
 authority, exhausted campaign budget, or unsafe/out-of-scope boundary. Read
 [blocker resolution](references/blocker-resolution.md).
 
+Treat failed experiments as semantic information. Eliminate the disproved
+mechanism, not only the tested bytes. A coverage plateau must identify the
+unreached consumer and justify a grammar or harness change. A verified
+primitive must create a concrete missing-link experiment. Allocate budget by
+validated root causes and security explanations eliminated per unit cost, then
+by minimized stacks and coverage; task volume is not progress.
+
 ## Target-specific execution
 
 Load only references relevant to the active target:
@@ -149,12 +172,16 @@ Load only references relevant to the active target:
   bundle mapping: [framework adapters](references/framework-adapters.md),
   [HTTP harness](references/http-protocol-harness.md),
   [framework analysis](references/framework-analysis.md), and
-  [JavaScript coverage](references/javascript-coverage-generation.md).
+  [JavaScript coverage](references/javascript-coverage-generation.md). For the
+  current semantic boundary, also read
+  [semantic experiments](references/semantic-experiments.md).
 - AFL++, libFuzzer, or Fuzzilli operation, corpus exchange, coverage plateaus,
   stack deduplication, and minimization: [fuzzing](references/fuzzing.md).
 - Chrome/V8 release, sanitizer, debug, and owned-page Chromium replay:
   [Chrome/V8](references/chrome-v8.md) and
   [the worker profile](agents/chrome-v8-agent.md).
+- Native Apple Silicon execution, Mach-O architecture evidence, and Darwin
+  Seatbelt validation: [macOS arm64](references/macos-arm64.md).
 - Search efficacy on a frozen local corpus with evaluator-held target oracles:
   [rediscovery benchmark](references/rediscovery-benchmark.md).
 
@@ -191,7 +218,9 @@ Require all of the following:
 - independent replay by distinct verified identities in fresh processes.
 
 The coordinator must re-run the artifact; file existence, non-empty prose,
-agent agreement, or a Boolean in JSON is not proof. Keep first-fault
+agent agreement, or a Boolean in JSON is not proof. Independent review must
+name a hypothesis failure mode and an observer failure mode, then bind an
+alternate oracle to a recomputed reviewer attestation. Keep first-fault
 classification, controllability, web reachability, renderer compromise, and
 sandbox escape as separate evidence levels. Read
 [false-positive control](references/false-positive-control.md),

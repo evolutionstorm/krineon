@@ -40,8 +40,8 @@ Edit `AUTHORIZATION.md` and `campaign.json` before dynamic execution. Dynamic
 commands refuse campaigns without `authorization.confirmed: true` and a named
 allowed environment.
 
-The official V8 build flow uses `gclient sync`, Linux build dependencies, and
-`tools/dev/gm.py`; `d8` is V8's developer shell. Record the commands and GN
+The official V8 build flow uses `gclient sync`, platform build dependencies,
+and `tools/dev/gm.py`; `d8` is V8's developer shell. Record the commands and GN
 arguments actually used rather than assuming a named configuration implies a
 specific set of mitigations or checks:
 
@@ -145,10 +145,13 @@ WebRTC, native sockets, or another channel outside ordinary Fetch interception.
 The command refuses `--no-sandbox`, `--disable-setuid-sandbox`, `--js-flags`,
 and other final-proof shortcuts. On Linux, `promotionReady` additionally
 requires every CDP-reported renderer PID to show `Seccomp=2` and
-`NoNewPrivs=1` in `/proc`. Absence of a disabling flag alone is not treated as
-proof that the sandbox was active. Other platforms need independently retained
-sandbox evidence and therefore do not pass this Linux-specific automatic
-check merely because the page result matched.
+`NoNewPrivs=1` in `/proc`. On Darwin, it requires Seatbelt to deny owned
+sentinel file-read and process-exec queries for every renderer while the same
+file-read query succeeds for the browser process as a control. Absence of a
+disabling flag alone is never sandbox evidence. Unsupported platforms and
+unavailable platform evidence fail closed. For Apple Silicon setup and
+platform-specific limitations, read
+[macOS arm64 campaigns](macos-arm64.md).
 
 To attach the retained replay to a candidate:
 

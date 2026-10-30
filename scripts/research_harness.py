@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import shutil
 import sqlite3
 import subprocess
@@ -26,11 +27,27 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 try:
+    from .experiment_control import (
+        ensure_authority,
+        sign_file,
+        verify_controlled_observation,
+        verify_signed_record,
+    )
     from .path_proof import validate_path_proof
-    from .reality_evidence import safe_campaign_path, validate_attestation
+    from .reality_evidence import (
+        evidence_reference,
+        safe_campaign_path,
+        validate_attestation,
+    )
 except ImportError:  # Direct script execution.
+    from experiment_control import (
+        ensure_authority,
+        sign_file,
+        verify_controlled_observation,
+        verify_signed_record,
+    )
     from path_proof import validate_path_proof
-    from reality_evidence import safe_campaign_path, validate_attestation
+    from reality_evidence import evidence_reference, safe_campaign_path, validate_attestation
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +103,7 @@ CANDIDATE_GATES = (
     "positive_case",
     "concrete_impact",
     "automated_triage_reviewed",
+    "controlled_experiment_verified",
     "path_proof_complete",
 )
 
@@ -323,9 +341,6 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS tasks_state_wave_idx ON tasks(state, wave, priority);
         CREATE INDEX IF NOT EXISTS task_approach_family_idx
           ON task_approach_families(family_id, task_id);
-        CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_running_per_worker
-          ON tasks(lease_owner)
-          WHERE state = 'running' AND lease_owner IS NOT NULL;
         CREATE INDEX IF NOT EXISTS events_task_idx ON events(task_id, event_id);
         CREATE INDEX IF NOT EXISTS research_leads_grade_idx
           ON research_leads(state, evidence_grade, updated_at);
@@ -354,6 +369,22 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE tasks ADD COLUMN reviews_task_id TEXT")
     if "lead_id" not in task_columns:
         connection.execute("ALTER TABLE tasks ADD COLUMN lead_id TEXT")
+    active_worker_index = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='tasks_one_running_per_worker'"
+    ).fetchone()
+    index_sql = str(active_worker_index["sql"] or "") if active_worker_index else ""
+    if active_worker_index is not None and "verifying" not in index_sql:
+        try:
+            connection.execute("DROP INDEX tasks_one_running_per_worker")
+        except sqlite3.OperationalError as error:
+            if "no such index" not in str(error).lower():
+                raise
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_running_per_worker "
+        "ON tasks(lease_owner) "
+        "WHERE state IN ('running','verifying') AND lease_owner IS NOT NULL"
+    )
     connection.commit()
 
 
@@ -1051,10 +1082,57 @@ def coordinator_reexecute_result(
             raise SystemExit(
                 f"coordinator replay target is not coordinator-frozen: {relative}"
             )
+    subject_value = recipe.get("subjectArtifact")
+    subject_index = recipe.get("subjectArgvIndex")
+    if subject_value not in targets:
+        raise SystemExit(
+            "coordinator replay subjectArtifact must be a frozen target artifact"
+        )
+    if not isinstance(subject_index, int) or not 0 <= subject_index <= 32:
+        raise SystemExit("coordinator replay requires a bounded subjectArgvIndex")
 
     repetitions = int(replay.get("repetitions") or 1)
     if repetitions < 1 or repetitions > 10:
         raise SystemExit("coordinatorReplay.repetitions must be between 1 and 10")
+    case_timeout = float(replay.get("timeoutSeconds") or 10.0)
+    if not 0.1 <= case_timeout <= 60.0:
+        raise SystemExit("coordinatorReplay.timeoutSeconds must be between 0.1 and 60")
+    approval_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    approval_path = (
+        root / "evidence" / "coordinator-approvals" / f"{task_id}-{approval_id}.json"
+    )
+    approval = {
+        "schemaVersion": 1,
+        "producer": "krineon-coordinator",
+        "taskId": task_id,
+        "approvedAt": utc_now(),
+        "recipe": {
+            "path": recipe_path.relative_to(root).as_posix(),
+            "sha256": sha256(recipe_path),
+        },
+        "subjectArtifact": subject_value,
+        "subjectArgvIndex": subject_index,
+        "targetArtifacts": [
+            {"path": value, "sha256": frozen_by_path[str(value)]}
+            for value in targets
+        ],
+        "repetitions": repetitions,
+        "caseTimeoutSeconds": case_timeout,
+    }
+    write_json(approval_path, approval)
+    authority = ensure_authority(root)
+    approval_signature = approval_path.with_suffix(".sig")
+    sign_file(Path(authority["privateKey"]), approval_path, approval_signature)
+    approval_valid, approval_errors, _ = verify_signed_record(
+        root,
+        approval_path,
+        approval_signature,
+        producer="krineon-coordinator",
+    )
+    if not approval_valid:
+        raise SystemExit(
+            "coordinator approval signature failed: " + ", ".join(approval_errors)
+        )
     command = [
         sys.executable,
         str(REALITY_RUNNER),
@@ -1068,17 +1146,37 @@ def coordinator_reexecute_result(
         "coordinator",
         "--repetitions",
         str(repetitions),
+        "--timeout",
+        str(case_timeout),
     ]
-    completed = subprocess.run(
-        command, check=False, capture_output=True, text=True, timeout=120
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
-    if completed.returncode != 0:
+    outer_timeout = (3 * repetitions * case_timeout) + 30
+    try:
+        stdout, stderr = process.communicate(timeout=outer_timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        stdout, stderr = process.communicate()
+        raise SystemExit(
+            "coordinator re-execution timed out after bounded case budgets; "
+            f"approval: {approval_path.relative_to(root)}"
+        )
+    completed_returncode = process.returncode
+    if completed_returncode != 0:
         raise SystemExit(
             "coordinator re-execution rejected the worker claim: "
-            + completed.stderr[-4000:]
+            + stderr[-4000:]
         )
     try:
-        output = json.loads(completed.stdout)
+        output = json.loads(stdout)
         attestation_path = safe_campaign_path(root, output.get("attestation"))
     except (json.JSONDecodeError, ValueError) as error:
         raise SystemExit(f"coordinator replay emitted invalid evidence: {error}") from error
@@ -1093,13 +1191,78 @@ def coordinator_reexecute_result(
         raise SystemExit(
             "coordinator replay attestation failed: " + ", ".join(validation["errors"])
         )
+    raw_artifacts: list[dict[str, Any]] = []
+    for case_runs in validation["record"].get("cases", {}).values():
+        for run in case_runs if isinstance(case_runs, list) else []:
+            raw = run.get("raw") if isinstance(run, dict) else None
+            if not isinstance(raw, dict):
+                continue
+            for field in ("stdoutPath", "stderrPath"):
+                path = safe_campaign_path(root, raw.get(field))
+                raw_artifacts.append(
+                    {
+                        "path": path.relative_to(root).as_posix(),
+                        "sha256": sha256(path),
+                    }
+                )
+    observation_path = approval_path.with_name(
+        approval_path.stem + "-observation.json"
+    )
+    observation = {
+        "schemaVersion": 1,
+        "producer": "krineon-controlled-runner",
+        "taskId": task_id,
+        "observedAt": utc_now(),
+        "approval": {
+            "path": approval_path.relative_to(root).as_posix(),
+            "sha256": sha256(approval_path),
+            "signature": approval_signature.relative_to(root).as_posix(),
+            "signatureSha256": sha256(approval_signature),
+        },
+        "attestation": {
+            "path": attestation_path.relative_to(root).as_posix(),
+            "sha256": validation["attestationSha256"],
+        },
+        "rawArtifacts": sorted(raw_artifacts, key=lambda value: value["path"]),
+    }
+    write_json(observation_path, observation)
+    observation_signature = observation_path.with_suffix(".sig")
+    sign_file(Path(authority["privateKey"]), observation_path, observation_signature)
+    observation_valid, observation_errors, _ = verify_signed_record(
+        root,
+        observation_path,
+        observation_signature,
+        producer="krineon-controlled-runner",
+    )
+    if not observation_valid:
+        raise SystemExit(
+            "controlled observation signature failed: "
+            + ", ".join(observation_errors)
+        )
+    controlled_verification = verify_controlled_observation(
+        root, observation_path, observation_signature
+    )
+    if not controlled_verification["passed"]:
+        raise SystemExit(
+            "controlled observation verification failed: "
+            + ", ".join(controlled_verification["errors"])
+        )
     return {
         "recipe": recipe_path.relative_to(root).as_posix(),
         "recipeSha256": sha256(recipe_path),
+        "approval": approval_path.relative_to(root).as_posix(),
+        "approvalSha256": sha256(approval_path),
+        "approvalSignature": approval_signature.relative_to(root).as_posix(),
+        "approvalSignatureSha256": sha256(approval_signature),
+        "controlledObservation": observation_path.relative_to(root).as_posix(),
+        "controlledObservationSha256": sha256(observation_path),
+        "controlledObservationSignature": observation_signature.relative_to(root).as_posix(),
+        "controlledObservationSignatureSha256": sha256(observation_signature),
         "attestation": attestation_path.relative_to(root).as_posix(),
         "attestationSha256": validation["attestationSha256"],
         "runId": validation["record"]["runId"],
         "repetitions": repetitions,
+        "caseTimeoutSeconds": case_timeout,
     }
 
 
@@ -1328,9 +1491,13 @@ def recover_tasks(connection: sqlite3.Connection) -> dict[str, int]:
     budget_stopped = 0
     if campaign_budget_exhausted(connection):
         for row in connection.execute(
-            "SELECT * FROM tasks WHERE state IN ('queued', 'running')"
+            "SELECT * FROM tasks WHERE state IN ('queued', 'running', 'verifying')"
         ).fetchall():
-            next_state = "timed-out" if row["state"] == "running" else "cancelled"
+            next_state = (
+                "timed-out"
+                if row["state"] in {"running", "verifying"}
+                else "cancelled"
+            )
             connection.execute(
                 "UPDATE tasks SET state=?,lease_owner=NULL,lease_token=NULL,"
                 "lease_expires_at=NULL,last_error=?,cancellation_reason=?,updated_at=? "
@@ -1357,7 +1524,9 @@ def recover_tasks(connection: sqlite3.Connection) -> dict[str, int]:
             "blocked": blocked,
             "budgetStopped": budget_stopped,
         }
-    for row in connection.execute("SELECT * FROM tasks WHERE state = 'running'").fetchall():
+    for row in connection.execute(
+        "SELECT * FROM tasks WHERE state IN ('running','verifying')"
+    ).fetchall():
         started = parse_time(row["started_at"]) if row["started_at"] else now
         lease_expired = bool(
             row["lease_expires_at"] and parse_time(row["lease_expires_at"]) <= now
@@ -1492,7 +1661,9 @@ def provision_workspace(
         "rediscovery-benchmark.md",
     ]
     if campaign.get("profile") == "chrome-v8":
-        reference_names.extend(("chrome-v8.md", "chrome-v8-agent.md"))
+        reference_names.extend(
+            ("chrome-v8.md", "macos-arm64.md", "chrome-v8-agent.md")
+        )
     for reference_name in reference_names:
         source = (
             PROJECT_ROOT / "agents" / reference_name
@@ -2059,7 +2230,14 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 def cmd_queue(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
-    require_campaign(root)
+    campaign = require_campaign(root)
+    authority = ensure_authority(root)
+    campaign["experimentAuthority"] = {
+        "algorithm": authority["algorithm"],
+        "publicKey": authority["publicKey"],
+        "publicKeySha256": authority["publicKeySha256"],
+    }
+    write_json(root / "campaign.json", campaign)
     plan = read_json(root / "launch-plan.json")
     now = utc_now()
     connection = connect_orchestration(root, required=False)
@@ -2070,6 +2248,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                 connection, list(plan.get("approachFamilies", []))
             )
             set_metadata(connection, "schemaVersion", 1)
+            set_metadata(connection, "experimentPrivateKey", authority["privateKey"])
             set_metadata(connection, "createdAt", get_metadata(connection, "createdAt", now))
             configured_concurrency = parse_max_concurrency(
                 plan.get("maxConcurrency", "auto")
@@ -2242,6 +2421,8 @@ def cmd_gate_self_test(args: argparse.Namespace) -> int:
                 "schemaVersion": 1,
                 "findingId": task_id,
                 "targetArtifacts": [target_relative],
+                "subjectArtifact": target_relative,
+                "subjectArgvIndex": 1,
                 "cases": [
                     {
                         "name": "baseline",
@@ -2320,7 +2501,7 @@ def cmd_worker_stop(args: argparse.Namespace) -> int:
             if row is None:
                 raise SystemExit(f"unknown worker: {args.worker_id}")
             running = connection.execute(
-                "SELECT task_id FROM tasks WHERE state='running' AND lease_owner=?",
+            "SELECT task_id FROM tasks WHERE state IN ('running','verifying') AND lease_owner=?",
                 (args.worker_id,),
             ).fetchall()
             if running and not args.force:
@@ -2486,7 +2667,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
             return 4
         active_for_agent = connection.execute(
             "SELECT tasks.task_id FROM tasks JOIN workers ON workers.worker_id=tasks.lease_owner "
-            "WHERE tasks.state='running' AND workers.agent=? LIMIT 1",
+            "WHERE tasks.state IN ('running','verifying') AND workers.agent=? LIMIT 1",
             (worker["agent"],),
         ).fetchone()
         if active_for_agent is not None:
@@ -2507,7 +2688,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
             return 3
         _, max_concurrency = resolve_concurrency_limit(connection)
         running = connection.execute(
-            "SELECT COUNT(*) AS count FROM tasks WHERE state='running'"
+            "SELECT COUNT(*) AS count FROM tasks WHERE state IN ('running','verifying')"
         ).fetchone()["count"]
         if running >= max_concurrency:
             connection.commit()
@@ -2543,19 +2724,11 @@ def cmd_claim(args: argparse.Namespace) -> int:
         # Prefix the capability so argparse never mistakes a leading '-' from
         # token_urlsafe() for a new command-line option.
         token = "lease_" + secrets.token_urlsafe(24)
-        workspace, workspace_mode = provision_workspace(
-            root,
-            campaign,
-            args.worker_id,
-            chosen["task_id"],
-            attempt,
-            chosen["packet"],
-        )
         now = utc_now()
         lease_expires_at = future_time(lease_seconds)
-        connection.execute(
+        reservation = connection.execute(
             "UPDATE tasks SET state='running',attempt=?,lease_owner=?,lease_token=?,"
-            "lease_expires_at=?,started_at=?,workspace=?,last_error=NULL,updated_at=? "
+            "lease_expires_at=?,started_at=?,workspace=NULL,last_error=NULL,updated_at=? "
             "WHERE task_id=? AND state='queued'",
             (
                 attempt,
@@ -2563,10 +2736,44 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 token,
                 lease_expires_at,
                 now,
-                str(workspace.relative_to(root)),
                 now,
                 chosen["task_id"],
             ),
+        )
+        if reservation.rowcount != 1:
+            connection.rollback()
+            raise SystemExit("task reservation raced with another scheduler")
+        connection.commit()
+        try:
+            workspace, workspace_mode = provision_workspace(
+                root,
+                campaign,
+                args.worker_id,
+                chosen["task_id"],
+                attempt,
+                chosen["packet"],
+            )
+        except Exception:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE tasks SET state='queued',lease_owner=NULL,lease_token=NULL,"
+                "lease_expires_at=NULL,started_at=NULL,workspace=NULL,last_error=?,updated_at=? "
+                "WHERE task_id=? AND state='running' AND lease_owner=? AND lease_token=?",
+                (
+                    "workspace provisioning failed",
+                    utc_now(),
+                    chosen["task_id"],
+                    args.worker_id,
+                    token,
+                ),
+            )
+            connection.commit()
+            raise
+        connection.execute("BEGIN IMMEDIATE")
+        require_owned_lease(connection, chosen["task_id"], args.worker_id, token)
+        connection.execute(
+            "UPDATE tasks SET workspace=?,updated_at=? WHERE task_id=?",
+            (str(workspace.relative_to(root)), utc_now(), chosen["task_id"]),
         )
         record_event(
             connection,
@@ -2622,7 +2829,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
             print(f"workspace: {workspace}")
             print(f"lease token: {token}")
         return 0
-    except Exception:
+    except BaseException:
         connection.rollback()
         raise
     finally:
@@ -2630,12 +2837,17 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
 
 def require_owned_lease(
-    connection: sqlite3.Connection, task_id: str, worker_id: str, token: str
+    connection: sqlite3.Connection,
+    task_id: str,
+    worker_id: str,
+    token: str,
+    *,
+    states: tuple[str, ...] = ("running",),
 ) -> sqlite3.Row:
     row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
     if row is None:
         raise SystemExit(f"unknown task: {task_id}")
-    if row["state"] != "running" or row["lease_owner"] != worker_id or row["lease_token"] != token:
+    if row["state"] not in states or row["lease_owner"] != worker_id or row["lease_token"] != token:
         raise SystemExit("task lease does not match worker/token or is no longer running")
     return row
 
@@ -2644,28 +2856,31 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     connection = connect_orchestration(root)
     try:
-        with connection:
-            recover_tasks(connection)
-        with connection:
-            row = require_owned_lease(
-                connection, args.task_id, args.worker_id, args.lease_token
-            )
-            lease_seconds = args.lease_seconds or int(
-                get_metadata(connection, "defaultLeaseSeconds", 900)
-            )
-            connection.execute(
-                "UPDATE tasks SET lease_expires_at=?,updated_at=? WHERE task_id=?",
-                (future_time(lease_seconds), utc_now(), row["task_id"]),
-            )
-            record_event(
-                connection,
-                "lease-heartbeat",
-                task_id=row["task_id"],
-                worker_id=args.worker_id,
-                payload={"leaseSeconds": lease_seconds},
-            )
+        connection.execute("BEGIN IMMEDIATE")
+        recover_tasks(connection)
+        row = require_owned_lease(
+            connection, args.task_id, args.worker_id, args.lease_token
+        )
+        lease_seconds = args.lease_seconds or int(
+            get_metadata(connection, "defaultLeaseSeconds", 900)
+        )
+        connection.execute(
+            "UPDATE tasks SET lease_expires_at=?,updated_at=? WHERE task_id=?",
+            (future_time(lease_seconds), utc_now(), row["task_id"]),
+        )
+        record_event(
+            connection,
+            "lease-heartbeat",
+            task_id=row["task_id"],
+            worker_id=args.worker_id,
+            payload={"leaseSeconds": lease_seconds},
+        )
+        connection.commit()
         print(f"extended lease for {args.task_id}")
         return 0
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
@@ -3944,6 +4159,47 @@ def update_finding_from_submission(
                 "independent replay machine attestation failed: "
                 + ", ".join(attestation_result["errors"])
             )
+        observer_challenge = replay_record.get("observerChallenge")
+        if not isinstance(observer_challenge, dict):
+            raise SystemExit(
+                "independent replay must challenge the hypothesis and observer with "
+                "observerChallenge"
+            )
+        for field in (
+            "challengedAssumption",
+            "hypothesisFailureMode",
+            "observerFailureMode",
+            "interpretation",
+        ):
+            require_string(
+                observer_challenge.get(field),
+                f"independentReplay.observerChallenge.{field}",
+            )
+        if observer_challenge.get("outcome") not in {"survived", "refuted"}:
+            raise SystemExit(
+                "independentReplay.observerChallenge.outcome must be survived or refuted"
+            )
+        alternate_oracle = observer_challenge.get("alternateOracle")
+        if not isinstance(alternate_oracle, dict):
+            raise SystemExit(
+                "independentReplay.observerChallenge.alternateOracle is required"
+            )
+        alternate_reference = {
+            "attestation": attestation_path.relative_to(root).as_posix(),
+            "sha256": attestation_result["attestationSha256"],
+            "case": alternate_oracle.get("case"),
+            "assertionId": alternate_oracle.get("assertionId"),
+        }
+        alternate_passed, alternate_errors, alternate_summary = evidence_reference(
+            root,
+            alternate_reference,
+            expected_finding_id=finding_id,
+        )
+        if not alternate_passed:
+            raise SystemExit(
+                "independent replay alternate observer oracle failed: "
+                + ", ".join(alternate_errors)
+            )
         proof_contract = finding_origin_attestation_contract(root, finding)
         if proof_contract is None:
             raise SystemExit(
@@ -3992,6 +4248,14 @@ def update_finding_from_submission(
             "targetHashes": attestation_result["targetHashes"],
             "challengeHashes": attestation_result["challengeHashes"],
             "processIds": attestation_result["processIds"],
+            "observerChallenge": {
+                **observer_challenge,
+                "alternateOracle": {
+                    "case": alternate_summary["case"],
+                    "assertionId": alternate_summary["assertionId"],
+                    "assertionKind": alternate_summary["assertionKind"],
+                },
+            },
         }
         replays = finding.setdefault("independentReplays", [])
         if not any(item.get("sha256") == digest for item in replays):
@@ -4116,8 +4380,30 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 "v8-finding-scoped-replay-scheduler",
             }:
                 validate_replay_scheduler_result(root, result)
+            verification_update = connection.execute(
+                "UPDATE tasks SET state='verifying',lease_expires_at=?,updated_at=? "
+                "WHERE task_id=? AND state='running' AND lease_owner=? AND lease_token=?",
+                (
+                    future_time(max(300, int(task["timeout_seconds"]))),
+                    utc_now(),
+                    args.task_id,
+                    args.worker_id,
+                    args.lease_token,
+                ),
+            )
+            if verification_update.rowcount != 1:
+                raise SystemExit("task lease changed before coordinator verification")
+            connection.commit()
             coordinator_replay = coordinator_reexecute_result(
                 root, result, str(task["task_id"]), validated_leads
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            task = require_owned_lease(
+                connection,
+                args.task_id,
+                args.worker_id,
+                args.lease_token,
+                states=("verifying",),
             )
         result_dir = root / "results" / task["task_id"]
         result_dir.mkdir(parents=True, exist_ok=True)
@@ -4140,6 +4426,21 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 result,
                 replay=bool(replay_of),
             )
+            if coordinator_replay is not None:
+                finding_file = finding_path(root, finding_id)
+                finding_record = read_json(finding_file)
+                controlled = finding_record.setdefault("controlledExperiments", [])
+                if not any(
+                    isinstance(value, dict)
+                    and value.get("controlledObservationSha256")
+                    == coordinator_replay.get("controlledObservationSha256")
+                    for value in controlled
+                ):
+                    controlled.append(coordinator_replay)
+                finding_record.setdefault("gates", {})[
+                    "controlled_experiment_verified"
+                ] = True
+                write_json(finding_file, finding_record)
         ingested_leads = (
             ingest_research_leads(
                 root,
@@ -4252,8 +4553,18 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 f"next task: {lead['scheduledTask'] or 'none'}"
             )
         return 0
-    except Exception:
+    except BaseException:
         connection.rollback()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE tasks SET state='running',updated_at=? "
+                "WHERE task_id=? AND state='verifying' AND lease_owner=? AND lease_token=?",
+                (utc_now(), args.task_id, args.worker_id, args.lease_token),
+            )
+            connection.commit()
+        except sqlite3.Error:
+            connection.rollback()
         raise
     finally:
         connection.close()
@@ -4797,6 +5108,22 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
             payload = read_json(result_path).get("independentReplay")
             if not isinstance(payload, dict):
                 continue
+            observer_challenge = payload.get("observerChallenge")
+            if not isinstance(observer_challenge, dict):
+                continue
+            alternate_oracle = observer_challenge.get("alternateOracle")
+            if not isinstance(alternate_oracle, dict):
+                continue
+            alternate_passed, _, _ = evidence_reference(
+                root,
+                {
+                    "attestation": attestation_name,
+                    "sha256": attestation_result.get("attestationSha256"),
+                    "case": alternate_oracle.get("case"),
+                    "assertionId": alternate_oracle.get("assertionId"),
+                },
+                expected_finding_id=finding_id,
+            )
             if (
                 payload.get("findingId") == finding_id
                 and payload.get("originator") == originator
@@ -4806,6 +5133,18 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
                 and payload["attestation"].get("path") == attestation_name
                 and payload["attestation"].get("sha256")
                 == attestation_result.get("attestationSha256")
+                and observer_challenge.get("outcome") in {"survived", "refuted"}
+                and all(
+                    isinstance(observer_challenge.get(field), str)
+                    and bool(observer_challenge[field].strip())
+                    for field in (
+                        "challengedAssumption",
+                        "hypothesisFailureMode",
+                        "observerFailureMode",
+                        "interpretation",
+                    )
+                )
+                and alternate_passed
             ):
                 verified_reviewer_agents.add(str(worker["agent"]))
                 seen_challenges.update(attestation_result["challengeHashes"])
@@ -4813,6 +5152,39 @@ def replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
         return len(verified_reviewer_agents) >= 2
     finally:
         connection.close()
+
+
+def controlled_experiment_is_machine_verified(
+    root: Path, finding: dict[str, Any]
+) -> bool:
+    experiments = finding.get("controlledExperiments")
+    if not isinstance(experiments, list) or not experiments:
+        return False
+    for experiment in experiments:
+        if not isinstance(experiment, dict):
+            continue
+        try:
+            observation = safe_campaign_path(
+                root, experiment.get("controlledObservation")
+            )
+            signature = safe_campaign_path(
+                root, experiment.get("controlledObservationSignature")
+            )
+        except ValueError:
+            continue
+        try:
+            if (
+                experiment.get("controlledObservationSha256") != sha256(observation)
+                or experiment.get("controlledObservationSignatureSha256")
+                != sha256(signature)
+            ):
+                continue
+            result = verify_controlled_observation(root, observation, signature)
+        except (OSError, ValueError):
+            continue
+        if result.get("passed") is True:
+            return True
+    return False
 
 
 def gate_result(
@@ -4825,6 +5197,15 @@ def gate_result(
     required_gates = CANDIDATE_GATES if level == "candidate" else REPORTABLE_GATES
     gates = finding.get("gates", {})
     missing_gates = [name for name in required_gates if gates.get(name) is not True]
+    if (
+        "controlled_experiment_verified" in required_gates
+        and campaign_root_path is not None
+        and not controlled_experiment_is_machine_verified(
+            campaign_root_path, finding
+        )
+        and "controlled_experiment_verified" not in missing_gates
+    ):
+        missing_gates.append("controlled_experiment_verified")
     missing_fields: list[str] = []
     for field in ("rootCause", "impact"):
         if not str(finding.get(field, "")).strip():

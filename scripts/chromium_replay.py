@@ -9,10 +9,13 @@ containment, process evidence, and deterministic replay record.
 from __future__ import annotations
 
 import base64
+import ctypes
+import ctypes.util
 import hashlib
 import http.server
 import json
 import os
+import platform
 import secrets
 import shutil
 import signal
@@ -435,7 +438,92 @@ def read_proc_status(pid: int) -> dict[str, Any]:
     return result
 
 
-def sandbox_evidence(processes: list[dict[str, Any]], flags: list[str]) -> dict[str, Any]:
+def read_darwin_process(pid: int) -> dict[str, Any]:
+    result: dict[str, Any] = {"pid": pid, "available": False}
+    try:
+        completed = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "pid=,ppid=,command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result["error"] = str(exc)
+        return result
+    output = completed.stdout.strip()
+    result.update(
+        {
+            "available": completed.returncode == 0 and bool(output),
+            "returnCode": completed.returncode,
+            "command": output[:8000],
+        }
+    )
+    return result
+
+
+def darwin_sandbox_check(
+    pid: int, operation: str, filter_type: int, argument: Path | None = None
+) -> dict[str, Any]:
+    candidates = [
+        "/usr/lib/system/libsystem_sandbox.dylib",
+        ctypes.util.find_library("System"),
+        "/usr/lib/libSystem.B.dylib",
+    ]
+    errors: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            library = ctypes.CDLL(candidate, use_errno=True)
+            checker = library.sandbox_check
+            checker.restype = ctypes.c_int
+            ctypes.set_errno(0)
+            common = (
+                ctypes.c_int(pid),
+                ctypes.c_char_p(operation.encode("utf-8")),
+                ctypes.c_int(filter_type),
+            )
+            if argument is None:
+                return_code = int(checker(*common))
+            else:
+                return_code = int(
+                    checker(*common, ctypes.c_char_p(os.fsencode(argument)))
+                )
+            error_number = ctypes.get_errno()
+            return {
+                "available": return_code >= 0,
+                "library": candidate,
+                "pid": pid,
+                "operation": operation,
+                "filterType": filter_type,
+                "argument": str(argument) if argument is not None else None,
+                "returnCode": return_code,
+                "denied": return_code > 0,
+                "allowed": return_code == 0,
+                "errno": error_number,
+            }
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            errors.append(f"{candidate}: {exc}")
+    return {
+        "available": False,
+        "pid": pid,
+        "operation": operation,
+        "filterType": filter_type,
+        "argument": str(argument) if argument is not None else None,
+        "errors": errors,
+    }
+
+
+def sandbox_evidence(
+    processes: list[dict[str, Any]],
+    flags: list[str],
+    *,
+    browser_pid: int | None = None,
+    sentinel_path: Path | None = None,
+    system: str | None = None,
+) -> dict[str, Any]:
+    system_value = system or platform.system()
     forbidden_absent = True
     try:
         validate_browser_flags(flags)
@@ -449,23 +537,64 @@ def sandbox_evidence(processes: list[dict[str, Any]], flags: list[str]) -> dict[
             pid = int(process.get("id"))
         except (TypeError, ValueError):
             continue
-        row = {"cdp": process, "proc": read_proc_status(pid)}
+        row: dict[str, Any] = {"cdp": process}
+        if system_value == "Linux":
+            row["proc"] = read_proc_status(pid)
+        elif system_value == "Darwin":
+            row["darwinProcess"] = read_darwin_process(pid)
+            if sentinel_path is not None:
+                row["seatbeltFileRead"] = darwin_sandbox_check(
+                    pid, "file-read-data", 1, sentinel_path
+                )
+            row["seatbeltProcessExec"] = darwin_sandbox_check(
+                pid, "process-exec", 1, Path("/bin/true")
+            )
         renderer_rows.append(row)
-    linux_verified = bool(renderer_rows) and all(
+    linux_verified = system_value == "Linux" and bool(renderer_rows) and all(
         row["proc"].get("available")
         and row["proc"].get("seccomp") == "2"
         and row["proc"].get("noNewPrivs") == "1"
         for row in renderer_rows
     )
+    browser_control = (
+        darwin_sandbox_check(browser_pid, "file-read-data", 1, sentinel_path)
+        if system_value == "Darwin"
+        and browser_pid is not None
+        and sentinel_path is not None
+        else None
+    )
+    darwin_verified = (
+        system_value == "Darwin"
+        and bool(renderer_rows)
+        and isinstance(browser_control, dict)
+        and browser_control.get("available") is True
+        and browser_control.get("allowed") is True
+        and all(
+            row.get("darwinProcess", {}).get("available") is True
+            and row.get("seatbeltFileRead", {}).get("available") is True
+            and row.get("seatbeltFileRead", {}).get("denied") is True
+            and row.get("seatbeltProcessExec", {}).get("available") is True
+            and row.get("seatbeltProcessExec", {}).get("denied") is True
+            for row in renderer_rows
+        )
+    )
+    verified = forbidden_absent and (
+        linux_verified if system_value == "Linux" else darwin_verified
+    )
     return {
         "requested": True,
+        "platform": system_value,
         "forbiddenFlagsAbsent": forbidden_absent,
         "rendererProcesses": renderer_rows,
         "linuxSeccompAndNoNewPrivsVerified": linux_verified,
-        "verified": forbidden_absent and linux_verified,
+        "darwinSeatbeltVerified": darwin_verified,
+        "darwinBrowserFileReadControl": browser_control,
+        "verified": verified,
         "limitation": (
-            "Linux promotion requires CDP renderer PIDs with Seccomp=2 and NoNewPrivs=1. "
-            "Other platforms require independently retained sandbox evidence."
+            "Linux promotion requires renderer Seccomp=2 and NoNewPrivs=1. "
+            "Darwin promotion requires Seatbelt to deny renderer file-read and "
+            "process-exec queries while the browser-process file-read control succeeds. "
+            "Unsupported platforms fail closed."
         ),
     }
 
@@ -705,7 +834,16 @@ def run_browser_case(
                 if isinstance(processes_result.get("processInfo"), list)
                 else []
             )
-            sandbox = sandbox_evidence(processes, flags)
+            sandbox_sentinel = output_dir / "sandbox-sentinel.txt"
+            sandbox_sentinel.write_text(
+                f"krineon-owned-{secrets.token_hex(16)}\n", encoding="utf-8"
+            )
+            sandbox = sandbox_evidence(
+                processes,
+                flags,
+                browser_pid=process.pid,
+                sentinel_path=sandbox_sentinel,
+            )
             record.update(
                 {
                     "status": "completed",
@@ -724,6 +862,11 @@ def run_browser_case(
                     "blockedExternalRequests": sorted(set(client.blocked_external)),
                     "targetCrashed": client.crashed,
                     "sandbox": sandbox,
+                    "sandboxSentinel": {
+                        "path": "sandbox-sentinel.txt",
+                        "sha256": sha256_file(sandbox_sentinel),
+                        "size": sandbox_sentinel.stat().st_size,
+                    },
                     "screenshot": {
                         "path": "page.png",
                         "sha256": sha256_file(screenshot_path),

@@ -359,8 +359,8 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("workers must be between 1 and 256")
         environment = {
             "PATH": str(runtime.parent) + os.pathsep + os.environ.get("PATH", os.defpath),
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
+            "LANG": "C",
+            "LC_ALL": "C",
             "NODE_ENV": "production",
         }
         for name in spec.get("passEnvironment", []):

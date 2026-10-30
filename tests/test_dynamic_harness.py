@@ -179,6 +179,8 @@ class DynamicHarnessTests(unittest.TestCase):
         )
         self.assertEqual(result["outcome"], "ok")
         self.assertEqual(result["coverage"], ["entry", "prefix:A", "prefix:AA"])
+        self.assertIn(result["platform"]["architecture"], {"arm64", "x86_64"})
+        self.assertIn("resourceLimits", result)
 
     def test_timeout_and_nonzero_are_distinct_from_crashes(self) -> None:
         _, timeout = self.run_input(b"SLEEP", "--timeout-ms", "100")
@@ -377,6 +379,8 @@ class DynamicHarnessTests(unittest.TestCase):
                     "schemaVersion": 1,
                     "findingId": "FPRIM",
                     "targetArtifacts": ["evidence/bin/primitive_probe.py"],
+                    "subjectArtifact": "evidence/bin/primitive_probe.py",
+                    "subjectArgvIndex": 1,
                     "cases": [
                         {
                             "name": name,
