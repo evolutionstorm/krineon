@@ -277,6 +277,7 @@ that these API names are interchangeable:
 
 | Operation | Codex collaboration interface | OMP interface |
 | --- | --- | --- |
+| Inspect workers and capacity | `list_agents` | Runtime task/session inspection |
 | Launch bounded workers | `spawn_agent` | `task` with shared `context` and per-worker `tasks[]` |
 | Await completion | `wait_agent` | Automatic result delivery; `wait` only when otherwise blocked |
 | Send evidence or constraints | `send_message` | `write agent://<id>` |
@@ -297,6 +298,16 @@ recover expired leases after coordinator or worker failure
 schedule finding-specific replay tasks that exclude originators
 run the machine-checkable evidence gate before synthesis
 ```
+
+### Codex
+
+Load Krineon from Codex's user skill directory and invoke `$krineon`; see
+[installation](../README.md#load-the-skill-in-codex). Follow the complete
+[Codex runtime adapter](codex.md) for path resolution, capacity inspection,
+isolated child context, immutable identity binding, durable submission,
+independent replay, interruption, and recovery. A Codex child final response is
+a notification, not a durable queue submission, and cannot unlock dependent
+tasks.
 
 ### OMP (Oh My Pi)
 

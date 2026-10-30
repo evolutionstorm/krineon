@@ -109,6 +109,36 @@ For headless OMP campaigns, include `--wait-async` with `--print` so exiting the
 initial turn does not cancel active workers, and set an appropriate
 `--max-time` bound. Runtime approvals do not replace campaign authorization.
 
+### Load the skill in Codex
+
+From the Krineon checkout, link the **whole directory**, not just `SKILL.md`,
+into Codex's user skill root:
+
+```bash
+CODEX_SKILLS_ROOT="${CODEX_HOME:-$HOME/.codex}/skills"
+mkdir -p "$CODEX_SKILLS_ROOT"
+test ! -e "$CODEX_SKILLS_ROOT/krineon" &&
+  test ! -L "$CODEX_SKILLS_ROOT/krineon" &&
+  ln -s "$PWD" "$CODEX_SKILLS_ROOT/krineon"
+```
+
+The default location is `~/.codex/skills/krineon`; the command respects a
+custom `CODEX_HOME` and leaves an existing installation untouched. Start a new
+Codex session from the target workspace after installing.
+
+Invoke it in the Codex prompt:
+
+```text
+$krineon Audit this checkout under the attached program rules. Source review
+and bounded local tests only; no live-target testing.
+```
+
+Codex follows symlinked skill directories, so the bundled scripts, references,
+and templates remain available. The root Codex agent uses native collaboration
+tools while Krineon's durable queue enforces task ownership, dependencies, and
+independent replay; see the [Codex runtime adapter](references/codex.md). See the
+[official Codex skill documentation](https://developers.openai.com/codex/skills).
+
 ### Start with only the program rules
 
 Paste or attach the program guidelines and scope, identify the target checkout
@@ -209,17 +239,6 @@ ready. An explicit positive integer remains available as a hard safety ceiling.
 Neither form assigns headcount to a strategy: all workers claim from the same
 priority and dependency queue, and the coordinator continuously splits useful
 missing links and backfills free slots.
-
-In Codex, invoke the skill with a concrete authorization boundary, for example:
-
-```text
-Use $krineon to audit the pinned local checkout in
-../target. This is an authorized source-code and local-lab campaign. Read the
-campaign's AUTHORIZATION.md, keep the root agent as coordinator, launch Wave 1
-with complementary agents, and do not perform live-target testing.
-```
-
-On OMP, use `/skill:krineon` instead of Codex's `$krineon` invocation.
 
 Workers register stable identities and atomically claim only dependency-ready
 tasks. A claim creates a per-worker workspace under `worktrees/`; when
