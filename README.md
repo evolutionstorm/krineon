@@ -62,11 +62,16 @@ Together, these tools broaden coverage and generate concrete inputs. Tool
 output remains a note or model result until source review and an executed
 differential confirm the discrepancy. `static_analysis_pipeline.py` retains
 the differential commands and observations and creates idempotent
-provenance-bound validation tasks in `orchestration.db`. Run
-`scripts/tool_probe.py` first to record which optional tools are available. The
-probe does not install or modify them.
+provenance-bound validation tasks in `orchestration.db`. The agent first probes
+which optional tools are available; the probe does not install or modify them.
 
 ## Quick start
+
+Invoke Krineon through your coding agent; it handles campaign setup, worker
+coordination, and evidence checks. Python 3 must be installed because the agent
+uses the bundled harness internally, but you do not need to run Python commands
+yourself. Detailed operational instructions live in [SKILL.md](SKILL.md) and
+the linked reference docs.
 
 ### Load the skill in OMP
 
@@ -97,108 +102,53 @@ review and bounded local tests only; no live-target testing.
 ```
 
 OMP exposes the skill at `skill://krineon` and its supporting files below that
-URI. Shell commands must use the physical skill directory, not assume that
-`scripts/` exists in the target checkout. For example, with `KRINEON_ROOT` set
-to the absolute skill directory:
+URI. The agent resolves harness scripts against the physical skill directory
+rather than assuming they exist in the target checkout.
 
-```bash
-python3 "$KRINEON_ROOT/scripts/research_harness.py" status /absolute/path/to/campaign
-```
-
-The remaining repository-relative CLI examples assume the Krineon directory.
 For headless OMP campaigns, include `--wait-async` with `--print` so exiting the
 initial turn does not cancel active workers, and set an appropriate
 `--max-time` bound. Runtime approvals do not replace campaign authorization.
 
 ### Start with only the program rules
 
-Save the program guidelines and scope in one Markdown or text file. Krineon
-preserves that input verbatim, extracts review candidates, selects an installed
-research profile, pins a supplied Git checkout, inventories available tools,
-creates the launch plan, and queues the campaign:
+Paste or attach the program guidelines and scope, identify the target checkout
+if available, and request a campaign. State whether bounded testing in an owned
+local environment is authorized. The agent preserves the input verbatim,
+extracts review candidates, selects a research profile, pins the checkout,
+inventories available tools, creates the launch plan, and queues the campaign.
 
-```bash
-cd krineon
+If the rules identify one unambiguous public source repository, the agent can
+acquire and pin it during setup. Otherwise it records the ambiguity instead of
+guessing. It asks for input only when choosing would change the asset,
+authority, credentials, or material cost.
 
-python3 scripts/campaign_bootstrap.py ../campaigns/example \
-  --guidelines program-rules.md \
-  --scope program-scope.md \
-  --checkout ../target-checkout \
-  --confirm-authorization
-```
+When local testing is not authorized, source analysis can still begin, but
+dynamic execution stays disabled. Local authorization never grants permission
+for production, shared-system, account, wallet, or testnet interaction.
 
-If the rules contain one unambiguous public source repository, Krineon can
-acquire and pin it as part of setup:
-
-```bash
-python3 scripts/campaign_bootstrap.py ../campaigns/example \
-  --guidelines program-rules.md --clone --confirm-authorization
-```
-
-Omit `--confirm-authorization` when the selected asset still needs review. The
-campaign and durable queue are still created, but local dynamic execution is
-disabled. `--confirm-authorization` covers source review and bounded testing in
-the recorded owned environment only. It never converts a public program page
-into permission for production, shared-system, account, wallet, or testnet
-interaction.
-
-The separate `--scope` file is optional when scope is already part of the
-guidelines. The intake records its decisions and unresolved items in
+Separate scope text is optional when scope is already part of the guidelines.
+The intake records its decisions and unresolved items in
 `onboarding.json`, keeps the original text in `PROGRAM_GUIDELINES.md` and
 `PROGRAM_SCOPE.md`, and writes their SHA-256 digests into the records. If the
 repository or commit is not unambiguous, the setup task receives explicit
 `pending-source-repository` or `pending-pin` values instead of a guess. See
 [references/program-intake.md](references/program-intake.md).
 
-When Krineon is used through Codex, OMP, Claude Code, or OpenCode, the researcher can
-simply paste or attach the program rules and request a campaign. The agent
-performs this intake, resolves routine public-source details, and starts the
-queued source-analysis work. It asks for input only when choosing would change
-the asset, authority, credentials, or material cost.
+### What the agent sets up
 
-### Manual campaign setup
+The coordinator records authorization, pins source and runtime artifacts,
+creates the campaign plan and durable task queue, freezes bounded test
+components, and proves the coordinator's evidence gate before scaling out.
+Worker registration, task claims, lease renewal, and result submission are
+handled by the agents. See
+[orchestration](references/orchestration.md) and
+[tool-assisted analysis](references/tool-assisted-analysis.md) for the internal
+workflow.
 
-```bash
-cd krineon
-
-python3 scripts/research_harness.py init ../campaigns/example \
-  --target example-project \
-  --repo https://github.com/example/project \
-  --checkout ../target-checkout \
-  --commit 0123456789abcdef \
-  --mode source
-
-python3 scripts/research_harness.py plan ../campaigns/example \
-  --max-concurrency auto --lease-seconds 900 \
-  --task-timeout-seconds 7200 --max-attempts 2
-python3 scripts/tool_probe.py --output ../campaigns/example/tools/tool-probe.json
-python3 scripts/research_harness.py queue ../campaigns/example
-python3 scripts/component_freeze.py COMPONENT.json \
-  ../campaigns/example/frozen/component
-python3 scripts/research_harness.py gate-self-test ../campaigns/example
-python3 scripts/static_analysis_pipeline.py run ../campaigns/example \
-  --tool differential --differential-spec PAIR.json --ingest
-python3 scripts/framework_adapter.py ../campaigns/example ADAPTER.json \
-  ../campaigns/example/evidence/framework/production
-python3 scripts/research_harness.py worker-register ../campaigns/example worker-a \
-  --agent codex:session-a --role originator
-python3 scripts/research_harness.py claim ../campaigns/example worker-a --json
-python3 scripts/research_harness.py orchestration-status ../campaigns/example
-python3 scripts/research_harness.py status ../campaigns/example
-```
-
-The bundled Z3 example is generic mathematics, not target analysis. Run it
-directly to inspect the payload format:
-
-```bash
-python3 scripts/z3_boundary_solver.py \
-  --spec examples/z3/u32-truncates-to-zero.json
-```
-
-Pipeline Z3 specs normally require `implementationBinding` with the pinned
-relative source file, exact line range, expression, and extraction method. The
-solver reads and hashes that fragment. `--allow-unbound-z3` retains generic
-output for experimentation but deliberately creates no validation task.
+The bundled Z3 example is generic mathematics, not target analysis. Target-bound
+solver specifications identify an exact pinned-source fragment, expression,
+and extraction method; the solver reads and hashes that fragment. Unbound
+generic output remains experimental and creates no validation task.
 
 Raw differential evidence is stored under `tools/static/RUN_ID/`; normalized
 leads are in `tools/static-leads.json`. Each executed disagreement becomes an
@@ -231,22 +181,10 @@ Built-in semantic generators cover JSON, URLs, headers, multipart, RSC, Server
 Actions, and manifests. See
 [JavaScript coverage and generation](references/javascript-coverage-generation.md).
 
-Every campaign includes `third_party/manifest.json`. Pin exact dependencies
-selected by the target's lockfile, build graph, generated bundle, or runtime
-linkage when they expose a high-value parser, native, lifetime, callback,
-sandbox, or code-loading boundary:
-
-```bash
-python3 scripts/research_harness.py dependency-add ../campaigns/example library-name \
-  --repo https://github.com/example/library \
-  --commit EXACT_LOCK_RESOLVED_REVISION \
-  --relationship runtime \
-  --scope-status supporting-context \
-  --lock-evidence package-lock.json:120 \
-  --reason "Target input reaches this library before the native sink"
-
-python3 scripts/research_harness.py dependency-status ../campaigns/example
-```
+Every campaign includes `third_party/manifest.json`. The coordinator pins exact
+dependencies selected by the target's lockfile, build graph, generated bundle,
+or runtime linkage when they expose a high-value parser, native, lifetime,
+callback, sandbox, or code-loading boundary.
 
 Workers receive detached copies under `KRINEON_THIRD_PARTY/`, backed by the
 campaign's shared Git object stores. This permits independent builds and
@@ -272,7 +210,7 @@ Neither form assigns headcount to a strategy: all workers claim from the same
 priority and dependency queue, and the coordinator continuously splits useful
 missing links and backfills free slots.
 
-Then invoke the skill with a concrete authorization boundary, for example:
+In Codex, invoke the skill with a concrete authorization boundary, for example:
 
 ```text
 Use $krineon to audit the pinned local checkout in
@@ -285,8 +223,8 @@ On OMP, use `/skill:krineon` instead of Codex's `$krineon` invocation.
 
 Workers register stable identities and atomically claim only dependency-ready
 tasks. A claim creates a per-worker workspace under `worktrees/`; when
-`--checkout` points to a Git repository, that workspace is a detached Git
-worktree at the pinned revision. Claims carry renewable leases and task
+the campaign includes a Git checkout, that workspace is a detached Git worktree
+at the pinned revision. Claims carry renewable leases and task
 timeouts. Expired leases are recovered, attempt budgets are enforced, and
 submissions are deduplicated by caller-supplied idempotency keys.
 
@@ -316,13 +254,8 @@ one or more finding IDs in `taskResult.replayFindings`, and each must already
 have two accepted, hashed, different-agent replays. Adversarial review and final
 synthesis therefore cannot unlock merely because a replay was scheduled.
 
-Use repeated research rounds to keep incompatible routes alive before
-composition:
-
-```bash
-python3 scripts/research_harness.py round-plan CAMPAIGN root-worker \
-  --plan assets/research-round.template.json
-```
+The coordinator uses repeated research rounds to keep incompatible routes alive
+before composition, following `assets/research-round.template.json`.
 
 Each round creates independent route-development tasks, a different-agent
 adversarial task for every route, and a coordinator-only synthesis task.
@@ -338,43 +271,24 @@ until the next round has actually been launched into the durable queue.
 
 ## Durable orchestration protocol
 
-```bash
-# One-time campaign queue and worker registration
-python3 scripts/research_harness.py queue CAMPAIGN
-python3 scripts/research_harness.py worker-register CAMPAIGN worker-a \
-  --agent codex:session-a --role originator
-
-# Worker loop
-python3 scripts/research_harness.py claim CAMPAIGN worker-a --json
-python3 scripts/research_harness.py heartbeat CAMPAIGN worker-a TASK_ID \
-  --lease-token LEASE_TOKEN
-python3 scripts/research_harness.py submit CAMPAIGN worker-a TASK_ID \
-  --lease-token LEASE_TOKEN --result result.json \
-  --idempotency-key TASK_ID-attempt-1
-
-# Coordinator operations
-python3 scripts/research_harness.py cancel CAMPAIGN TASK_ID --reason "superseded"
-python3 scripts/research_harness.py retry CAMPAIGN TASK_ID --reason "worker failed"
-python3 scripts/research_harness.py recover CAMPAIGN
-
-# Machine-enforced independent replay
-python3 scripts/research_harness.py register CAMPAIGN F001 \
-  --title "Candidate" --lane cross-lane-chain-composition --originator worker-a
-python3 scripts/research_harness.py schedule-replay CAMPAIGN F001
-```
+The agent manages queue creation, worker registration, dependency-ready claims,
+lease renewal, result ingestion, cancellation, recovery, and independent replay.
+These are internal operations, not manual setup steps. See
+[references/orchestration.md](references/orchestration.md) for the worker
+protocol and runtime bindings.
 
 Each replay submission must link a `krineon-reality-runner` attestation. The
 coordinator re-hashes the recipe, targets, and raw output and recomputes every
 assertion. A different worker ID that merely submits `passed: true` is rejected.
 
-`submit` accepts the same idempotency key repeatedly only when the task,
-worker, result digest, and outcome are identical. A conflicting reuse fails.
-`recover` releases expired worker leases, marks task timeouts, and blocks tasks
-whose dependencies ended unsuccessfully. Coordinator or worker restarts do not
-erase queue state or accepted submissions.
+Duplicate submissions are accepted only when the idempotency key, task, worker,
+result digest, and outcome are identical; conflicting reuse fails. Recovery
+releases expired worker leases, marks task timeouts, and blocks tasks whose
+dependencies ended unsuccessfully. Coordinator or worker restarts do not erase
+queue state or accepted submissions.
 
 Profiles are Critical/RCE launch maps, not closed checklists. Workers add newly
-exposed research branches with `task-add`. A blocked worker must identify the
+exposed research branches to the queue. A blocked worker must identify the
 missing link, blocking mechanism, reason, bypass hypotheses, alternate routes,
 and cheapest discriminator. For self-resolvable technical blockers, Krineon
 automatically creates a high-priority fresh-agent breakout task. Success
@@ -382,30 +296,15 @@ requeues the original lane and revives downstream work; another blocker
 continues the diagnostic and bypass loop instead of ending the campaign.
 Requeueing requires a new semantic mechanism fingerprint and evidence explaining
 how it differs from the blocked mechanism; relabeling or mutating the same
-approach is rejected. The generic `retry` command cannot directly requeue a
-blocked task.
+approach is rejected. A generic retry cannot directly requeue a blocked task.
 
 Krineon also maintains `approach-registry.json`, backed by durable SQLite
 family-to-task bindings. Families are defined by security boundary, mechanism,
 and invariant rather than task wording. New exploration claims minimize active
 family load first and prior coverage second; raw priority and an approach
 looking promising or suspicious cannot concentrate workers while another
-family is runnable. Every redirect is recorded. Inspect the registry
-with `approach-status`; see
+family is runnable. Every redirect is recorded; see
 [references/approach-families.md](references/approach-families.md).
-
-```bash
-python3 scripts/research_harness.py task-add CAMPAIGN adjacent-path-01 \
-  --title "Adjacent state transition" --lane open-ended-expansion \
-  --approach-family representation-parser \
-  --objective "Test the sibling consumer" \
-  --success-criterion "Confirm or disprove it with runtime evidence"
-
-python3 scripts/research_harness.py schedule-unblock CAMPAIGN BLOCKED_TASK \
-  --title "Recover observability" \
-  --strategy "Derive a release-visible discriminator" \
-  --success-criterion "Resume the original release-build experiment"
-```
 
 See [references/blocker-resolution.md](references/blocker-resolution.md).
 
@@ -418,65 +317,29 @@ the production zero-day fuzzer. Dynamic commands require
 `authorization.confirmed: true`, an allowed environment, a pinned campaign
 revision, and `source` or `local-lab` mode.
 
-Run a file-input target or smoke-test its input plumbing:
-
-```bash
-python3 scripts/dynamic_harness.py run ../campaigns/example \
-  --input-file seeds/valid.bin --name parser --input-mode file \
-  --cwd /path/to/target --target-artifact /path/to/parser \
-  -- /path/to/parser '{input}'
-
-python3 scripts/dynamic_harness.py fuzz ../campaigns/example \
-  --seed-file seeds/valid.bin --iterations 10000 --rng-seed 1 \
-  --name parser --input-mode file --cwd /path/to/target \
-  --target-artifact /path/to/parser -- /path/to/parser '{input}'
-```
-
-Repeat `--target-artifact` for scripts and data dependencies. The executable is
-also pinned automatically. Replay verifies those hashes and refuses to
-silently substitute a changed target. For stdin targets, omit `--input-mode`
-and `{input}`.
+The agent selects file-input or stdin execution and pins the executable,
+scripts, and data dependencies. Replay verifies those hashes and refuses to
+silently substitute a changed target.
 
 Each smoke seed is calibrated before the requested mutation iterations. A target or
 wrapper can optionally write one coverage edge ID per line to the file named by
 `KRINEON_COVERAGE_FILE`; `KRINEON_INPUT_FILE` names the current input. Inputs
 that discover new edges join `dynamic/corpus/NAME/` and affect subsequent
-mutations. Later fuzz runs reload that corpus unless `--no-load-corpus` is set.
-The smoke runner does not inject compiler instrumentation itself.
+mutations. Later fuzz runs can reload that corpus. The smoke runner does not
+inject compiler instrumentation itself.
 
 Use the external-fuzzer orchestrator for coverage-guided research. It injects
 or verifies compiler instrumentation, operates pinned AFL++, libFuzzer, and
 Fuzzilli engines, harvests source seeds, runs grammar/structured generators,
 uses native parallel corpus sharing, forwards replay-confirmed crashes into the
-triage store, and rebuilds AFL or LLVM coverage from the canonical corpus:
-
-```bash
-python3 scripts/fuzzer_orchestrator.py register CAMPAIGN parser \
-  --engine libfuzzer --target /owned/out/parser_fuzzer --revision REVISION
-python3 scripts/fuzzer_orchestrator.py instrument CAMPAIGN parser \
-  --kind libfuzzer-clang \
-  --build-command-json '["ninja","-C","out","parser_fuzzer"]'
-python3 scripts/fuzzer_orchestrator.py seed-harvest CAMPAIGN parser \
-  --source /owned/source/tests --extension .bin
-python3 scripts/fuzzer_orchestrator.py launch CAMPAIGN parser \
-  --workers 16 --duration-seconds 21600 --forward-crashes
-python3 scripts/fuzzer_orchestrator.py coverage-rebuild CAMPAIGN parser \
-  --mode afl-showmap --tool /owned/afl/bin/afl-showmap
-```
+triage store, and rebuilds AFL or LLVM coverage from the canonical corpus.
 
 See [references/fuzzing.md](references/fuzzing.md) for AFL++ master/secondary
 sync, libFuzzer fork workers, Fuzzilli jobs/REPRL, structured generation,
 corpus provenance, crash forwarding, and coverage rebuilding.
 
-Crash and reproduction workflow:
-
-```bash
-python3 scripts/dynamic_harness.py minimize CAMPAIGN CRASH_ID
-python3 scripts/dynamic_harness.py replay crash CAMPAIGN CRASH_ID --minimized
-python3 scripts/dynamic_harness.py replay case CAMPAIGN RUN_ID 0
-python3 scripts/dynamic_harness.py regression CAMPAIGN
-python3 scripts/dynamic_harness.py triage CAMPAIGN --crash-id CRASH_ID --json
-```
+The agent minimizes retained crashes, replays cases and crashes, checks
+reproduction, and reviews triage before promotion.
 
 Raw inputs, bounded stdout/stderr, coverage, results, and target configuration
 are retained under `dynamic/runs/` and `dynamic/crashes/`. `regression` checks
@@ -494,19 +357,12 @@ controls, and allocation generation identity for a UAF claim.
 so distinct sanitizer reports sharing one underlying stack remain grouped even
 when their exact crash fingerprints differ. Completed tasks can return these
 clusters, invariant contradictions, and verified primitives through
-`taskResult.researchLeads`. `research_harness.py lead-status` deduplicates and
-orders them by machine-evidence grade, not claimed severity, and automatically
-queues the next stated experiment. Attach reviewed triage to a
-finding with:
+`taskResult.researchLeads`. The coordinator deduplicates and ranks these leads
+by machine-evidence grade, not claimed severity, automatically queues the next
+stated experiment, and attaches reviewed triage to candidate findings.
 
-```bash
-python3 scripts/dynamic_harness.py triage CAMPAIGN \
-  --crash-id CRASH_ID --finding-id F001 \
-  --reviewed-by worker-review --review-note "Interpretation and next experiment"
-```
-
-Use `scripts/reality_runner.py` plus `scripts/primitive_verifier.py` to attach
-that evidence. The candidate gate rejects a crash-backed write or PC lead while
+The reality runner and primitive verifier attach that evidence. The candidate
+gate rejects a crash-backed write or PC lead while
 its primitive remains unverified. No automated verdict is machine-eligible to establish Critical impact;
 the existing real-terminal, production-equivalent, and replay gates still
 apply.
@@ -522,17 +378,6 @@ artifacts, stores only the hash of evaluator-held target-test/invariant
 oracles, executes a local search command, and records seconds and hours to first
 rediscovery plus recall. The oracle identities must not be shared with search
 workers.
-
-```bash
-python3 scripts/rediscovery_benchmark.py freeze CAMPAIGN baseline \
-  --checkout /pinned/target --corpus /owned/frozen-corpus \
-  --sealed-oracles /evaluator/oracles.json \
-  --target-artifact /pinned/target/out/release-target
-
-python3 scripts/rediscovery_benchmark.py run CAMPAIGN baseline \
-  --sealed-oracles /evaluator/oracles.json \
-  --command-json '["/owned/search-driver","--jsonl"]'
-```
 
 Before that metric exists, launch-plan lane efficacy is explicitly marked
 `documentation-only`; running a lane is an experiment, not evidence that it
@@ -553,31 +398,9 @@ and backing-store lifetime, WebAssembly, V8 Sandbox boundaries, structured and
 differential fuzzing, primitive escalation, sandbox-enabled Chromium
 reachability, independent replay, adversarial review, and disclosure synthesis.
 
-```bash
-python3 scripts/research_harness.py init ../campaigns/v8 \
-  --profile chrome-v8 --target v8 \
-  --repo https://chromium.googlesource.com/v8/v8 \
-  --checkout ../v8 --commit V8_COMMIT --mode local-lab
-python3 scripts/research_harness.py plan ../campaigns/v8 --max-concurrency auto
-python3 scripts/research_harness.py queue ../campaigns/v8
-```
-
-Register exact release, ASan, and debug `d8` binaries, including their runtime
-data dependencies and GN arguments:
-
-```bash
-python3 scripts/chrome_v8_harness.py register-build ../campaigns/v8 release \
-  --kind d8 --role release --revision V8_COMMIT \
-  --binary ../v8/out/release/d8 \
-  --gn-args-file ../v8/out/release/args.gn
-python3 scripts/chrome_v8_harness.py audit ../campaigns/v8
-python3 scripts/chrome_v8_harness.py matrix ../campaigns/v8 \
-  --testcase testcase.js
-
-python3 scripts/chrome_v8_harness.py browser-replay ../campaigns/v8 \
-  --build chrome-release --page-dir ./owned-page \
-  --entry index.html --control-entry control.html
-```
+The agent registers exact release, ASan, and debug `d8` binaries, including their
+runtime data dependencies and GN arguments, audits their identities, and runs
+cross-build comparisons and owned-page browser replays.
 
 The adapter verifies artifact hashes and delegates execution to the bounded
 dynamic runner. Its dependency-free direct-CDP browser lane copies and hashes
