@@ -323,6 +323,38 @@ def call_literal_arguments(tokens: list[Token], open_index: int, maximum: int = 
     return values
 
 
+def call_identifiers(tokens: list[Token], open_index: int, maximum: int = 32) -> list[str]:
+    depth = 0
+    values: list[str] = []
+    for token in tokens[open_index + 1 :]:
+        if token.value == "(":
+            depth += 1
+        elif token.value == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        elif token.kind == "identifier" and token.value not in values:
+            values.append(token.value)
+            if len(values) >= maximum:
+                break
+    return values
+
+
+def assignment_target(tokens: list[Token], call_start: int) -> str | None:
+    cursor = call_start - 1
+    call_line = tokens[call_start].line
+    while cursor >= 0 and tokens[cursor].value not in {";", "{", "}"}:
+        # Prefer a false negative to borrowing an assignment from a previous
+        # automatic-semicolon-insertion statement. Multiline assignments remain
+        # candidates until a real AST/CPG confirms them.
+        if tokens[cursor].line != call_line:
+            return None
+        if tokens[cursor].value == "=" and cursor > 0 and tokens[cursor - 1].kind == "identifier":
+            return tokens[cursor - 1].value
+        cursor -= 1
+    return None
+
+
 def scan_javascript(
     path: Path,
     root: Path,
@@ -404,22 +436,38 @@ def scan_javascript(
             if not name:
                 continue
             base = name.rsplit(".", 1)[-1]
+            identifiers = call_identifiers(tokens, index)
+            receiver_symbols = name.split(".")[:-1]
+            result_symbol = assignment_target(tokens, start)
+            call_details = {
+                "callee": name,
+                "receiver": ".".join(receiver_symbols),
+                "receiverSymbols": receiver_symbols,
+                "argumentIdentifiers": identifiers,
+                "resultSymbol": result_symbol,
+                "literalArguments": call_literal_arguments(tokens, index),
+                "classification": classification,
+                "snippet": statement_snippet(source, tokens[start].line),
+            }
             facts.append(
                 fact(
                     path,
                     root,
                     "call-operation",
                     tokens[start],
-                    {
-                        "callee": name,
-                        "literalArguments": call_literal_arguments(tokens, index),
-                        "classification": classification,
-                        "snippet": statement_snippet(source, tokens[start].line),
-                    },
+                    call_details,
                 )
             )
             if base in auth_signals:
-                facts.append(fact(path, root, "authentication-signal", tokens[start], {"callee": name, "classification": classification, "snippet": statement_snippet(source, tokens[start].line)}))
+                facts.append(
+                    fact(
+                        path,
+                        root,
+                        "authentication-signal",
+                        tokens[start],
+                        call_details,
+                    )
+                )
             if base in cache_signals:
                 facts.append(fact(path, root, "cache-operation", tokens[start], {"callee": name, "operation": base, "literalArguments": call_literal_arguments(tokens, index), "classification": classification, "snippet": statement_snippet(source, tokens[start].line)}))
             if base.lower() in {method.lower() for method in HTTP_METHODS} and "." in name:
@@ -726,6 +774,109 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
     by_source: dict[str, list[dict[str, Any]]] = {}
     for row in facts:
         by_source.setdefault(str(row.get("source") or ""), []).append(row)
+
+    transformation_flows: list[dict[str, Any]] = []
+    for source, source_facts in by_source.items():
+        auth_rows = [
+            row for row in source_facts if row["kind"] == "authentication-signal"
+        ]
+        operations = sorted(
+            [row for row in source_facts if row["kind"] == "call-operation"],
+            key=lambda row: (int(row.get("line") or 0), int(row.get("column") or 0)),
+        )
+        for auth in auth_rows:
+            validated_symbols = set(auth.get("argumentIdentifiers", [])) | set(
+                auth.get("receiverSymbols", [])
+            )
+            if not validated_symbols:
+                continue
+            auth_position = (int(auth.get("line") or 0), int(auth.get("column") or 0))
+            # Track symbols derived from values actually observed by the
+            # validation call. A same-file string such as
+            # logMessage.toLowerCase() is not a witness unless its result is on
+            # this exact ordered data-flow path.
+            provenance: dict[str, list[dict[str, Any]]] = {
+                symbol: [] for symbol in validated_symbols
+            }
+            derived_at: dict[str, tuple[int, int]] = {
+                symbol: auth_position for symbol in validated_symbols
+            }
+            for operation in operations:
+                operation_position = (
+                    int(operation.get("line") or 0),
+                    int(operation.get("column") or 0),
+                )
+                result_symbol = str(operation.get("resultSymbol") or "")
+                operation_inputs = set(operation.get("argumentIdentifiers", [])) | set(
+                    operation.get("receiverSymbols", [])
+                )
+                if not result_symbol or operation_position <= auth_position:
+                    continue
+                input_symbols = sorted(operation_inputs.intersection(provenance))
+                if not input_symbols:
+                    continue
+                source_symbol = min(
+                    input_symbols,
+                    key=lambda symbol: (len(provenance[symbol]), symbol),
+                )
+                provenance[result_symbol] = [
+                    *provenance[source_symbol],
+                    {
+                        "fact": operation["id"],
+                        "callee": operation.get("callee"),
+                        "inputSymbol": source_symbol,
+                        "resultSymbol": result_symbol,
+                        "position": list(operation_position),
+                    },
+                ]
+                derived_at[result_symbol] = operation_position
+
+            for result_symbol, transformations in provenance.items():
+                if not transformations:
+                    continue
+                for consumer in operations:
+                    consumer_position = (
+                        int(consumer.get("line") or 0),
+                        int(consumer.get("column") or 0),
+                    )
+                    consumer_inputs = set(consumer.get("argumentIdentifiers", [])) | set(
+                        consumer.get("receiverSymbols", [])
+                    )
+                    if (
+                        consumer_position <= derived_at[result_symbol]
+                        or result_symbol not in consumer_inputs
+                        or consumer.get("resultSymbol")
+                    ):
+                        continue
+                    transformation_ids = [row["fact"] for row in transformations]
+                    transformation_flows.append(
+                        {
+                            "id": stable_id(
+                                "FR",
+                                "validated-transformation-consumer",
+                                auth["id"],
+                                transformation_ids,
+                                consumer["id"],
+                            ),
+                            "kind": "validated-transformation-consumer",
+                            "source": source,
+                            "validatedFact": auth["id"],
+                            "validatedSymbols": sorted(validated_symbols),
+                            "transformationFacts": transformation_ids,
+                            "transformations": transformations,
+                            "transformationFact": transformation_ids[0],
+                            "transformationCallee": transformations[0].get("callee"),
+                            "resultSymbol": result_symbol,
+                            "consumerFact": consumer["id"],
+                            "consumerCallee": consumer.get("callee"),
+                            "order": [
+                                list(auth_position),
+                                *[row["position"] for row in transformations],
+                                [consumer.get("line"), consumer.get("column")],
+                            ],
+                            "status": "source-dataflow-proved-runtime-discriminator-required",
+                        }
+                    )
     for row in facts:
         if row["kind"] not in {"static-import", "dynamic-import"}:
             continue
@@ -838,6 +989,12 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
                     matches.append(entry["id"])
                 elif outcome is None:
                     indeterminate.append(entry["id"])
+        route_transformation_flows = [
+            row
+            for row in transformation_flows
+            if row["source"] in reachable_sources
+            or Path(row["source"]).stem in {"middleware", "proxy"}
+        ]
         relations.append({
             "id": stable_id("FR", "middleware-route", route["id"], matches, indeterminate),
             "kind": "middleware-route",
@@ -848,7 +1005,25 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
             "indeterminateMiddleware": sorted(set(indeterminate)),
             "handlerAuthSignals": [row["id"] for row in dependency_facts if row["kind"] == "authentication-signal"],
             "middlewareAuthSignals": middleware_auth,
-            "operationFacts": [row["id"] for row in dependency_facts if row["kind"] == "call-operation"],
+            "operationFacts": sorted(
+                set(
+                    [
+                        row["id"]
+                        for row in dependency_facts
+                        if row["kind"] == "call-operation"
+                    ]
+                    + [
+                        str(value)
+                        for flow in route_transformation_flows
+                        for value in [
+                            *flow.get("transformationFacts", []),
+                            flow.get("consumerFact"),
+                        ]
+                        if value
+                    ]
+                )
+            ),
+            "transformationFlows": route_transformation_flows,
             "dominanceStatus": "runtime-verification-required",
         })
     return relations

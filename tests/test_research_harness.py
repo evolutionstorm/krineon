@@ -12,6 +12,11 @@ import unittest
 from pathlib import Path
 
 from tests.path_proof_fixture import install_machine_path_evidence
+from scripts.research_harness import (
+    connect_orchestration,
+    rebuild_campaign_capability_graph,
+    validate_research_lead,
+)
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -1049,6 +1054,119 @@ class HarnessTests(unittest.TestCase):
             for _, packet_path in rows:
                 packet = (campaign / packet_path).read_text()
                 self.assertIn("RCE chain is **not** required", packet)
+
+    def test_observation_can_enter_queue_without_invented_chain_narrative(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / "campaign"
+            (campaign / "evidence").mkdir(parents=True)
+            (campaign / "campaign.json").write_text(
+                json.dumps({"authorization": {"confirmed": False}}) + "\n"
+            )
+            (campaign / "evidence" / "observation.json").write_text(
+                '{"expected":"same identity","observed":"different identity"}\n'
+            )
+            lead = validate_research_lead(
+                campaign,
+                {
+                    "kind": "observation",
+                    "chainMaturity": "observation",
+                    "title": "Two consumers resolve one token differently",
+                    "status": "active",
+                    "sourceReferences": ["src/consumer-a.cc:10", "src/consumer-b.cc:20"],
+                    "evidence": ["evidence/observation.json"],
+                    "approachFamilies": ["representation-parser"],
+                    "nextExperiment": "Replay one token through both consumers with an identity oracle.",
+                    "negativeKnowledge": [],
+                    "observation": {
+                        "invariant": "both consumers resolve the same identity",
+                        "expected": "identical identity",
+                        "observed": "different identities",
+                        "reproducible": False,
+                    },
+                },
+            )
+            self.assertEqual(lead["chainMaturity"], "observation")
+            self.assertNotIn("criticalBoundary", lead)
+            self.assertNotIn("capabilityModel", lead)
+            self.assertEqual(lead["chainProgressScore"], 0)
+
+    def test_campaign_graph_versions_and_composes_primitives_across_leads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            bridge = {
+                "type": "attacker-shaped-bridge",
+                "properties": ["controlled"],
+                "limitations": [],
+                "forbiddenLimitations": [],
+            }
+            terminal = {
+                "type": "manifest-valid-module-selection",
+                "properties": ["attacker-selected"],
+                "limitations": [],
+                "forbiddenLimitations": [],
+            }
+            first = self.chain_contract("cross-a")
+            second = self.chain_contract("cross-b")
+            first["capabilityModel"]["produces"] = [bridge]
+            first["criticalBoundary"]["requiredCapabilities"] = [terminal]
+            second["capabilityModel"]["attackerControlledInputs"] = []
+            second["capabilityModel"]["requires"] = [bridge]
+            second["capabilityModel"]["produces"] = [terminal]
+            second["criticalBoundary"]["requiredCapabilities"] = [terminal]
+            connection = connect_orchestration(campaign)
+            try:
+                now = "2026-01-01T00:00:00+00:00"
+                for index, contract in enumerate((first, second), start=1):
+                    payload = {
+                        **contract,
+                        "kind": "invariant-break",
+                        "chainMaturity": "chain-hypothesis",
+                        "chainProgressScore": 5,
+                    }
+                    connection.execute(
+                        "INSERT INTO research_leads(lead_id,semantic_identity,kind,evidence_grade,state,title,payload_json,first_task_id,first_worker_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            f"L{index}",
+                            f"cross-route-{index}",
+                            "invariant-break",
+                            "source-invariant",
+                            "active",
+                            f"Cross-route primitive {index}",
+                            json.dumps(payload),
+                            "inventory-map",
+                            "worker-a",
+                            now,
+                            now,
+                        ),
+                    )
+                update = rebuild_campaign_capability_graph(campaign, connection)
+                self.assertIsNotNone(update)
+                self.assertEqual(update["analysis"]["graphVersion"], 1)
+                path = update["analysis"]["completeBoundaryPaths"][0]
+                self.assertIn("primitive-cross-a", path)
+                self.assertIn("primitive-cross-b", path)
+
+                second_payload = json.loads(
+                    connection.execute(
+                        "SELECT payload_json FROM research_leads WHERE lead_id='L2'"
+                    ).fetchone()["payload_json"]
+                )
+                second_payload["capabilityModel"]["measuredCost"] = {
+                    "wallSeconds": 3.0,
+                    "executions": 1,
+                    "evidence": ["evidence/cost.json"],
+                }
+                connection.execute(
+                    "UPDATE research_leads SET payload_json=? WHERE lead_id='L2'",
+                    (json.dumps(second_payload),),
+                )
+                update = rebuild_campaign_capability_graph(campaign, connection)
+                self.assertEqual(update["analysis"]["graphVersion"], 2)
+                connection.commit()
+            finally:
+                connection.close()
 
     def test_coordinator_reexecution_rejects_a_worker_lie(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2330,6 +2448,12 @@ class HarnessTests(unittest.TestCase):
                     "--idempotency-key",
                     f"{claim['taskId']}-1",
                 )
+
+            campaign_graph = campaign / "evidence" / "chain-graphs" / "campaign-latest.json"
+            self.assertTrue(campaign_graph.is_file())
+            graph_record = json.loads(campaign_graph.read_text())
+            self.assertEqual(graph_record["graphVersion"], 1)
+            self.assertIn("origins", graph_record)
 
             chain_claim = json.loads(
                 self.run_cli("claim", str(campaign), "chain-worker", "--json").stdout

@@ -731,13 +731,22 @@ PROHIBITED_PROVENANCE_FLAGS = (
     "internetPatchDiffUsed",
 )
 
-LEAD_KINDS = ("minimized-stack", "invariant-break", "verified-primitive")
+LEAD_KINDS = ("observation", "minimized-stack", "invariant-break", "verified-primitive")
 LEAD_GRADE_ORDER = {
     "verified-primitive": 0,
     "runtime-invariant": 1,
-    "minimized-stack": 2,
-    "source-invariant": 3,
+    "runtime-observation": 2,
+    "minimized-stack": 3,
+    "source-invariant": 4,
+    "observation": 5,
 }
+CHAIN_MATURITIES = (
+    "observation",
+    "primitive",
+    "chain-hypothesis",
+    "validated-connection",
+)
+CHAIN_MATURITY_ORDER = {value: index for index, value in enumerate(CHAIN_MATURITIES)}
 
 
 def validate_analysis_provenance(container: dict[str, Any]) -> dict[str, Any]:
@@ -827,7 +836,9 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         raise SystemExit("taskResult.researchLeads entries must be objects")
     kind = require_string(raw.get("kind"), "researchLead.kind")
     if kind not in LEAD_KINDS:
-        raise SystemExit("researchLead.kind must identify a retained stack, invariant, or primitive")
+        raise SystemExit(
+            "researchLead.kind must identify an observation, retained stack, invariant, or primitive"
+        )
     title = require_string(raw.get("title"), "researchLead.title")
     next_experiment = require_string(
         raw.get("nextExperiment"), "researchLead.nextExperiment"
@@ -843,18 +854,61 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
     if status not in {"active", "disproved"}:
         raise SystemExit("researchLead.status must be active or disproved")
 
+    supplied_chain = {
+        field for field in ("criticalBoundary", "capabilityModel", "chainProgress")
+        if raw.get(field) is not None
+    }
+    default_maturity = (
+        "chain-hypothesis"
+        if supplied_chain == {"criticalBoundary", "capabilityModel", "chainProgress"}
+        else "primitive" if kind == "verified-primitive" else "observation"
+    )
+    maturity = str(raw.get("chainMaturity") or default_maturity)
+    if maturity not in CHAIN_MATURITIES:
+        raise SystemExit(
+            "researchLead.chainMaturity must be observation, primitive, chain-hypothesis, or validated-connection"
+        )
+    if ("capabilityModel" in supplied_chain) != ("chainProgress" in supplied_chain):
+        raise SystemExit(
+            "researchLead.capabilityModel and chainProgress must be supplied together"
+        )
+    if maturity in {"primitive", "chain-hypothesis", "validated-connection"} and not {
+        "capabilityModel",
+        "chainProgress",
+    }.issubset(supplied_chain):
+        raise SystemExit(f"{maturity} research leads require capabilityModel and chainProgress")
+    if maturity in {"chain-hypothesis", "validated-connection"} and "criticalBoundary" not in supplied_chain:
+        raise SystemExit(f"{maturity} research leads require criticalBoundary")
+
+    critical_boundary: dict[str, Any] | None = None
+    capability_model: dict[str, Any] | None = None
+    chain_progress: dict[str, Any] | None = None
     try:
-        critical_boundary = normalize_boundary(raw.get("criticalBoundary"))
-        capability_model = normalize_primitive(raw.get("capabilityModel"), "capabilityModel")
-        chain_progress = normalize_progress(raw.get("chainProgress"), "chainProgress")
+        if "criticalBoundary" in supplied_chain:
+            critical_boundary = normalize_boundary(raw.get("criticalBoundary"))
+        if "capabilityModel" in supplied_chain:
+            capability_model = normalize_primitive(
+                raw.get("capabilityModel"), "capabilityModel"
+            )
+            chain_progress = normalize_progress(
+                raw.get("chainProgress"), "chainProgress"
+            )
         negative_knowledge = normalize_negative_knowledge(
             raw.get("negativeKnowledge", []), "negativeKnowledge"
         )
     except RuntimeError as error:
         raise SystemExit(f"invalid research-lead chain contract: {error}") from error
-    if capability_model["progress"] != chain_progress:
+    if capability_model is not None and capability_model["progress"] != chain_progress:
         raise SystemExit(
             "researchLead.chainProgress must equal capabilityModel.progress"
+        )
+    if maturity == "validated-connection" and (
+        chain_progress is None
+        or "compatible-primitives-connected" not in chain_progress["milestones"]
+        or len(chain_progress["connectedPrimitives"]) < 2
+    ):
+        raise SystemExit(
+            "validated-connection leads require the compatible-primitives-connected milestone and at least two connectedPrimitives"
         )
     if status == "disproved" and not negative_knowledge:
         raise SystemExit(
@@ -869,13 +923,66 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         "sourceReferences": source_references,
         "approachFamilies": approach_families,
         "evidence": evidence,
-        "criticalBoundary": critical_boundary,
-        "capabilityModel": capability_model,
-        "chainProgress": chain_progress,
-        "chainProgressScore": progress_score(chain_progress),
+        "chainMaturity": maturity,
+        "chainProgressScore": progress_score(chain_progress) if chain_progress else 0,
         "negativeKnowledge": negative_knowledge,
     }
-    if kind == "minimized-stack":
+    if critical_boundary is not None:
+        normalized["criticalBoundary"] = critical_boundary
+    if capability_model is not None and chain_progress is not None:
+        normalized["capabilityModel"] = capability_model
+        normalized["chainProgress"] = chain_progress
+    if kind == "observation":
+        observation = raw.get("observation")
+        if not isinstance(observation, dict):
+            raise SystemExit("observation lead requires observation")
+        invariant = require_string(observation.get("invariant"), "observation.invariant")
+        expected = require_string(observation.get("expected"), "observation.expected")
+        observed = require_string(observation.get("observed"), "observation.observed")
+        reproducible = observation.get("reproducible")
+        if not isinstance(reproducible, bool):
+            raise SystemExit("observation.reproducible must be boolean")
+        attestation_summary: dict[str, Any] | None = None
+        if reproducible:
+            reference = observation.get("attestation")
+            if not isinstance(reference, dict):
+                raise SystemExit(
+                    "reproducible observation requires a machine attestation"
+                )
+            try:
+                attestation_path = safe_campaign_path(root, reference.get("path"))
+            except ValueError as error:
+                raise SystemExit(f"observation.attestation:{error}") from error
+            result = validate_attestation(root, attestation_path)
+            if not result["passed"]:
+                raise SystemExit(
+                    "observation attestation failed: " + ", ".join(result["errors"])
+                )
+            if reference.get("sha256") != result["attestationSha256"]:
+                raise SystemExit("observation attestation hash mismatch")
+            attestation_summary = {
+                "path": attestation_path.relative_to(root).as_posix(),
+                "sha256": result["attestationSha256"],
+                "runId": result["record"]["runId"],
+            }
+        normalized["observation"] = {
+            "invariant": invariant,
+            "expected": expected,
+            "observed": observed,
+            "reproducible": reproducible,
+            "attestation": attestation_summary,
+        }
+        normalized["semanticIdentity"] = "observation:" + canonical_digest(
+            {
+                "invariant": invariant,
+                "expected": expected,
+                "sourceReferences": source_references,
+            }
+        )
+        normalized["evidenceGrade"] = (
+            "runtime-observation" if reproducible else "observation"
+        )
+    elif kind == "minimized-stack":
         stack = raw.get("minimizedStack")
         if not isinstance(stack, dict):
             raise SystemExit("minimized-stack lead requires minimizedStack")
@@ -1048,7 +1155,12 @@ def coordinator_reexecute_result(
     task_id: str,
     validated_leads: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    runtime_grades = {"runtime-invariant", "minimized-stack", "verified-primitive"}
+    runtime_grades = {
+        "runtime-observation",
+        "runtime-invariant",
+        "minimized-stack",
+        "verified-primitive",
+    }
     runtime_claim = any(
         str(lead.get("evidenceGrade") or "") in runtime_grades
         for lead in validated_leads
@@ -3049,15 +3161,19 @@ def insert_dynamic_task(
     set_task_approach_families(connection, task_id, approach_families)
 
 
-def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, int, str]:
+def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, int, int, str]:
     state_rank = 1 if str(row["state"]) == "disproved" else 0
     try:
         payload = json.loads(row["payload_json"])
         chain_rank = -int(payload.get("chainProgressScore", 0))
+        maturity_rank = -CHAIN_MATURITY_ORDER.get(
+            str(payload.get("chainMaturity") or "observation"), 0
+        )
     except (TypeError, ValueError, json.JSONDecodeError):
         chain_rank = 0
+        maturity_rank = 0
     grade_rank = LEAD_GRADE_ORDER.get(str(row["evidence_grade"]), 99)
-    return (state_rank, chain_rank, grade_rank, str(row["lead_id"]))
+    return (state_rank, maturity_rank, chain_rank, grade_rank, str(row["lead_id"]))
 
 
 def ingest_research_leads(
@@ -3134,9 +3250,11 @@ def ingest_research_leads(
                         "capabilityModel",
                         "chainProgress",
                         "chainProgressScore",
+                        "chainMaturity",
                         "negativeKnowledge",
                     ):
-                        payload[field] = lead[field]
+                        if field in lead:
+                            payload[field] = lead[field]
             connection.execute(
                 "UPDATE research_leads SET evidence_grade=?,state=?,title=?,payload_json=?,"
                 "updated_at=? WHERE lead_id=?",
@@ -3173,6 +3291,12 @@ def ingest_research_leads(
             suffix = len(scheduled) + 1
             scheduled_task = f"lead-{lead_id.lower()}-{suffix}"
             packet = root / "tasks" / f"dynamic-{scheduled_task}.md"
+            boundary_lines = (
+                f"- Critical boundary: `{lead['criticalBoundary']['operation']}`\n"
+                f"- Intermediate capability: {lead['criticalBoundary']['intermediateCapability']}\n"
+                if isinstance(lead.get("criticalBoundary"), dict)
+                else "- Critical boundary: not mapped yet\n- Intermediate capability: not claimed yet\n"
+            )
             packet.write_text(
                 f"""# Research-lead experiment: {lead_id}
 
@@ -3180,10 +3304,10 @@ def ingest_research_leads(
 
 - Kind: `{lead['kind']}`
 - Evidence grade: `{lead['evidenceGrade']}`
+- Chain maturity: `{lead['chainMaturity']}`
 - Semantic identity: `{identity}`
 - Title: {lead['title']}
-- Critical boundary: `{lead['criticalBoundary']['operation']}`
-- Intermediate capability: {lead['criticalBoundary']['intermediateCapability']}
+{boundary_lines.rstrip()}
 - Chain progress score: `{lead['chainProgressScore']}`
 
 ## Next experiment
@@ -3260,6 +3384,8 @@ history, security commits, advisories, or other revisions to locate a bug.
                 "scheduledTask": scheduled_task,
             }
         )
+    if leads:
+        rebuild_campaign_capability_graph(root, connection)
     return retained
 
 
@@ -3280,6 +3406,8 @@ def cmd_lead_status(args: argparse.Namespace) -> int:
                     "leadId": row["lead_id"],
                     "kind": row["kind"],
                     "evidenceGrade": row["evidence_grade"],
+                    "chainMaturity": payload.get("chainMaturity", "observation"),
+                    "chainProgressScore": payload.get("chainProgressScore", 0),
                     "state": row["state"],
                     "title": row["title"],
                     "semanticIdentity": row["semantic_identity"],
@@ -3779,6 +3907,226 @@ def latest_task_submission(connection: sqlite3.Connection, task_id: str) -> sqli
     ).fetchone()
 
 
+def rebuild_campaign_capability_graph(
+    root: Path,
+    connection: sqlite3.Connection,
+    *,
+    extra_primitives: list[dict[str, Any]] | None = None,
+    extra_boundaries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Compose all independently retained campaign primitives into one graph."""
+
+    primitive_rows: list[tuple[dict[str, Any], str]] = []
+    boundary_rows: list[tuple[dict[str, Any], str]] = []
+    for row in connection.execute(
+        "SELECT lead_id,payload_json FROM research_leads WHERE state='active'"
+    ).fetchall():
+        payload = json.loads(row["payload_json"])
+        if isinstance(payload.get("capabilityModel"), dict):
+            primitive_rows.append(
+                (payload["capabilityModel"], f"research-lead:{row['lead_id']}")
+            )
+        if isinstance(payload.get("criticalBoundary"), dict):
+            boundary_rows.append(
+                (payload["criticalBoundary"], f"research-lead:{row['lead_id']}")
+            )
+
+    # Only route results that survived their separate adversarial review enter
+    # the campaign graph. This keeps cross-route composition from laundering an
+    # originator's unchallenged claim into a stronger chain.
+    review_tasks = connection.execute(
+        "SELECT * FROM tasks WHERE task_kind='adversarial-route-review' "
+        "AND state='completed' ORDER BY research_round,route_id,task_id"
+    ).fetchall()
+    for review_task in review_tasks:
+        review_submission = latest_task_submission(
+            connection, str(review_task["task_id"])
+        )
+        if review_submission is None:
+            continue
+        review_result = read_json(root / str(review_submission["result_path"]))
+        review = review_result.get("adversarialReview")
+        if not isinstance(review, dict) or review.get("sanityPassed") is not True:
+            continue
+        development_id = str(review_task["reviews_task_id"] or "")
+        development_submission = latest_task_submission(connection, development_id)
+        if development_submission is None:
+            continue
+        development_result = read_json(
+            root / str(development_submission["result_path"])
+        )
+        development = development_result.get("routeDevelopment")
+        if not isinstance(development, dict):
+            continue
+        for bug in development.get("intermediateBugs", []):
+            if not isinstance(bug, dict):
+                continue
+            source = f"route:{review_task['route_id']}:review:{review_task['task_id']}"
+            if isinstance(bug.get("capabilityModel"), dict):
+                primitive_rows.append((bug["capabilityModel"], source))
+            if isinstance(bug.get("criticalBoundary"), dict):
+                boundary_rows.append((bug["criticalBoundary"], source))
+
+    for value in extra_primitives or []:
+        primitive_rows.append((value, "current-adversarial-review"))
+    for value in extra_boundaries or []:
+        boundary_rows.append((value, "current-adversarial-review"))
+
+    def dedupe(
+        rows: list[tuple[dict[str, Any], str]],
+    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+        values: dict[str, dict[str, Any]] = {}
+        origins: dict[str, set[str]] = {}
+        for raw, origin in rows:
+            value = json.loads(json.dumps(raw))
+            identifier = str(value.get("id") or "")
+            if not identifier:
+                continue
+            digest = canonical_digest(value)
+            key = identifier
+            if key in values and canonical_digest(values[key]) != digest:
+                key = f"{identifier}-{digest[:10]}"
+                value["id"] = key
+            values.setdefault(key, value)
+            origins.setdefault(key, set()).add(origin)
+        return (
+            [values[key] for key in sorted(values)],
+            {key: sorted(value) for key, value in sorted(origins.items())},
+        )
+
+    primitives, primitive_origins = dedupe(primitive_rows)
+    boundaries, boundary_origins = dedupe(boundary_rows)
+    if not primitives or not boundaries:
+        return None
+    specification = {
+        "schemaVersion": 1,
+        "maximumConfigurations": 20000,
+        "primitives": primitives,
+        "boundaries": boundaries,
+    }
+    specification_digest = canonical_digest(specification)
+    prior_digest = str(
+        get_metadata(connection, "campaignCapabilityGraphSpecDigest", "")
+    )
+    if specification_digest == prior_digest:
+        latest_value = get_metadata(connection, "campaignCapabilityGraphLatest")
+        if isinstance(latest_value, str) and (root / latest_value).is_file():
+            return {
+                "analysis": read_json(root / latest_value),
+                "path": latest_value,
+                "scheduledTask": None,
+                "unchanged": True,
+            }
+
+    version = int(get_metadata(connection, "campaignCapabilityGraphVersion", 0)) + 1
+    try:
+        analysis = analyze_chain(specification)
+    except RuntimeError as error:
+        raise SystemExit(f"cannot rebuild campaign capability graph: {error}") from error
+    analysis["graphVersion"] = version
+    analysis["specificationSha256"] = specification_digest
+    analysis["origins"] = {
+        "primitives": primitive_origins,
+        "boundaries": boundary_origins,
+    }
+    graph_dir = root / "evidence" / "chain-graphs"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    version_path = graph_dir / f"campaign-v{version}.json"
+    latest_path = graph_dir / "campaign-latest.json"
+    write_json(version_path, analysis)
+    write_json(latest_path, analysis)
+    relative = version_path.relative_to(root).as_posix()
+    set_metadata(connection, "campaignCapabilityGraphVersion", version)
+    set_metadata(connection, "campaignCapabilityGraphSpecDigest", specification_digest)
+    set_metadata(connection, "campaignCapabilityGraphLatest", relative)
+
+    scheduled_task: str | None = None
+    experiments = analysis.get("missingLinkExperiments", [])
+    if analysis.get("focusEligible") and experiments:
+        experiment = experiments[0]
+        digest = canonical_digest(experiment)
+        scheduled = set(
+            get_metadata(connection, "campaignChainExperimentDigests", []) or []
+        )
+        if digest not in scheduled:
+            task_id = f"campaign-chain-v{version}-{digest[:10]}"
+            packet = root / "tasks" / f"dynamic-{task_id}.md"
+            packet.write_text(
+                f"""# Campaign-wide missing-link experiment
+
+Capability graph version: `{version}`
+Retained graph: `{relative}`
+Rank: `1` of `{len(experiments)}`
+Ranking score: `{experiment['ranking']['score']}`
+
+## Question
+
+{experiment['question']}
+
+## Joint execution contract
+
+This experiment must show that the capabilities, state, object identity and
+generation, ordering, lifetime, deployment, and acquisition conditions occur
+in one feasible execution. Similar labels in separate runs are not a chain.
+
+## Oracle
+
+{experiment['oracle']}
+
+## Falsifier
+
+{experiment['falsifier']}
+
+Retain a concrete observation and feed it back as an observation, primitive,
+chain hypothesis, or validated connection. Do not promote it to a finding
+unless the filing evidence gate independently passes.
+""",
+                encoding="utf-8",
+            )
+            insert_dynamic_task(
+                connection,
+                task_id=task_id,
+                wave=max(1, int(get_metadata(connection, "lastResearchRound", 0))),
+                lane="campaign-chain-experiment",
+                title=f"Resolve campaign graph v{version} top missing link",
+                packet=packet.relative_to(root).as_posix(),
+                priority=2200 + min(700, int(experiment["ranking"]["score"])),
+                dependencies=[],
+                excluded_workers=[],
+                max_attempts=2,
+                timeout_seconds=int(
+                    get_metadata(connection, "defaultTaskTimeoutSeconds", 7200)
+                ),
+                approach_families=["chain-composition"],
+                task_kind="focused-chain-investigation",
+            )
+            scheduled.add(digest)
+            set_metadata(
+                connection,
+                "campaignChainExperimentDigests",
+                sorted(scheduled),
+            )
+            scheduled_task = task_id
+    record_event(
+        connection,
+        "campaign-capability-graph-rebuilt",
+        task_id=scheduled_task,
+        payload={
+            "version": version,
+            "path": relative,
+            "primitiveCount": len(primitives),
+            "boundaryCount": len(boundaries),
+            "scheduledTask": scheduled_task,
+        },
+    )
+    return {
+        "analysis": analysis,
+        "path": relative,
+        "scheduledTask": scheduled_task,
+        "unchanged": False,
+    }
+
+
 def schedule_intermediate_chain_task(
     root: Path,
     connection: sqlite3.Connection,
@@ -3810,31 +4158,16 @@ def schedule_intermediate_chain_task(
         ).fetchone()["count"]
     )
     task_id = f"round-{research_round}-{route_id}-chain-{existing + 1}"
-    chain_spec = {
-        "schemaVersion": 1,
-        "primitives": [bug["capabilityModel"] for bug in intermediate_bugs],
-        "boundaries": list(
-            {
-                boundary["id"]: boundary
-                for boundary in (bug["criticalBoundary"] for bug in intermediate_bugs)
-            }.values()
-        ),
-    }
-    try:
-        chain_analysis = analyze_chain(chain_spec)
-    except RuntimeError as error:
-        raise SystemExit(f"cannot compose typed intermediate-bug graph: {error}") from error
-    chain_path = (
-        root
-        / "evidence"
-        / "chain-graphs"
-        / f"round-{research_round}-{route_id}-{existing + 1}.json"
+    graph_update = rebuild_campaign_capability_graph(
+        root,
+        connection,
+        extra_primitives=[bug["capabilityModel"] for bug in intermediate_bugs],
+        extra_boundaries=[bug["criticalBoundary"] for bug in intermediate_bugs],
     )
-    chain_path.parent.mkdir(parents=True, exist_ok=True)
-    chain_path.write_text(
-        json.dumps(chain_analysis, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if graph_update is None:
+        raise SystemExit("sanity-checked intermediate bugs did not produce a campaign graph")
+    chain_analysis = graph_update["analysis"]
+    chain_path = root / str(graph_update["path"])
     bug_lines = "\n".join(
         f"- `{bug['id']}`: root cause={bug['rootCause']}; primitive={bug['primitive']}"
         for bug in intermediate_bugs
@@ -3871,9 +4204,10 @@ Sanity review: `{review_task['task_id']}`
 
 {hypotheses}
 
-## Machine-checked compatibility graph
+## Machine-checked campaign compatibility graph
 
 Retained analysis: `{chain_path.relative_to(root).as_posix()}`
+Graph version: `{chain_analysis.get('graphVersion', 'unknown')}`
 
 {graph_edges}
 

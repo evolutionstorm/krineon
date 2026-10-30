@@ -177,17 +177,20 @@ Krineon runs the following campaign:
    representation changes, native parsers, and execution authority.
 3. Derives falsifiable hypotheses for the focused authorization-to-route
    boundary and runs the cheapest distinguishing experiment on an owned target.
-4. Models each primitive as a typed capability and connects it only when
-   principal, process, namespace, runtime, state, lifetime, ordering,
-   deployment, and acquisition constraints agree.
-5. Treats login, cache priming, ownership transfer, worker reuse, and victim
-   reads as reducible but history-preserving state sequences.
+4. Models each primitive as a typed capability and marks a connection feasible,
+   unknown, or impossible. A chain exists only when one execution satisfies
+   context, object generation, state, lifetime, ordering, deployment, and
+   acquisition conditions together.
+5. Treats login, cache priming, ownership transfer, worker reuse, allocation,
+   release, reallocation, and victim reads as bounded, history-preserving state
+   sequences.
 6. Launches independent research routes and prevents one approach family from
    consuming all worker capacity.
-7. Tracks blockers, primitives, scoped negative results, and possible cross-library
-   chains in a durable campaign registry.
-8. Alternates broad exploration with one bounded focused-chain slot only after
-   retained evidence unlocks a concrete missing-link experiment.
+7. Separates observations, primitives, chain hypotheses, and validated
+   connections so useful evidence never needs an invented impact claim.
+8. Rebuilds a versioned campaign-wide capability graph and assigns its
+   highest-value missing-link experiment by boundary relevance, uncertainty,
+   shared usefulness, and measured cost.
 9. Tests promising chains against supported release or production-equivalent
    builds in an owned environment.
 10. Requires coordinator-signed experiments, recomputed raw observations, an

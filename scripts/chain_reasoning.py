@@ -153,8 +153,39 @@ def normalize_constraints(value: Any, field: str) -> dict[str, list[str]]:
             "acquisition",
             "requiredState",
             "providedState",
+            "invalidatedState",
         )
     }
+
+
+def normalize_object_ref(value: Any, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    generation = value.get("generation", "any")
+    if not isinstance(generation, (str, int)) or generation == "":
+        raise RuntimeError(f"{field}.generation must be an integer or non-empty text")
+    return {
+        "identity": require_text(value.get("identity"), f"{field}.identity"),
+        "generation": generation,
+        "state": require_text(value.get("state", "valid"), f"{field}.state"),
+    }
+
+
+def normalize_objects(value: Any, field: str) -> dict[str, list[dict[str, Any]]]:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    result: dict[str, list[dict[str, Any]]] = {}
+    for name in ("requires", "produces", "invalidates"):
+        raw = value.get(name, [])
+        if not isinstance(raw, list):
+            raise RuntimeError(f"{field}.{name} must be a list")
+        result[name] = [
+            normalize_object_ref(item, f"{field}.{name}[{index}]")
+            for index, item in enumerate(raw)
+        ]
+    return result
 
 
 def normalize_progress(value: Any, field: str) -> dict[str, Any]:
@@ -188,6 +219,24 @@ def normalize_progress(value: Any, field: str) -> dict[str, Any]:
             f"{field}.uncertaintiesResolved",
             allow_empty=True,
         ),
+    }
+
+
+def normalize_measured_cost(value: Any, field: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    wall_seconds = value.get("wallSeconds")
+    executions = value.get("executions")
+    if not isinstance(wall_seconds, (int, float)) or wall_seconds < 0:
+        raise RuntimeError(f"{field}.wallSeconds must be non-negative")
+    if not isinstance(executions, int) or executions < 1:
+        raise RuntimeError(f"{field}.executions must be a positive integer")
+    return {
+        "wallSeconds": float(wall_seconds),
+        "executions": executions,
+        "evidence": require_text_list(value.get("evidence"), f"{field}.evidence"),
     }
 
 
@@ -269,6 +318,7 @@ def normalize_boundary(value: Any, field: str = "criticalBoundary") -> dict[str,
         "constraints": normalize_constraints(
             value.get("constraints"), f"{field}.constraints"
         ),
+        "objects": normalize_objects(value.get("objects"), f"{field}.objects"),
         "sourceEvidence": require_text_list(
             value.get("sourceEvidence"), f"{field}.sourceEvidence"
         ),
@@ -303,6 +353,12 @@ def normalize_primitive(value: Any, field: str = "primitive") -> dict[str, Any]:
         "constraints": normalize_constraints(
             value.get("constraints"), f"{field}.constraints"
         ),
+        "objects": normalize_objects(value.get("objects"), f"{field}.objects"),
+        "invalidatesCapabilities": require_text_list(
+            value.get("invalidatesCapabilities", []),
+            f"{field}.invalidatesCapabilities",
+            allow_empty=True,
+        ),
         "stateSequence": normalize_state_sequence(
             value.get("stateSequence"), f"{field}.stateSequence"
         ),
@@ -317,6 +373,9 @@ def normalize_primitive(value: Any, field: str = "primitive") -> dict[str, Any]:
         "progress": normalize_progress(value.get("progress"), f"{field}.progress"),
         "negativeKnowledge": normalize_negative_knowledge(
             value.get("negativeKnowledge", []), f"{field}.negativeKnowledge"
+        ),
+        "measuredCost": normalize_measured_cost(
+            value.get("measuredCost"), f"{field}.measuredCost"
         ),
     }
 
@@ -338,42 +397,257 @@ def context_match(producer: dict[str, Any], consumer: dict[str, Any]) -> tuple[b
         required = consumer["context"][field]
         if supplied not in {required, "any"} and required != "any":
             reasons.append(field)
-    supplied_state = set(producer["constraints"]["providedState"])
-    required_state = set(consumer["constraints"]["requiredState"])
-    if not required_state.issubset(supplied_state):
-        reasons.append("runtime-state")
     return not reasons, reasons
 
 
-def primitive_edge(producer: dict[str, Any], consumer: dict[str, Any]) -> dict[str, Any] | None:
-    compatible_context, context_reasons = context_match(producer, consumer)
-    if not compatible_context:
-        return None
+def condition_atom(scope: str, value: str) -> tuple[str, str, str]:
+    if value.startswith("not:"):
+        return (f"{scope}:{value[4:]}", "!=", "true")
+    if "!=" in value:
+        key, content = value.split("!=", 1)
+        return (f"{scope}:{key.strip()}", "!=", content.strip())
+    if "=" in value:
+        key, content = value.split("=", 1)
+        return (f"{scope}:{key.strip()}", "=", content.strip())
+    return (f"{scope}:{value}", "=", "true")
+
+
+def condition_atoms(constraints: dict[str, list[str]]) -> list[tuple[str, str, str]]:
+    return [
+        condition_atom(scope, value)
+        for scope in ("lifetime", "deployment", "acquisition")
+        for value in constraints[scope]
+    ]
+
+
+def condition_conflicts(
+    left: list[tuple[str, str, str]], right: list[tuple[str, str, str]]
+) -> list[str]:
+    conflicts: set[str] = set()
+    combined = [*left, *right]
+    for index, (key, operator, value) in enumerate(combined):
+        for other_key, other_operator, other_value in combined[index + 1 :]:
+            if key != other_key:
+                continue
+            if operator == other_operator == "=" and value != other_value:
+                conflicts.add(f"{key} cannot be both {value!r} and {other_value!r}")
+            elif operator != other_operator and value == other_value:
+                conflicts.add(f"{key} cannot satisfy {operator}{value!r} and {other_operator}{other_value!r}")
+    return sorted(conflicts)
+
+
+def object_matches(actual: dict[str, Any], required: dict[str, Any]) -> bool:
+    generation = required["generation"]
+    if actual["identity"] != required["identity"]:
+        return False
+    if actual["state"] != required["state"]:
+        return False
+    return generation in {"any", "current"} or actual["generation"] == generation
+
+
+def connection_assessment(
+    producer: dict[str, Any], consumer: dict[str, Any]
+) -> dict[str, Any]:
+    consumer_id = consumer["id"]
     matches: list[dict[str, Any]] = []
     for produced in producer["produces"]:
         for required in consumer["requires"]:
-            matched, reason = capability_match(produced, required)
+            matched, _ = capability_match(produced, required)
             if matched:
-                matches.append({"capability": produced["type"], "properties": required["properties"]})
+                matches.append(
+                    {
+                        "capability": produced["type"],
+                        "properties": required["properties"],
+                    }
+                )
+    reasons: list[str] = []
+    unknown: list[str] = []
+    compatible_context, context_reasons = context_match(producer, consumer)
+    if not compatible_context:
+        reasons.extend(f"context:{value}" for value in context_reasons)
+    conflicts = condition_conflicts(
+        condition_atoms(producer["constraints"]),
+        condition_atoms(consumer["constraints"]),
+    )
+    reasons.extend(f"condition:{value}" for value in conflicts)
     if not matches:
-        return None
+        reasons.append("no-compatible-capability")
+    missing_state = set(consumer["constraints"]["requiredState"]).difference(
+        producer["constraints"]["providedState"]
+    )
+    if missing_state:
+        unknown.append("state-needs-earlier-producer:" + ",".join(sorted(missing_state)))
+    for required in consumer.get("objects", {}).get("requires", []):
+        if any(
+            object_matches(produced, required)
+            for produced in producer.get("objects", {}).get("produces", [])
+        ):
+            continue
+        if any(
+            invalidated["identity"] == required["identity"]
+            for invalidated in producer.get("objects", {}).get("invalidates", [])
+        ):
+            reasons.append(f"object-invalidated:{required['identity']}")
+        else:
+            unknown.append(f"object-needs-earlier-producer:{required['identity']}")
+    for requirement in consumer["constraints"]["ordering"]:
+        if requirement.startswith("after:") and requirement[6:] != producer["id"]:
+            unknown.append(f"ordering-needs:{requirement}")
+    status = "impossible" if reasons else "unknown" if unknown else "feasible"
     return {
         "producer": producer["id"],
-        "consumer": consumer["id"],
+        "consumer": consumer_id,
+        "status": status,
         "matches": matches,
-        "contextChecks": {field: producer["context"][field] for field in CONTEXT_FIELDS},
+        "reasons": reasons,
+        "unknowns": unknown,
+        "contextChecks": {
+            field: producer["context"][field] for field in CONTEXT_FIELDS
+        },
         "stateChecks": consumer["constraints"]["requiredState"],
     }
 
 
-def boundary_edge(producer: dict[str, Any], boundary: dict[str, Any]) -> dict[str, Any] | None:
-    consumer = {
+def primitive_edge(producer: dict[str, Any], consumer: dict[str, Any]) -> dict[str, Any] | None:
+    assessment = connection_assessment(producer, consumer)
+    if assessment["status"] != "feasible":
+        return None
+    return assessment
+
+
+def boundary_consumer(boundary: dict[str, Any]) -> dict[str, Any]:
+    return {
         "id": "boundary:" + boundary["id"],
         "requires": boundary["requiredCapabilities"],
+        "produces": [],
         "context": boundary["context"],
         "constraints": boundary["constraints"],
+        "objects": boundary["objects"],
+        "sourceEvidence": boundary["sourceEvidence"],
     }
-    return primitive_edge(producer, consumer)
+
+
+def boundary_edge(producer: dict[str, Any], boundary: dict[str, Any]) -> dict[str, Any] | None:
+    return primitive_edge(producer, boundary_consumer(boundary))
+
+
+def capability_available(
+    available: list[dict[str, Any]], required: dict[str, Any]
+) -> bool:
+    return any(capability_match(value, required)[0] for value in available)
+
+
+def execution_check(
+    configuration: dict[str, Any], consumer: dict[str, Any]
+) -> tuple[str, list[str]]:
+    impossible: list[str] = []
+    unknown: list[str] = []
+    chain_context = configuration.get("context")
+    if chain_context is not None:
+        for field in CONTEXT_FIELDS:
+            supplied = chain_context[field]
+            required = consumer["context"][field]
+            if supplied not in {required, "any"} and required != "any":
+                impossible.append(f"context:{field}")
+    conflicts = condition_conflicts(
+        configuration["conditions"], condition_atoms(consumer["constraints"])
+    )
+    impossible.extend(f"condition:{value}" for value in conflicts)
+    for required in consumer["requires"]:
+        if not capability_available(configuration["capabilities"], required):
+            unknown.append(f"capability:{required['type']}")
+    missing_state = set(consumer["constraints"]["requiredState"]).difference(
+        configuration["state"]
+    )
+    unknown.extend(f"state:{value}" for value in sorted(missing_state))
+    for required in consumer.get("objects", {}).get("requires", []):
+        actual = configuration["objects"].get(required["identity"])
+        if actual is None:
+            unknown.append(f"object:{required['identity']}:absent")
+        elif not object_matches(actual, required):
+            impossible.append(
+                f"object:{required['identity']}:generation-or-state-mismatch"
+            )
+    used = set(configuration["sequence"])
+    for ordering in consumer["constraints"]["ordering"]:
+        if ordering.startswith("after:") and ordering[6:] not in used:
+            unknown.append(f"ordering:{ordering}")
+        if ordering.startswith("before:") and ordering[7:] in used:
+            impossible.append(f"ordering:{ordering}")
+    if impossible:
+        return "impossible", impossible
+    if unknown:
+        return "unknown", unknown
+    return "feasible", []
+
+
+def apply_primitive(
+    configuration: dict[str, Any], primitive: dict[str, Any]
+) -> dict[str, Any]:
+    capabilities = [
+        value
+        for value in configuration["capabilities"]
+        if value["type"] not in primitive["invalidatesCapabilities"]
+    ]
+    capabilities.extend(primitive["produces"])
+    capabilities = list(
+        {
+            json.dumps(value, sort_keys=True, separators=(",", ":")): value
+            for value in capabilities
+        }.values()
+    )
+    state = set(configuration["state"])
+    state.difference_update(primitive["constraints"]["invalidatedState"])
+    state.update(primitive["constraints"]["providedState"])
+    objects = {key: dict(value) for key, value in configuration["objects"].items()}
+    for invalidated in primitive["objects"]["invalidates"]:
+        actual = objects.get(invalidated["identity"])
+        if actual is not None and (
+            invalidated["generation"] in {"any", "current", actual["generation"]}
+        ):
+            actual["state"] = "invalidated"
+    for produced in primitive["objects"]["produces"]:
+        previous = objects.get(produced["identity"])
+        generation = produced["generation"]
+        if generation == "next":
+            generation = int(previous["generation"]) + 1 if previous and isinstance(previous["generation"], int) else 1
+        elif generation in {"same", "current", "any"}:
+            generation = previous["generation"] if previous else 1
+        objects[produced["identity"]] = {
+            **produced,
+            "generation": generation,
+        }
+    prior_context = configuration["context"]
+    if prior_context is None:
+        merged_context = dict(primitive["context"])
+    else:
+        merged_context = {
+            field: (
+                primitive["context"][field]
+                if prior_context[field] == "any"
+                else prior_context[field]
+            )
+            for field in CONTEXT_FIELDS
+        }
+    return {
+        "sequence": [*configuration["sequence"], primitive["id"]],
+        "capabilities": capabilities,
+        "state": sorted(state),
+        "objects": objects,
+        "conditions": sorted(
+            set(
+                [
+                    *configuration["conditions"],
+                    *condition_atoms(primitive["constraints"]),
+                ]
+            )
+        ),
+        "context": merged_context,
+    }
+
+
+def configuration_key(configuration: dict[str, Any]) -> str:
+    return json.dumps(configuration, sort_keys=True, separators=(",", ":"))
 
 
 def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
@@ -392,95 +666,161 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
     by_id = {row["id"]: row for row in primitives}
     if len(by_id) != len(primitives):
         raise RuntimeError("primitive IDs must be unique")
-    edges: list[dict[str, Any]] = []
-    adjacency: dict[str, list[str]] = {row["id"]: [] for row in primitives}
+    assessments: list[dict[str, Any]] = []
     for producer in primitives:
         for consumer in primitives:
             if producer["id"] == consumer["id"]:
                 continue
-            edge = primitive_edge(producer, consumer)
-            if edge:
-                edges.append(edge)
-                adjacency[producer["id"]].append(consumer["id"])
+            assessments.append(connection_assessment(producer, consumer))
         for boundary in boundaries:
-            edge = boundary_edge(producer, boundary)
-            if edge:
-                edges.append(edge)
-                adjacency[producer["id"]].append("boundary:" + boundary["id"])
-    roots = [
-        row["id"]
-        for row in primitives
-        if row["attackerControlledInputs"] and not row["requires"]
-    ]
-    reachable: set[str] = set(roots)
-
-    def requirement_suppliers(consumer_id: str, requirements: list[dict[str, Any]]) -> dict[str, list[str]]:
-        supplied: dict[str, list[str]] = {}
-        for index, requirement in enumerate(requirements):
-            key = f"{index}:{requirement['type']}"
-            supplied[key] = sorted(
-                {
-                    str(edge["producer"])
-                    for edge in edges
-                    if edge["consumer"] == consumer_id
-                    and edge["producer"] in reachable
-                    and any(
-                        match["capability"] == requirement["type"]
-                        and set(requirement["properties"]).issubset(match["properties"])
-                        for match in edge["matches"]
-                    )
-                }
+            assessments.append(
+                connection_assessment(producer, boundary_consumer(boundary))
             )
-        return supplied
+    edges = [row for row in assessments if row["status"] == "feasible"]
+    unknown_connections = [row for row in assessments if row["status"] == "unknown"]
+    impossible_connections = [
+        row for row in assessments if row["status"] == "impossible"
+    ]
 
-    changed = True
-    while changed:
-        changed = False
+    empty = {
+        "sequence": [],
+        "capabilities": [],
+        "state": [],
+        "objects": {},
+        "conditions": [],
+        "context": None,
+    }
+    configurations: list[dict[str, Any]] = []
+    queue: deque[dict[str, Any]] = deque()
+    seen: set[str] = set()
+    for primitive in primitives:
+        if not primitive["attackerControlledInputs"]:
+            continue
+        status, _ = execution_check(empty, primitive)
+        if status == "feasible":
+            configuration = apply_primitive(empty, primitive)
+            key = configuration_key(configuration)
+            if key not in seen:
+                seen.add(key)
+                queue.append(configuration)
+    maximum_configurations = int(document.get("maximumConfigurations", 10000))
+    while queue and len(configurations) < maximum_configurations:
+        configuration = queue.popleft()
+        configurations.append(configuration)
+        used = set(configuration["sequence"])
         for primitive in primitives:
-            if primitive["id"] in reachable:
+            if primitive["id"] in used:
                 continue
-            suppliers = requirement_suppliers(primitive["id"], primitive["requires"])
-            if primitive["requires"] and all(suppliers.values()):
-                reachable.add(primitive["id"])
-                changed = True
+            status, _ = execution_check(configuration, primitive)
+            if status != "feasible":
+                continue
+            successor = apply_primitive(configuration, primitive)
+            key = configuration_key(successor)
+            if key not in seen:
+                seen.add(key)
+                queue.append(successor)
 
+    reachable = {
+        primitive_id
+        for configuration in configurations
+        for primitive_id in configuration["sequence"]
+    }
     paths: list[list[str]] = []
     boundary_suppliers: dict[str, dict[str, list[str]]] = {}
     for boundary in boundaries:
         boundary_id = "boundary:" + boundary["id"]
-        suppliers = requirement_suppliers(boundary_id, boundary["requiredCapabilities"])
+        consumer = boundary_consumer(boundary)
+        completed = [
+            configuration
+            for configuration in configurations
+            if execution_check(configuration, consumer)[0] == "feasible"
+        ]
+        suppliers: dict[str, list[str]] = {}
+        for index, requirement in enumerate(boundary["requiredCapabilities"]):
+            suppliers[f"{index}:{requirement['type']}"] = sorted(
+                {
+                    primitive_id
+                    for configuration in completed
+                    for primitive_id in configuration["sequence"]
+                    if any(
+                        capability_match(produced, requirement)[0]
+                        for produced in by_id[primitive_id]["produces"]
+                    )
+                }
+            )
         boundary_suppliers[boundary_id] = suppliers
-        if all(suppliers.values()):
-            ordered = sorted({item for values in suppliers.values() for item in values})
-            paths.append([*ordered, boundary_id])
+        paths.extend([*configuration["sequence"], boundary_id] for configuration in completed)
+
     experiments: list[dict[str, Any]] = []
-    for consumer in [*primitives, *[
-        {
-            "id": "boundary:" + value["id"],
-            "requires": value["requiredCapabilities"],
-            "context": value["context"],
-            "constraints": value["constraints"],
-            "sourceEvidence": value["sourceEvidence"],
-        }
-        for value in boundaries
-    ]]:
-        incoming = [edge for edge in edges if edge["consumer"] == consumer["id"]]
+    consumers = [*primitives, *[boundary_consumer(value) for value in boundaries]]
+    capability_use_count: dict[str, int] = {}
+    experiment_keys: set[tuple[str, str]] = set()
+    for consumer in consumers:
         for requirement in consumer["requires"]:
-            if any(
-                edge["producer"] in reachable
-                and match["capability"] == requirement["type"]
-                and set(requirement["properties"]).issubset(match["properties"])
-                for edge in incoming
-                for match in edge["matches"]
-            ):
-                continue
-            candidate = next(
-                (
-                    producer
-                    for producer in primitives
-                    if any(item["type"] == requirement["type"] for item in producer["produces"])
-                ),
-                None,
+            capability_use_count[requirement["type"]] = (
+                capability_use_count.get(requirement["type"], 0) + 1
+            )
+    for consumer in consumers:
+        consumer_reached = consumer["id"] in reachable or consumer["id"].startswith("boundary:") and any(
+            path[-1] == consumer["id"] for path in paths
+        )
+        if consumer_reached:
+            continue
+        missing_requirements = [
+            requirement
+            for requirement in consumer["requires"]
+            if not any(
+                capability_available(configuration["capabilities"], requirement)
+                for configuration in configurations
+            )
+        ]
+        for requirement in missing_requirements:
+            candidates = [
+                producer
+                for producer in primitives
+                if any(
+                    item["type"] == requirement["type"]
+                    for item in producer["produces"]
+                )
+            ]
+            candidate = max(
+                candidates,
+                key=lambda row: progress_score(row["progress"]),
+                default=None,
+            )
+            related = [
+                row
+                for row in assessments
+                if row["consumer"] == consumer["id"]
+                and (candidate is None or row["producer"] == candidate["id"])
+            ]
+            uncertainty = sorted(
+                {
+                    value
+                    for row in related
+                    for value in [*row["unknowns"], *row["reasons"]]
+                }
+            )
+            boundary_relevance = 100 if consumer["id"].startswith("boundary:") else 40
+            reachable_bonus = 30 if candidate and candidate["id"] in reachable else 0
+            shared_usefulness = 10 * capability_use_count[requirement["type"]]
+            measured_cost = candidate.get("measuredCost") if candidate else None
+            estimated_cost = (
+                max(
+                    1,
+                    int(measured_cost["wallSeconds"] / 60)
+                    + int(measured_cost["executions"]),
+                )
+                if measured_cost
+                else 1
+                + (len(candidate["stateSequence"]["transitions"]) if candidate else 2)
+            )
+            priority_score = (
+                boundary_relevance
+                + reachable_bonus
+                + shared_usefulness
+                + min(25, 5 * len(uncertainty))
+                - estimated_cost
             )
             experiments.append(
                 {
@@ -500,6 +840,18 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
                     ),
                     "oracle": "the consumer is reached with the required capability and matching principal/process/namespace/runtime state",
                     "falsifier": "the retained guard or context mismatch prevents the consumer from observing that capability",
+                    "uncertainty": uncertainty,
+                    "estimatedCost": estimated_cost,
+                    "costBasis": "measured" if measured_cost else "state-sequence-estimate",
+                    "measuredCost": measured_cost,
+                    "ranking": {
+                        "criticalBoundaryRelevance": boundary_relevance,
+                        "reachableProducer": reachable_bonus,
+                        "sharedUsefulness": shared_usefulness,
+                        "uncertaintyResolved": min(25, 5 * len(uncertainty)),
+                        "estimatedCostPenalty": estimated_cost,
+                        "score": priority_score,
+                    },
                     "sourceEvidence": sorted(
                         set(
                             (candidate["sourceEvidence"] if candidate else [])
@@ -508,10 +860,110 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
                     ),
                 }
             )
+            experiment_keys.add((consumer["id"], requirement["type"]))
+
+        # A capability can exist somewhere in the graph while no single feasible
+        # execution also satisfies the required state, object generation,
+        # ordering, lifetime, deployment, and acquisition constraints. Preserve
+        # that missing link instead of incorrectly treating the consumer as
+        # connected merely because a label exists.
+        if not missing_requirements:
+            evaluated = [
+                (configuration, *execution_check(configuration, consumer))
+                for configuration in (configurations or [empty])
+            ]
+            unresolved = [row for row in evaluated if row[1] != "feasible"]
+            if unresolved:
+                best_configuration, status, blockers = min(
+                    unresolved,
+                    key=lambda row: (
+                        1 if row[1] == "impossible" else 0,
+                        len(row[2]),
+                        len(row[0]["sequence"]),
+                    ),
+                )
+                key = (consumer["id"], "execution-prerequisite")
+                if key not in experiment_keys:
+                    candidate_id = (
+                        best_configuration["sequence"][-1]
+                        if best_configuration["sequence"]
+                        else None
+                    )
+                    candidate = by_id.get(candidate_id or "")
+                    boundary_relevance = (
+                        100 if consumer["id"].startswith("boundary:") else 40
+                    )
+                    measured_cost = candidate.get("measuredCost") if candidate else None
+                    estimated_cost = (
+                        max(
+                            1,
+                            int(measured_cost["wallSeconds"] / 60)
+                            + int(measured_cost["executions"]),
+                        )
+                        if measured_cost
+                        else 1 + len(blockers)
+                    )
+                    priority_score = (
+                        boundary_relevance
+                        + 25
+                        + min(30, 6 * len(blockers))
+                        - estimated_cost
+                    )
+                    experiments.append(
+                        {
+                            "id": "CE-"
+                            + hashlib.sha256(
+                                f"{candidate_id or 'state'}:{consumer['id']}:execution-prerequisite".encode()
+                            ).hexdigest()[:16],
+                            "producer": candidate_id,
+                            "consumer": consumer["id"],
+                            "missingCapability": {
+                                "type": "execution-prerequisite",
+                                "properties": blockers,
+                                "limitations": [],
+                                "forbiddenLimitations": [],
+                            },
+                            "question": (
+                                f"Can one execution satisfy all prerequisites for {consumer['id']}: "
+                                + ", ".join(blockers)
+                            ),
+                            "setupSequence": list(best_configuration["sequence"]),
+                            "oracle": "one retained execution reaches the consumer with all capabilities, state, object generations, ordering, and deployment conditions jointly satisfied",
+                            "falsifier": "a specific retained contradiction proves that the prerequisite set cannot be satisfied in one execution",
+                            "uncertainty": blockers,
+                            "connectionStatus": status,
+                            "estimatedCost": estimated_cost,
+                            "costBasis": (
+                                "measured" if measured_cost else "blocker-count-estimate"
+                            ),
+                            "measuredCost": measured_cost,
+                            "ranking": {
+                                "criticalBoundaryRelevance": boundary_relevance,
+                                "reachableProducer": 25,
+                                "sharedUsefulness": 0,
+                                "uncertaintyResolved": min(30, 6 * len(blockers)),
+                                "estimatedCostPenalty": estimated_cost,
+                                "score": priority_score,
+                            },
+                            "sourceEvidence": sorted(
+                                set(
+                                    (candidate["sourceEvidence"] if candidate else [])
+                                    + consumer.get("sourceEvidence", [])
+                                )
+                            ),
+                        }
+                    )
+                    experiment_keys.add(key)
+    experiments.sort(key=lambda row: (-int(row["ranking"]["score"]), row["id"]))
     progress = sum(progress_score(row["progress"]) for row in primitives)
     focus_eligible = bool(experiments) and (
         progress >= 6
-        or any(edge["producer"] in reachable for edge in edges)
+        or any(
+            edge["producer"] in reachable
+            and edge["status"] in {"feasible", "unknown"}
+            and bool(edge["matches"])
+            for edge in assessments
+        )
     )
     negative = [
         {"primitive": row["id"], **item}
@@ -524,9 +976,14 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
         "primitives": primitives,
         "boundaries": boundaries,
+        "connectionAssessments": assessments,
         "compatibleEdges": edges,
+        "unknownConnections": unknown_connections,
+        "impossibleConnections": impossible_connections,
         "reachableFromAttacker": sorted(reachable),
         "completeBoundaryPaths": paths,
+        "executionStates": configurations,
+        "searchTruncated": len(configurations) >= maximum_configurations,
         "boundaryRequirementSuppliers": boundary_suppliers,
         "missingLinkExperiments": experiments,
         "scopedNegativeKnowledge": negative,

@@ -111,9 +111,12 @@ Read [semantic experiments](references/semantic-experiments.md).
 Every route must also name its eventual Critical authority boundary, the next
 intermediate capability, and the pinned-source reason that capability might
 reach the boundary. Model primitives as typed producer/consumer contracts;
-never connect them by prose resemblance. Require all boundary capabilities,
-principal/process/namespace/runtime compatibility, and state, lifetime,
-ordering, deployment, and acquisition constraints. Read
+never connect them by prose resemblance. Classify proposed links as feasible,
+unknown, or impossible and require one execution to satisfy all capabilities,
+principal/process/namespace/runtime compatibility, object identity and
+generation, state, lifetime, ordering, deployment, and acquisition constraints.
+Maintain the versioned campaign-wide graph and schedule its highest-ranked
+missing-link experiment. Read
 [execution-boundary and chain reasoning](references/chain-reasoning.md).
 
 ## Campaign orchestration
@@ -178,6 +181,11 @@ with one bounded focused investigation only after typed retained evidence
 unlocks a missing-link experiment. Measure invariant breaks, controlled
 capabilities, new consumers, resolved acquisition prerequisites, compatible
 edges, preconditions, and uncertainty removed.
+
+Let workers retain an observation before they can map it to a Critical boundary.
+Keep observation, primitive, chain hypothesis, and validated connection as
+separate maturity levels. Never require an agent to invent an impact narrative
+to preserve useful evidence.
 
 ## Target-specific execution
 

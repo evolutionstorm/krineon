@@ -36,6 +36,12 @@ are excluded, so a string such as `auth()` in a comment cannot create an
 authentication fact. Configurable signal names create only call-site facts.
 They never establish authorization, reachability, exploitability, or impact.
 
+For semantic transformations, the analyzer records call receivers, argument
+symbols, assigned result symbols, and source order. It emits a transformation
+flow only when a value seen by a validation call reaches a transformation
+result and that exact result reaches a later consumer. Other calls remain
+candidates. A matching callee name elsewhere in the file is not a flow.
+
 The source-map index is reverse-oriented: a source fact is connected to the
 concrete generated bundle locations that encode that source line. The record
 retains hashes for every parsed source, generated, vendored, manifest, source

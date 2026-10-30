@@ -65,8 +65,10 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
                         "framework": "nextjs",
                         "facts": [
                             {"id": "route-admin", "kind": "manifest-route", "route": "/admin"},
-                            {"id": "auth-call", "kind": "authentication-signal", "callee": "requireAuth"},
-                            {"id": "case-normalizer", "kind": "call-operation", "callee": "pathname.toLowerCase"},
+                            {"id": "auth-call", "kind": "authentication-signal", "callee": "requireAuth", "argumentIdentifiers": ["request"]},
+                            {"id": "case-normalizer", "kind": "call-operation", "callee": "request.nextUrl.pathname.toLowerCase", "receiverSymbols": ["request", "nextUrl", "pathname"], "resultSymbol": "normalized"},
+                            {"id": "route-consumer", "kind": "call-operation", "callee": "route", "argumentIdentifiers": ["normalized"]},
+                            {"id": "log-normalizer", "kind": "call-operation", "callee": "logMessage.toLowerCase", "receiverSymbols": ["logMessage"], "resultSymbol": "lowerLog"},
                             {"id": "middleware", "kind": "middleware-entry"},
                         ],
                         "relations": [
@@ -78,7 +80,28 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
                                 "matchedMiddleware": ["middleware"],
                                 "handlerAuthSignals": [],
                                 "middlewareAuthSignals": ["auth-call"],
-                                "operationFacts": ["case-normalizer"],
+                                "operationFacts": ["case-normalizer", "route-consumer", "log-normalizer"],
+                                "transformationFlows": [
+                                    {
+                                        "id": "flow-request-case-route",
+                                        "kind": "validated-transformation-consumer",
+                                        "validatedFact": "auth-call",
+                                        "validatedSymbols": ["request"],
+                                        "transformationFacts": ["case-normalizer"],
+                                        "transformations": [
+                                            {
+                                                "fact": "case-normalizer",
+                                                "callee": "request.nextUrl.pathname.toLowerCase",
+                                                "inputSymbol": "request",
+                                                "resultSymbol": "normalized",
+                                            }
+                                        ],
+                                        "resultSymbol": "normalized",
+                                        "consumerFact": "route-consumer",
+                                        "consumerCallee": "route",
+                                        "status": "source-dataflow-proved-runtime-discriminator-required",
+                                    }
+                                ],
                             }
                         ],
                     }
@@ -100,6 +123,15 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
             self.assertEqual(case_variant["sourceFact"], "case-normalizer")
             self.assertTrue(
                 value["models"][0]["assumptionFlow"]["sourceDerivedWitnessAvailable"]
+            )
+            candidates = value["models"][0]["assumptionFlow"]["transformationCandidates"]
+            self.assertIn("log-normalizer", {row["sourceFact"] for row in candidates})
+            self.assertFalse(
+                any(
+                    row.get("sourceFact") == "log-normalizer"
+                    for row in value["models"][0]["experiment"]["variants"]
+                    if row.get("origin") == "source-transformation"
+                )
             )
             approved = json.loads(
                 self.run_cli("approve", str(campaign), "--proposal", str(proposal)).stdout

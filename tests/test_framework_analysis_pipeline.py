@@ -179,7 +179,7 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
             )
             (project / "middleware.ts").write_text(
                 "// auth() in a comment must not become a fact\n"
-                "export async function middleware(request){ return requireAuth(request); }\n"
+                "export async function middleware(request){ await requireAuth(request); const normalized=request.nextUrl.pathname.toLowerCase(); return route(normalized); }\n"
             )
 
             server = project / ".next" / "server"
@@ -267,6 +267,23 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
             self.assertFalse(record["analysisContract"]["vulnerabilityVerdictsProduced"])
             self.assertTrue(record["analysisContract"]["runtimeValidationRequired"])
             self.assertEqual(record["parser"]["kind"], "structural-javascript-tokenizer")
+            middleware_relations = [
+                row
+                for row in record["relations"]
+                if row["kind"] == "middleware-route" and row.get("route") == "/admin"
+            ]
+            flows = [
+                flow
+                for relation in middleware_relations
+                for flow in relation.get("transformationFlows", [])
+            ]
+            self.assertTrue(flows)
+            self.assertEqual(
+                flows[0]["status"],
+                "source-dataflow-proved-runtime-discriminator-required",
+            )
+            self.assertEqual(flows[0]["resultSymbol"], "normalized")
+            self.assertIn("request", flows[0]["validatedSymbols"])
             kinds = {row["kind"] for row in record["facts"]}
             self.assertTrue(
                 {

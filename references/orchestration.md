@@ -414,8 +414,12 @@ Use [assets/agent-handoff.template.md](../assets/agent-handoff.template.md).
 ## Registry states
 
 There are two registries. `research_leads` in `orchestration.db` stores unique
-minimized stacks, invariant breaks, and verified primitives. Those observations
-advance through focused experiments without satisfying candidate gates.
+observations, minimized stacks, invariant breaks, and verified primitives.
+Each record separately states whether it is an observation, primitive, chain
+hypothesis, or validated connection. An observation does not need an immediate
+Critical-boundary narrative. Typed records also feed the versioned campaign
+capability graph, which ranks shared missing-link experiments across routes.
+Those records advance through focused experiments without satisfying candidate gates.
 `registry.json` stores candidate findings only after a plausible complete chain
 exists. Never create or embellish a finding merely to preserve partial search
 output.
@@ -426,10 +430,9 @@ Inspect ranked leads with:
 python3 scripts/research_harness.py lead-status CAMPAIGN --json
 ```
 
-Lead ranking is lexicographic by evidence grade, not a severity or
-controllability point score: verified primitive, runtime invariant break,
-unique minimized stack cluster, then source invariant break. Disproved leads
-remain retained but sort after active leads.
+Lead ranking considers maturity, chain progress, and evidence grade, not a
+severity or controllability point score. Disproved leads remain retained but
+sort after active leads.
 
 Candidate finding states use this fixed vocabulary:
 

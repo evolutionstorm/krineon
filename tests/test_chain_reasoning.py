@@ -37,6 +37,7 @@ def constraints() -> dict[str, list[str]]:
         "acquisition": ["network"],
         "requiredState": [],
         "providedState": ["reachable"],
+        "invalidatedState": [],
     }
 
 
@@ -124,6 +125,124 @@ class ChainReasoningTests(unittest.TestCase):
         )
         self.assertNotIn("decoder", result["reachableFromAttacker"])
         self.assertEqual(result["completeBoundaryPaths"], [])
+
+    def test_connections_require_one_jointly_feasible_execution(self) -> None:
+        raw = capability("attacker-bytes", "controlled")
+        executable = capability("module-selection", "manifest-valid")
+        ingress = primitive("ingress", [raw], [], inputs=True)
+        decoder = primitive("decoder", [executable], [raw])
+        ingress["constraints"]["deployment"] = ["os=linux"]
+        decoder["constraints"]["deployment"] = ["os=windows"]
+        ingress["constraints"]["lifetime"] = ["buffer=alive"]
+        decoder["constraints"]["lifetime"] = ["buffer=freed"]
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [ingress, decoder],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertNotIn("decoder", result["reachableFromAttacker"])
+        assessment = next(
+            row
+            for row in result["connectionAssessments"]
+            if row["producer"] == "ingress" and row["consumer"] == "decoder"
+        )
+        self.assertEqual(assessment["status"], "impossible")
+        self.assertTrue(any("os" in reason for reason in assessment["reasons"]))
+        self.assertTrue(any("buffer" in reason for reason in assessment["reasons"]))
+
+    def test_state_and_object_generation_are_not_reduced_to_labels(self) -> None:
+        raw = capability("attacker-bytes", "controlled")
+        handle = capability("object-handle", "same-slot")
+        executable = capability("module-selection", "manifest-valid")
+        allocate = primitive("allocate", [raw, handle], [], inputs=True)
+        allocate["objects"] = {
+            "requires": [],
+            "produces": [
+                {"identity": "slot", "generation": 1, "state": "valid"}
+            ],
+            "invalidates": [],
+        }
+        release = primitive("release", [raw], [handle])
+        release["objects"] = {
+            "requires": [
+                {"identity": "slot", "generation": 1, "state": "valid"}
+            ],
+            "produces": [],
+            "invalidates": [
+                {"identity": "slot", "generation": 1, "state": "valid"}
+            ],
+        }
+        release["invalidatesCapabilities"] = ["object-handle"]
+        consume = primitive("consume", [executable], [raw, handle])
+        consume["constraints"]["ordering"] = ["after:release"]
+        consume["objects"] = {
+            "requires": [
+                {"identity": "slot", "generation": 1, "state": "valid"}
+            ],
+            "produces": [],
+            "invalidates": [],
+        }
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [allocate, release, consume],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertNotIn("consume", result["reachableFromAttacker"])
+        self.assertEqual(result["completeBoundaryPaths"], [])
+        prerequisite = next(
+            row
+            for row in result["missingLinkExperiments"]
+            if row["consumer"] == "consume"
+            and row["missingCapability"]["type"] == "execution-prerequisite"
+        )
+        self.assertTrue(prerequisite["uncertainty"])
+
+    def test_persistent_authentication_state_survives_intermediate_operation(self) -> None:
+        session = capability("session-handle", "authenticated")
+        transformed = capability("transformed-input", "controlled")
+        executable = capability("module-selection", "manifest-valid")
+        login = primitive("login", [session], [], inputs=True)
+        login["constraints"]["providedState"] = ["authenticated"]
+        transform = primitive("transform", [transformed], [session])
+        transform["constraints"]["providedState"] = ["transformed"]
+        consume = primitive("consume", [executable], [transformed])
+        consume["constraints"]["requiredState"] = ["authenticated", "transformed"]
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [login, transform, consume],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertIn(
+            ["login", "transform", "consume", "boundary:critical-exec"],
+            result["completeBoundaryPaths"],
+        )
+
+    def test_unresolved_state_is_unknown_not_a_complete_connection(self) -> None:
+        raw = capability("attacker-bytes", "controlled")
+        executable = capability("module-selection", "manifest-valid")
+        ingress = primitive("ingress", [raw], [], inputs=True)
+        decoder = primitive("decoder", [executable], [raw])
+        decoder["constraints"]["requiredState"] = ["authenticated"]
+        result = analyze_chain(
+            {
+                "schemaVersion": 1,
+                "primitives": [ingress, decoder],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        assessment = next(
+            row
+            for row in result["connectionAssessments"]
+            if row["producer"] == "ingress" and row["consumer"] == "decoder"
+        )
+        self.assertEqual(assessment["status"], "unknown")
+        self.assertNotIn("decoder", result["reachableFromAttacker"])
 
     def test_missing_link_generates_falsifiable_experiment_and_unlocks_focus(self) -> None:
         raw = capability("attacker-bytes", "controlled")

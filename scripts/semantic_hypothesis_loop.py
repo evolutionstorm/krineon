@@ -91,46 +91,87 @@ def mutations(path: str) -> list[dict[str, str]]:
     return values
 
 
-def source_derived_mutations(
-    path: str, operation_facts: list[dict[str, Any]]
-) -> list[dict[str, str]]:
+def transformation_variants(path: str, callee: str) -> list[tuple[str, str]]:
+    """Return only mutations justified by one recognized transformation."""
+
     path = path if path.startswith("/") else "/" + path
-    values: list[dict[str, str]] = []
-
-    def add(family: str, candidate: str, source_fact: str) -> None:
-        if candidate != path and candidate not in {row["path"] for row in values}:
-            values.append(
-                {
-                    "family": family,
-                    "path": candidate,
-                    "origin": "source-transformation",
-                    "sourceFact": source_fact,
-                }
-            )
-
+    values: list[tuple[str, str]] = []
+    lowered = callee.lower()
     segments = path.split("/")
     first = next((index for index, value in enumerate(segments) if value), None)
-    for operation in operation_facts:
-        callee = str(operation.get("callee") or "").lower()
-        fact_id = str(operation.get("id") or "")
-        if first is not None and any(token in callee for token in ("tolowercase", "tolower", "locale")):
+    if first is not None and any(
+        token in lowered for token in ("tolowercase", "tolower", "locale")
+    ):
+        candidate = list(segments)
+        candidate[first] = candidate[first].swapcase()
+        values.append(("case-fold", "/".join(candidate)))
+    if first is not None and any(
+        token in lowered for token in ("decodeuri", "decodeuricomponent", "unescape")
+    ):
+        candidate = list(segments)
+        token = candidate[first]
+        if token:
+            candidate[first] = "%" + format(ord(token[0]), "02x") + token[1:]
+            values.append(("percent-unreserved", "/".join(candidate)))
+    if any(token in lowered for token in ("normalize", "resolve", "canonical")):
+        if first is not None:
             candidate = list(segments)
-            candidate[first] = candidate[first].swapcase()
-            add("case-fold", "/".join(candidate), fact_id)
-        if first is not None and any(token in callee for token in ("decodeuri", "decodeuricomponent", "unescape")):
-            candidate = list(segments)
-            token = candidate[first]
-            if token:
-                candidate[first] = "%" + format(ord(token[0]), "02x") + token[1:]
-                add("percent-unreserved", "/".join(candidate), fact_id)
-        if any(token in callee for token in ("normalize", "resolve", "canonical")):
-            if first is not None:
-                candidate = list(segments)
-                candidate.insert(first, ".")
-                add("dot-segment", "/".join(candidate), fact_id)
-            add("duplicate-slash", path.replace("/", "//", 1), fact_id)
-        if any(token in callee for token in ("trim", "trailingslash")):
-            add("trailing-slash", path.rstrip("/") + "/", fact_id)
+            candidate.insert(first, ".")
+            values.append(("dot-segment", "/".join(candidate)))
+        values.append(("duplicate-slash", path.replace("/", "//", 1)))
+    if any(token in lowered for token in ("trim", "trailingslash")):
+        values.append(("trailing-slash", path.rstrip("/") + "/"))
+    return [(family, candidate) for family, candidate in values if candidate != path]
+
+
+def source_derived_mutations(
+    path: str, transformation_flows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    path = path if path.startswith("/") else "/" + path
+    values: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    for flow in transformation_flows:
+        if flow.get("status") != "source-dataflow-proved-runtime-discriminator-required":
+            continue
+        transformations = flow.get("transformations")
+        if not isinstance(transformations, list) or not transformations:
+            transformations = [
+                {
+                    "fact": flow.get("transformationFact"),
+                    "callee": flow.get("transformationCallee"),
+                }
+            ]
+        frontier = [(path, [])]
+        for transformation in transformations:
+            fact_id = str(transformation.get("fact") or "")
+            callee = str(transformation.get("callee") or "")
+            next_frontier: list[tuple[str, list[str]]] = []
+            for current, composition in frontier:
+                for family, candidate in transformation_variants(current, callee):
+                    composed = [*composition, fact_id]
+                    key = (family, candidate, tuple(composed))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    values.append(
+                        {
+                            "family": family,
+                            "path": candidate,
+                            "origin": "source-transformation",
+                            "sourceFact": fact_id,
+                            "sourceFacts": composed,
+                            "flowId": str(flow.get("id") or ""),
+                            "validatedFact": str(flow.get("validatedFact") or ""),
+                            "consumerFact": str(flow.get("consumerFact") or ""),
+                            "resultSymbol": str(flow.get("resultSymbol") or ""),
+                            "composition": composed,
+                        }
+                    )
+                    next_frontier.append((candidate, composed))
+            # If this transformation has no dictionary mapping, retain the
+            # existing path so a later, understood transformation can still be
+            # exercised, but never call the unknown operation source-derived.
+            frontier = next_frontier or frontier
     return values
 
 
@@ -154,7 +195,29 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         route = str(relation.get("concretePath") or relation.get("route") or "/")
         operation_fact_ids = list(map(str, relation.get("operationFacts", [])))
         operation_facts = [facts[value] for value in operation_fact_ids if value in facts]
-        source_variants = source_derived_mutations(route, operation_facts)
+        transformation_flows = [
+            row
+            for row in relation.get("transformationFlows", [])
+            if isinstance(row, dict)
+        ]
+        source_variants = source_derived_mutations(route, transformation_flows)
+        proved_operation_facts = {
+            str(value)
+            for flow in transformation_flows
+            for value in flow.get("transformationFacts", [flow.get("transformationFact")])
+            if value
+        }
+        transformation_candidates = [
+            {
+                "sourceFact": str(item.get("id") or ""),
+                "callee": str(item.get("callee") or ""),
+                "status": "candidate-not-source-derived",
+                "reason": "no validated-value to result-symbol to downstream-consumer flow was proved",
+            }
+            for item in operation_facts
+            if str(item.get("id") or "") not in proved_operation_facts
+            and transformation_variants(route, str(item.get("callee") or ""))
+        ]
         variants = list(source_variants)
         for variant in mutations(route):
             if variant["path"] not in {row["path"] for row in variants}:
@@ -164,6 +227,15 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
             *map(str, auth_facts),
             *map(str, matched),
             *operation_fact_ids,
+                    *[
+                        str(value)
+                        for flow in transformation_flows
+                        for value in (
+                            flow.get("validatedFact"),
+                            flow.get("consumerFact"),
+                        )
+                        if value
+                    ],
         ]
         identity = hashlib.sha256(
             json.dumps([route, sorted(set(evidence))], separators=(",", ":")).encode()
@@ -193,19 +265,23 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                     },
                     *[
                         {
-                            "component": "source-observed transformation",
+                            "component": (
+                                "proved validation-to-consumer transformation"
+                                if str(item.get("id") or "") in proved_operation_facts
+                                else "source-observed call candidate"
+                            ),
                             "operation": str(item.get("callee") or "unknown call"),
                             "evidenceFacts": [str(item.get("id"))],
+                            "sourceDerived": str(item.get("id") or "")
+                            in proved_operation_facts,
                         }
                         for item in operation_facts
                     ],
                 ],
                 "assumptionFlow": {
                     "validatedProperty": "the authorization consumer accepts or rejects the request-path representation",
-                    "transformationAfterCheck": [
-                        {"callee": item.get("callee"), "sourceFact": item.get("id")}
-                        for item in operation_facts
-                    ],
+                    "transformationAfterCheck": transformation_flows,
+                    "transformationCandidates": transformation_candidates,
                     "consumerAssumption": "route execution receives the same protected resource identity",
                     "executableDiscriminator": "baseline blocked, authenticated control reaches route R, and a transformed anonymous request also reaches R",
                     "sourceDerivedWitnessAvailable": bool(source_variants),

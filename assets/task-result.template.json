@@ -61,7 +61,25 @@
     ],
     "researchLeads": [
       {
+        "kind": "observation",
+        "chainMaturity": "observation",
+        "title": "A retained difference with no invented impact claim",
+        "status": "active",
+        "sourceReferences": ["pinned source, assertion, or test reference"],
+        "evidence": ["campaign-relative retained evidence file"],
+        "approachFamilies": ["one registered semantic family"],
+        "nextExperiment": "The cheapest experiment that distinguishes competing explanations",
+        "negativeKnowledge": [],
+        "observation": {
+          "invariant": "the target-owned rule expected to hold",
+          "expected": "expected observation",
+          "observed": "different retained observation",
+          "reproducible": false
+        }
+      },
+      {
         "kind": "invariant-break",
+        "chainMaturity": "chain-hypothesis",
         "title": "One retained observation, not a filing claim",
         "status": "active",
         "sourceReferences": ["pinned source or checked-in test reference"],
@@ -97,8 +115,9 @@
           },
           "constraints": {
             "lifetime": [], "ordering": [], "deployment": [], "acquisition": [],
-            "requiredState": [], "providedState": []
+            "requiredState": [], "providedState": [], "invalidatedState": []
           },
+          "objects": {"requires": [], "produces": [], "invalidates": []},
           "sourceEvidence": ["pinned source consumer reference"]
         },
         "capabilityModel": {
@@ -121,8 +140,11 @@
           },
           "constraints": {
             "lifetime": [], "ordering": [], "deployment": [], "acquisition": [],
-            "requiredState": [], "providedState": ["primitive-reached"]
+            "requiredState": [], "providedState": ["primitive-reached"],
+            "invalidatedState": []
           },
+          "objects": {"requires": [], "produces": [], "invalidates": []},
+          "invalidatesCapabilities": [],
           "stateSequence": {
             "initialState": "fresh",
             "transitions": [],
@@ -130,6 +152,11 @@
           },
           "sourceEvidence": ["pinned producer reference"],
           "runtimeEvidence": [],
+          "measuredCost": {
+            "wallSeconds": 0,
+            "executions": 1,
+            "evidence": ["campaign-relative timing or run record"]
+          },
           "progress": {
             "milestones": ["invariant-violation-reproduced"],
             "resolvedPreconditions": [], "falsifiedPreconditions": [],

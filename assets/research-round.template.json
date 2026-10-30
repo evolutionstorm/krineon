@@ -13,7 +13,8 @@
         "intermediateCapability": "deliver attacker-shaped data to the executable consumer",
         "requiredCapabilities": [{"type": "executable-consumer-input", "properties": ["attacker-shaped"], "limitations": [], "forbiddenLimitations": ["development-only"]}],
         "context": {"principal": "attacker", "process": "production-target", "namespace": "application", "runtime": "production"},
-        "constraints": {"lifetime": [], "ordering": [], "deployment": [], "acquisition": [], "requiredState": [], "providedState": []},
+        "constraints": {"lifetime": [], "ordering": [], "deployment": [], "acquisition": [], "requiredState": [], "providedState": [], "invalidatedState": []},
+        "objects": {"requires": [], "produces": [], "invalidates": []},
         "sourceEvidence": ["replace with a pinned-source sink or authority boundary"]
       },
       "successCriteria": [
@@ -33,7 +34,8 @@
         "intermediateCapability": "control a manifest-valid privileged identity",
         "requiredCapabilities": [{"type": "privileged-identity-selection", "properties": ["attacker-controlled"], "limitations": [], "forbiddenLimitations": ["non-production"]}],
         "context": {"principal": "attacker", "process": "production-target", "namespace": "application", "runtime": "production"},
-        "constraints": {"lifetime": [], "ordering": [], "deployment": [], "acquisition": [], "requiredState": [], "providedState": []},
+        "constraints": {"lifetime": [], "ordering": [], "deployment": [], "acquisition": [], "requiredState": [], "providedState": [], "invalidatedState": []},
+        "objects": {"requires": [], "produces": [], "invalidates": []},
         "sourceEvidence": ["replace with a pinned-source consumer"]
       },
       "successCriteria": [
@@ -53,7 +55,8 @@
         "intermediateCapability": "retain attacker influence across the ownership transition",
         "requiredCapabilities": [{"type": "cross-boundary-object-control", "properties": ["attacker-influenced"], "limitations": [], "forbiddenLimitations": ["synthetic-only"]}],
         "context": {"principal": "attacker", "process": "production-target", "namespace": "native", "runtime": "production"},
-        "constraints": {"lifetime": [], "ordering": [], "deployment": [], "acquisition": [], "requiredState": [], "providedState": []},
+        "constraints": {"lifetime": [], "ordering": [], "deployment": [], "acquisition": [], "requiredState": [], "providedState": [], "invalidatedState": []},
+        "objects": {"requires": [], "produces": [], "invalidates": []},
         "sourceEvidence": ["replace with pinned managed/native boundary evidence"]
       },
       "successCriteria": [

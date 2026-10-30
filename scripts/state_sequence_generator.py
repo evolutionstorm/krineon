@@ -23,23 +23,83 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
     raw = document.get("operations")
     if not isinstance(raw, list) or not raw:
         raise RuntimeError("operations must be a non-empty list")
-    operations: list[dict[str, str]] = []
+    default_repetitions = int(document.get("maxRepetitionsPerOperation", 2))
+    if not 1 <= default_repetitions <= maximum_length:
+        raise RuntimeError("maxRepetitionsPerOperation must be within the sequence bound")
+    operations: list[dict[str, Any]] = []
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise RuntimeError(f"operations[{index}] must be an object")
-        operation = {
+        operation: dict[str, Any] = {
             name: require_text(item.get(name), f"operations[{index}].{name}")
             for name in ("id", "from", "to", "authority", "ownership", "invariant")
         }
+        operation["maxRepetitions"] = int(
+            item.get("maxRepetitions", default_repetitions)
+        )
+        if not 1 <= operation["maxRepetitions"] <= maximum_length:
+            raise RuntimeError(
+                f"operations[{index}].maxRepetitions must be within the sequence bound"
+            )
+        operation["thread"] = require_text(
+            item.get("thread", "main"), f"operations[{index}].thread"
+        )
+        happens_after = item.get("happensAfter", [])
+        if not isinstance(happens_after, list) or not all(
+            isinstance(value, str) and value.strip() for value in happens_after
+        ):
+            raise RuntimeError(f"operations[{index}].happensAfter must be text")
+        operation["happensAfter"] = list(dict.fromkeys(happens_after))
+        instance = item.get("instance")
+        if instance is not None:
+            if not isinstance(instance, dict):
+                raise RuntimeError(f"operations[{index}].instance must be an object")
+            action = require_text(instance.get("action"), f"operations[{index}].instance.action")
+            if action not in {"allocate", "release", "use", "invalidate"}:
+                raise RuntimeError(f"operations[{index}].instance.action is unsupported")
+            operation["instance"] = {
+                "identity": require_text(
+                    instance.get("identity"), f"operations[{index}].instance.identity"
+                ),
+                "action": action,
+            }
         operations.append(operation)
     if len({item["id"] for item in operations}) != len(operations):
         raise RuntimeError("operation IDs must be unique")
-    by_state: dict[str, list[dict[str, str]]] = {}
+    by_state: dict[str, list[dict[str, Any]]] = {}
     for operation in operations:
         by_state.setdefault(operation["from"], []).append(operation)
     sequences: list[dict[str, Any]] = []
 
-    def walk(state: str, path: list[dict[str, str]]) -> None:
+    def apply_instance(
+        operation: dict[str, Any], instances: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]] | None:
+        result = {key: dict(value) for key, value in instances.items()}
+        model = operation.get("instance")
+        if not isinstance(model, dict):
+            return result
+        identity = model["identity"]
+        action = model["action"]
+        current = result.get(identity)
+        if action == "allocate":
+            generation = int(current["generation"]) + 1 if current else 1
+            result[identity] = {"generation": generation, "state": "allocated"}
+        elif current is None or current.get("state") != "allocated":
+            return None
+        elif action == "use":
+            pass
+        elif action == "release":
+            current["state"] = "released"
+        elif action == "invalidate":
+            current["state"] = "invalidated"
+        return result
+
+    def walk(
+        state: str,
+        path: list[dict[str, Any]],
+        instances: dict[str, dict[str, Any]],
+        instance_history: list[dict[str, Any]],
+    ) -> None:
         if path:
             sequences.append(
                 {
@@ -47,17 +107,51 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
                     "states": [initial, *[item["to"] for item in path]],
                     "transitionPairs": [[item["from"], item["to"]] for item in path],
                     "invariants": [item["invariant"] for item in path],
+                    "threads": [item["thread"] for item in path],
+                    "instanceHistory": instance_history,
+                    "finalInstances": instances,
+                    "partialOrder": [
+                        {
+                            "operation": item["id"],
+                            "thread": item["thread"],
+                            "happensAfter": item["happensAfter"],
+                        }
+                        for item in path
+                    ],
                     "historyPreserved": True,
                 }
             )
         if len(path) >= maximum_length:
             return
         for operation in by_state.get(state, []):
-            if sum(item["id"] == operation["id"] for item in path) >= 1:
+            if (
+                sum(item["id"] == operation["id"] for item in path)
+                >= operation["maxRepetitions"]
+            ):
                 continue
-            walk(operation["to"], [*path, operation])
+            if not set(operation["happensAfter"]).issubset(
+                {item["id"] for item in path}
+            ):
+                continue
+            next_instances = apply_instance(operation, instances)
+            if next_instances is None:
+                continue
+            walk(
+                operation["to"],
+                [*path, operation],
+                next_instances,
+                [
+                    *instance_history,
+                    {
+                        "operation": operation["id"],
+                        "before": instances,
+                        "after": next_instances,
+                        "changed": instances != next_instances,
+                    },
+                ],
+            )
 
-    walk(initial, [])
+    walk(initial, [], {}, [])
     required = document.get("requiredTransitionPairs", [])
     if not isinstance(required, list):
         raise RuntimeError("requiredTransitionPairs must be a list")
@@ -80,6 +174,9 @@ def generate(document: dict[str, Any], maximum_length: int) -> dict[str, Any]:
             "onlyStateValidSequencesEmitted": True,
             "historyIsNeverReorderedIntoAnInvalidTransition": True,
             "reductionsMustRetainRequiredTransitionPairs": True,
+            "boundedOperationRepetition": default_repetitions,
+            "instanceGenerationsTracked": True,
+            "controlledInterleavingsRespectHappensAfter": True,
         },
     }
 

@@ -31,6 +31,13 @@ only that signed proposal, confirmed campaign authorization, a loopback HTTP
 origin, and an authenticated control header supplied through the environment.
 The retained observation hashes the control credential rather than storing it.
 
+The analyzer calls a mutation source-derived only when it proves this ordered
+path in one source module: a validation call observes symbol A, a later
+transformation consumes A and assigns symbol B, and a downstream consumer uses
+B. Multiple transformations may compose only through their assigned result
+symbols and source order. Calls that do not satisfy this path remain explicit
+transformation candidates. Callee substrings alone never justify a witness.
+
 Use `scripts/semantic_hypothesis_loop.py` in three stages:
 
 1. `derive` consumes a `krineon-framework-analysis` record and writes the
