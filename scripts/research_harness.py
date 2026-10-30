@@ -27,6 +27,14 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 try:
+    from .chain_reasoning import (
+        analyze_chain,
+        normalize_boundary,
+        normalize_negative_knowledge,
+        normalize_primitive,
+        normalize_progress,
+        progress_score,
+    )
     from .experiment_control import (
         ensure_authority,
         sign_file,
@@ -40,6 +48,14 @@ try:
         validate_attestation,
     )
 except ImportError:  # Direct script execution.
+    from chain_reasoning import (
+        analyze_chain,
+        normalize_boundary,
+        normalize_negative_knowledge,
+        normalize_primitive,
+        normalize_progress,
+        progress_score,
+    )
     from experiment_control import (
         ensure_authority,
         sign_file,
@@ -827,6 +843,24 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
     if status not in {"active", "disproved"}:
         raise SystemExit("researchLead.status must be active or disproved")
 
+    try:
+        critical_boundary = normalize_boundary(raw.get("criticalBoundary"))
+        capability_model = normalize_primitive(raw.get("capabilityModel"), "capabilityModel")
+        chain_progress = normalize_progress(raw.get("chainProgress"), "chainProgress")
+        negative_knowledge = normalize_negative_knowledge(
+            raw.get("negativeKnowledge", []), "negativeKnowledge"
+        )
+    except RuntimeError as error:
+        raise SystemExit(f"invalid research-lead chain contract: {error}") from error
+    if capability_model["progress"] != chain_progress:
+        raise SystemExit(
+            "researchLead.chainProgress must equal capabilityModel.progress"
+        )
+    if status == "disproved" and not negative_knowledge:
+        raise SystemExit(
+            "disproved research leads require scoped negativeKnowledge with reopening conditions"
+        )
+
     normalized = {
         "kind": kind,
         "title": title,
@@ -835,6 +869,11 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         "sourceReferences": source_references,
         "approachFamilies": approach_families,
         "evidence": evidence,
+        "criticalBoundary": critical_boundary,
+        "capabilityModel": capability_model,
+        "chainProgress": chain_progress,
+        "chainProgressScore": progress_score(chain_progress),
+        "negativeKnowledge": negative_knowledge,
     }
     if kind == "minimized-stack":
         stack = raw.get("minimizedStack")
@@ -1280,6 +1319,12 @@ def validate_route_development_result(
     require_string_list(development.get("gaps"), "routeDevelopment.gaps")
     require_string_list(development.get("evidence"), "routeDevelopment.evidence")
     require_string(development.get("nextExperiment"), "routeDevelopment.nextExperiment")
+    try:
+        development["criticalBoundary"] = normalize_boundary(
+            development.get("criticalBoundary"), "routeDevelopment.criticalBoundary"
+        )
+    except RuntimeError as error:
+        raise SystemExit(f"invalid route Critical-boundary contract: {error}") from error
     fresh_ideas = require_string_list(
         development.get("freshIdeas"), "routeDevelopment.freshIdeas"
     )
@@ -1298,6 +1343,29 @@ def validate_route_development_result(
         require_string_list(
             bug.get("evidence"), f"routeDevelopment.intermediateBugs[{index}].evidence"
         )
+        try:
+            bug["criticalBoundary"] = normalize_boundary(
+                bug.get("criticalBoundary"),
+                f"routeDevelopment.intermediateBugs[{index}].criticalBoundary",
+            )
+            bug["capabilityModel"] = normalize_primitive(
+                bug.get("capabilityModel"),
+                f"routeDevelopment.intermediateBugs[{index}].capabilityModel",
+            )
+            bug["chainProgress"] = normalize_progress(
+                bug.get("chainProgress"),
+                f"routeDevelopment.intermediateBugs[{index}].chainProgress",
+            )
+            bug["negativeKnowledge"] = normalize_negative_knowledge(
+                bug.get("negativeKnowledge", []),
+                f"routeDevelopment.intermediateBugs[{index}].negativeKnowledge",
+            )
+        except RuntimeError as error:
+            raise SystemExit(f"invalid intermediate-bug chain contract: {error}") from error
+        if bug["capabilityModel"]["progress"] != bug["chainProgress"]:
+            raise SystemExit(
+                f"routeDevelopment.intermediateBugs[{index}] chain progress disagrees with its capability model"
+            )
     chain_hypotheses = development.get("chainHypotheses")
     if not isinstance(chain_hypotheses, list):
         raise SystemExit("routeDevelopment.chainHypotheses must be a list")
@@ -2609,6 +2677,35 @@ def diversity_rank_ready_tasks(
     }
 
 
+def alternate_exploration_and_focus(
+    connection: sqlite3.Connection, rows: list[sqlite3.Row]
+) -> tuple[list[sqlite3.Row], dict[str, Any] | None, str | None]:
+    """Give one bounded slot to evidence-unlocked focus, then return to exploration."""
+    focus = [
+        row for row in rows
+        if str(row["task_kind"] or "") == "focused-chain-investigation"
+    ]
+    exploration = [row for row in rows if row not in focus]
+    last = str(get_metadata(connection, "lastSchedulingMode", "exploration"))
+    if focus and exploration:
+        if last != "focused":
+            return focus + exploration, {
+                "reason": "typed retained evidence unlocked one bounded focused-chain slot",
+                "fromMode": last,
+                "toMode": "focused",
+            }, "focused"
+        ranked, redirect = diversity_rank_ready_tasks(connection, exploration)
+        return ranked + focus, redirect or {
+            "reason": "return to approach-diverse exploration after one focused-chain slot",
+            "fromMode": last,
+            "toMode": "exploration",
+        }, "exploration"
+    if focus:
+        return focus, None, "focused"
+    ranked, redirect = diversity_rank_ready_tasks(connection, exploration)
+    return ranked, redirect, "exploration" if ranked else None
+
+
 def worker_is_eligible_for_round_task(
     connection: sqlite3.Connection, worker: sqlite3.Row, task: sqlite3.Row
 ) -> bool:
@@ -2707,7 +2804,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 continue
             if dependency_state(connection, row) == "ready":
                 eligible.append(row)
-        ranked, redirect = diversity_rank_ready_tasks(connection, eligible)
+        ranked, redirect, scheduling_mode = alternate_exploration_and_focus(
+            connection, eligible
+        )
         if ranked:
             chosen = ranked[0]
         if chosen is None:
@@ -2775,6 +2874,8 @@ def cmd_claim(args: argparse.Namespace) -> int:
             "UPDATE tasks SET workspace=?,updated_at=? WHERE task_id=?",
             (str(workspace.relative_to(root)), utc_now(), chosen["task_id"]),
         )
+        if scheduling_mode:
+            set_metadata(connection, "lastSchedulingMode", scheduling_mode)
         record_event(
             connection,
             "task-claimed",
@@ -2783,6 +2884,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
             payload={
                 "attempt": attempt,
                 "leaseSeconds": lease_seconds,
+                "schedulingMode": scheduling_mode,
                 "workspace": str(workspace.relative_to(root)),
                 "workspaceMode": workspace_mode,
                 "approachFamilies": task_approach_families(
@@ -2947,10 +3049,15 @@ def insert_dynamic_task(
     set_task_approach_families(connection, task_id, approach_families)
 
 
-def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, str]:
+def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, int, str]:
     state_rank = 1 if str(row["state"]) == "disproved" else 0
+    try:
+        payload = json.loads(row["payload_json"])
+        chain_rank = -int(payload.get("chainProgressScore", 0))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        chain_rank = 0
     grade_rank = LEAD_GRADE_ORDER.get(str(row["evidence_grade"]), 99)
-    return (state_rank, grade_rank, str(row["lead_id"]))
+    return (state_rank, chain_rank, grade_rank, str(row["lead_id"]))
 
 
 def ingest_research_leads(
@@ -3019,6 +3126,17 @@ def ingest_research_leads(
                 grade = prior_grade
                 payload["nextExperiment"] = lead["nextExperiment"]
                 payload["status"] = lead["status"]
+                if int(lead.get("chainProgressScore", 0)) >= int(
+                    payload.get("chainProgressScore", 0)
+                ):
+                    for field in (
+                        "criticalBoundary",
+                        "capabilityModel",
+                        "chainProgress",
+                        "chainProgressScore",
+                        "negativeKnowledge",
+                    ):
+                        payload[field] = lead[field]
             connection.execute(
                 "UPDATE research_leads SET evidence_grade=?,state=?,title=?,payload_json=?,"
                 "updated_at=? WHERE lead_id=?",
@@ -3064,6 +3182,9 @@ def ingest_research_leads(
 - Evidence grade: `{lead['evidenceGrade']}`
 - Semantic identity: `{identity}`
 - Title: {lead['title']}
+- Critical boundary: `{lead['criticalBoundary']['operation']}`
+- Intermediate capability: {lead['criticalBoundary']['intermediateCapability']}
+- Chain progress score: `{lead['chainProgressScore']}`
 
 ## Next experiment
 
@@ -3091,7 +3212,11 @@ history, security commits, advisories, or other revisions to locate a bug.
                 lane="research-lead-validation",
                 title=f"Validate {lead_id}: {lead['title']}",
                 packet=packet.relative_to(root).as_posix(),
-                priority=1600 - LEAD_GRADE_ORDER.get(str(lead["evidenceGrade"]), 99),
+                priority=(
+                    1600
+                    - LEAD_GRADE_ORDER.get(str(lead["evidenceGrade"]), 99)
+                    + min(250, 10 * int(lead.get("chainProgressScore", 0)))
+                ),
                 dependencies=[],
                 excluded_workers=[],
                 max_attempts=2,
@@ -3262,6 +3387,7 @@ pinned revision are permitted and encouraged local oracles.
                 max_attempts=args.max_attempts,
                 timeout_seconds=args.timeout_seconds,
                 approach_families=args.approach_family,
+                task_kind=args.task_kind,
             )
             record_event(
                 connection,
@@ -3387,6 +3513,15 @@ def cmd_round_plan(args: argparse.Namespace) -> int:
                 require_string(route.get("title"), f"routes[{index}].title")
                 require_string(route.get("objective"), f"routes[{index}].objective")
                 require_string_list(route.get("successCriteria"), f"routes[{index}].successCriteria")
+                try:
+                    route["criticalBoundary"] = normalize_boundary(
+                        route.get("criticalBoundary"),
+                        f"routes[{index}].criticalBoundary",
+                    )
+                except RuntimeError as error:
+                    raise SystemExit(
+                        f"invalid route Critical-boundary contract: {error}"
+                    ) from error
                 incompatible = require_string_list(
                     route.get("incompatibleWith"), f"routes[{index}].incompatibleWith"
                 )
@@ -3418,6 +3553,7 @@ def cmd_round_plan(args: argparse.Namespace) -> int:
                 adversarial_id = f"round-{research_round}-{route_id}-adversary"
                 criteria = "\n".join(f"- {item}" for item in route["successCriteria"])
                 incompatibility = ", ".join(f"`{item}`" for item in route["incompatibleWith"])
+                critical_boundary = route["criticalBoundary"]
                 development_packet = root / "tasks" / f"dynamic-{development_id}.md"
                 development_packet.write_text(
                     f"""# Independent route development: {route['title']}
@@ -3435,10 +3571,19 @@ Incompatible routes kept alive this round: {incompatibility}
 
 {criteria}
 
+## Eventual Critical boundary
+
+- Operation: `{critical_boundary['operation']}`
+- Eventual impact: {critical_boundary['eventualImpact']}
+- Next intermediate capability: {critical_boundary['intermediateCapability']}
+- Source evidence: {', '.join(critical_boundary['sourceEvidence'])}
+
 Develop this route independently. Do not consume another route's unpublished
 ideas or combine mechanisms during this task. Record real strengths, gaps,
 evidence, intermediate bugs, chain hypotheses, fresh ideas, and the next
-experiment in `routeDevelopment`. A result of "no finding" is not a terminal
+experiment in `routeDevelopment`. Restate and update the typed
+`criticalBoundary`; do not replace it with an unsupported exploit story. A
+result of "no finding" is not a terminal
 outcome. Independence exists to expose what this route can and cannot do before
 synthesis.
 """,
@@ -3665,6 +3810,31 @@ def schedule_intermediate_chain_task(
         ).fetchone()["count"]
     )
     task_id = f"round-{research_round}-{route_id}-chain-{existing + 1}"
+    chain_spec = {
+        "schemaVersion": 1,
+        "primitives": [bug["capabilityModel"] for bug in intermediate_bugs],
+        "boundaries": list(
+            {
+                boundary["id"]: boundary
+                for boundary in (bug["criticalBoundary"] for bug in intermediate_bugs)
+            }.values()
+        ),
+    }
+    try:
+        chain_analysis = analyze_chain(chain_spec)
+    except RuntimeError as error:
+        raise SystemExit(f"cannot compose typed intermediate-bug graph: {error}") from error
+    chain_path = (
+        root
+        / "evidence"
+        / "chain-graphs"
+        / f"round-{research_round}-{route_id}-{existing + 1}.json"
+    )
+    chain_path.parent.mkdir(parents=True, exist_ok=True)
+    chain_path.write_text(
+        json.dumps(chain_analysis, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     bug_lines = "\n".join(
         f"- `{bug['id']}`: root cause={bug['rootCause']}; primitive={bug['primitive']}"
         for bug in intermediate_bugs
@@ -3675,6 +3845,15 @@ def schedule_intermediate_chain_task(
         for item in development.get("chainHypotheses", [])
         if str(item).strip()
     )
+    graph_edges = "\n".join(
+        f"- `{edge['producer']}` -> `{edge['consumer']}` via "
+        + ", ".join(match["capability"] for match in edge["matches"])
+        for edge in chain_analysis["compatibleEdges"]
+    ) or "- No typed producer-consumer edge is compatible yet."
+    missing_experiments = "\n".join(
+        f"- `{experiment['id']}`: {experiment['question']}"
+        for experiment in chain_analysis["missingLinkExperiments"][:8]
+    ) or "- No missing-link experiment was generated."
     packet = root / "tasks" / f"dynamic-{task_id}.md"
     packet.write_text(
         f"""# Intermediate-bug chain composition
@@ -3691,6 +3870,16 @@ Sanity review: `{review_task['task_id']}`
 ## Source route's chain hypotheses
 
 {hypotheses}
+
+## Machine-checked compatibility graph
+
+Retained analysis: `{chain_path.relative_to(root).as_posix()}`
+
+{graph_edges}
+
+## Cheapest missing-link experiments
+
+{missing_experiments}
 
 Do not discard these bugs because none is Critical alone. Attempt compositions
 with other retained primitives, acquisition paths, authority transitions, and
@@ -3762,6 +3951,9 @@ to end the route or campaign.
             "intermediateBugIds": [
                 str(bug.get("id")) for bug in intermediate_bugs if isinstance(bug, dict)
             ],
+            "chainAnalysis": chain_path.relative_to(root).as_posix(),
+            "chainProgressScore": chain_analysis["chainProgressScore"],
+            "focusEligible": chain_analysis["focusEligible"],
         },
     )
     return task_id
@@ -5902,6 +6094,11 @@ def build_parser() -> argparse.ArgumentParser:
     task_add.add_argument("--priority", type=int, default=50)
     task_add.add_argument("--max-attempts", type=int, default=2)
     task_add.add_argument("--timeout-seconds", type=int, default=7200)
+    task_add.add_argument(
+        "--task-kind",
+        choices=("ordinary", "focused-chain-investigation"),
+        default="ordinary",
+    )
     task_add.set_defaults(func=cmd_task_add)
 
     round_plan = sub.add_parser(

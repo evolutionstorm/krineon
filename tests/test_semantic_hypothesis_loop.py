@@ -66,6 +66,7 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
                         "facts": [
                             {"id": "route-admin", "kind": "manifest-route", "route": "/admin"},
                             {"id": "auth-call", "kind": "authentication-signal", "callee": "requireAuth"},
+                            {"id": "case-normalizer", "kind": "call-operation", "callee": "pathname.toLowerCase"},
                             {"id": "middleware", "kind": "middleware-entry"},
                         ],
                         "relations": [
@@ -77,6 +78,7 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
                                 "matchedMiddleware": ["middleware"],
                                 "handlerAuthSignals": [],
                                 "middlewareAuthSignals": ["auth-call"],
+                                "operationFacts": ["case-normalizer"],
                             }
                         ],
                     }
@@ -89,6 +91,16 @@ class SemanticHypothesisLoopTests(unittest.TestCase):
             self.assertEqual(len(value["models"]), 1)
             self.assertEqual(value["models"][0]["boundary"], "authorization-to-route-execution")
             self.assertTrue(value["models"][0]["checks"])
+            case_variant = next(
+                row
+                for row in value["models"][0]["experiment"]["variants"]
+                if row["family"] == "case-fold"
+            )
+            self.assertEqual(case_variant["origin"], "source-transformation")
+            self.assertEqual(case_variant["sourceFact"], "case-normalizer")
+            self.assertTrue(
+                value["models"][0]["assumptionFlow"]["sourceDerivedWitnessAvailable"]
+            )
             approved = json.loads(
                 self.run_cli("approve", str(campaign), "--proposal", str(proposal)).stdout
             )

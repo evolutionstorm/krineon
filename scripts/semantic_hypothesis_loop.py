@@ -63,7 +63,14 @@ def mutations(path: str) -> list[dict[str, str]]:
 
     def add(family: str, candidate: str) -> None:
         if candidate != path and candidate not in {row["path"] for row in values}:
-            values.append({"family": family, "path": candidate})
+            values.append(
+                {
+                    "family": family,
+                    "path": candidate,
+                    "origin": "supplemental-dictionary",
+                    "sourceFact": "none",
+                }
+            )
 
     add("trailing-slash", path.rstrip("/") + "/")
     segments = path.split("/")
@@ -81,6 +88,49 @@ def mutations(path: str) -> list[dict[str, str]]:
         dotted.insert(first, ".")
         add("dot-segment", "/".join(dotted))
     add("duplicate-slash", path.replace("/", "//", 1))
+    return values
+
+
+def source_derived_mutations(
+    path: str, operation_facts: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    path = path if path.startswith("/") else "/" + path
+    values: list[dict[str, str]] = []
+
+    def add(family: str, candidate: str, source_fact: str) -> None:
+        if candidate != path and candidate not in {row["path"] for row in values}:
+            values.append(
+                {
+                    "family": family,
+                    "path": candidate,
+                    "origin": "source-transformation",
+                    "sourceFact": source_fact,
+                }
+            )
+
+    segments = path.split("/")
+    first = next((index for index, value in enumerate(segments) if value), None)
+    for operation in operation_facts:
+        callee = str(operation.get("callee") or "").lower()
+        fact_id = str(operation.get("id") or "")
+        if first is not None and any(token in callee for token in ("tolowercase", "tolower", "locale")):
+            candidate = list(segments)
+            candidate[first] = candidate[first].swapcase()
+            add("case-fold", "/".join(candidate), fact_id)
+        if first is not None and any(token in callee for token in ("decodeuri", "decodeuricomponent", "unescape")):
+            candidate = list(segments)
+            token = candidate[first]
+            if token:
+                candidate[first] = "%" + format(ord(token[0]), "02x") + token[1:]
+                add("percent-unreserved", "/".join(candidate), fact_id)
+        if any(token in callee for token in ("normalize", "resolve", "canonical")):
+            if first is not None:
+                candidate = list(segments)
+                candidate.insert(first, ".")
+                add("dot-segment", "/".join(candidate), fact_id)
+            add("duplicate-slash", path.replace("/", "//", 1), fact_id)
+        if any(token in callee for token in ("trim", "trailingslash")):
+            add("trailing-slash", path.rstrip("/") + "/", fact_id)
     return values
 
 
@@ -102,7 +152,19 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         if not auth_facts and not matched:
             continue
         route = str(relation.get("concretePath") or relation.get("route") or "/")
-        evidence = [str(relation.get("routeFact") or ""), *map(str, auth_facts), *map(str, matched)]
+        operation_fact_ids = list(map(str, relation.get("operationFacts", [])))
+        operation_facts = [facts[value] for value in operation_fact_ids if value in facts]
+        source_variants = source_derived_mutations(route, operation_facts)
+        variants = list(source_variants)
+        for variant in mutations(route):
+            if variant["path"] not in {row["path"] for row in variants}:
+                variants.append(variant)
+        evidence = [
+            str(relation.get("routeFact") or ""),
+            *map(str, auth_facts),
+            *map(str, matched),
+            *operation_fact_ids,
+        ]
         identity = hashlib.sha256(
             json.dumps([route, sorted(set(evidence))], separators=(",", ":")).encode()
         ).hexdigest()[:20]
@@ -129,7 +191,25 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                         "operation": "normalize the request and select the emitted route artifact",
                         "evidenceFacts": [str(relation.get("routeFact") or "")],
                     },
+                    *[
+                        {
+                            "component": "source-observed transformation",
+                            "operation": str(item.get("callee") or "unknown call"),
+                            "evidenceFacts": [str(item.get("id"))],
+                        }
+                        for item in operation_facts
+                    ],
                 ],
+                "assumptionFlow": {
+                    "validatedProperty": "the authorization consumer accepts or rejects the request-path representation",
+                    "transformationAfterCheck": [
+                        {"callee": item.get("callee"), "sourceFact": item.get("id")}
+                        for item in operation_facts
+                    ],
+                    "consumerAssumption": "route execution receives the same protected resource identity",
+                    "executableDiscriminator": "baseline blocked, authenticated control reaches route R, and a transformed anonymous request also reaches R",
+                    "sourceDerivedWitnessAvailable": bool(source_variants),
+                },
                 "checks": [
                     {
                         "check": facts.get(str(value), {}).get("callee", "middleware matcher"),
@@ -160,8 +240,8 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                 "experiment": {
                     "baseline": {"method": "GET", "path": route, "authenticated": False},
                     "authenticatedControl": {"method": "GET", "path": route, "authenticated": True},
-                    "variants": mutations(route),
-                    "cost": {"requests": 2 + len(mutations(route)), "priority": "cheapest-one-dimension-first"},
+                    "variants": variants,
+                    "cost": {"requests": 2 + len(variants), "priority": "source-derived-one-dimension-first"},
                 },
                 "evidenceFacts": sorted(set(value for value in evidence if value)),
                 "revision": 0,
@@ -262,21 +342,36 @@ def request(base: str, path: str, header: tuple[str, str] | None, timeout: float
 
 
 def evaluate(model: dict[str, Any], baseline: dict[str, Any], authenticated: dict[str, Any], variants: list[dict[str, Any]]) -> dict[str, Any]:
-    eliminated: list[dict[str, str]] = []
+    eliminated: list[dict[str, Any]] = []
     violations: list[dict[str, Any]] = []
+    def negative(mechanism: str, inputs: list[str], guard: str, consumer: str, observation: str, reopening: list[str]) -> dict[str, Any]:
+        return {
+            "mechanism": mechanism,
+            "inputs": inputs,
+            "conditions": [
+                f"route={model['route']}",
+                f"baselineStatus={baseline['status']}",
+                f"authenticatedStatus={authenticated['status']}",
+            ],
+            "guard": guard,
+            "consumer": consumer,
+            "observation": observation,
+            "evidence": [baseline["bodySha256"], authenticated["bodySha256"]],
+            "reopeningConditions": reopening,
+        }
     if not baseline["blocked"]:
-        eliminated.append({"mechanism": "protected-route-bypass", "reason": "unauthenticated baseline was not blocked"})
+        eliminated.append(negative("protected-route-bypass", [baseline["path"]], "baseline protection absent", "authorization", "unauthenticated baseline was not blocked", ["a route whose anonymous baseline is blocked"]))
         verdict = "inconclusive-unprotected-baseline"
     elif authenticated["blocked"] or not 200 <= authenticated["status"] < 300:
-        eliminated.append({"mechanism": "authenticated-route-control", "reason": "owned authenticated control did not reach the route"})
+        eliminated.append(negative("authenticated-route-control", [authenticated["path"]], "owned control did not establish route identity", "execution", "authenticated control did not reach the route", ["a valid owned session that reaches the route"]))
         verdict = "inconclusive-auth-control"
     else:
         for variant in variants:
             observation = variant["observation"]
             if observation["blocked"]:
-                eliminated.append({"mechanism": variant["family"], "reason": "authorization blocked the mutated representation"})
+                eliminated.append(negative(variant["family"], [variant["path"]], "authorization blocked this exact representation", "authorization", "mutated representation remained blocked", ["a different source-observed transformation", "a changed matcher or normalization configuration"]))
             elif observation["routeIdentity"] != authenticated["routeIdentity"]:
-                eliminated.append({"mechanism": variant["family"], "reason": "the representation selected a different route identity"})
+                eliminated.append(negative(variant["family"], [variant["path"]], "route identities disagreed", "route resolver", "the representation selected a different route identity", ["a representation that preserves the authenticated route identity", "a changed route manifest"]))
             elif 200 <= observation["status"] < 300:
                 violations.append(variant)
         verdict = "oracle-violated" if violations else "no-violation-in-tested-families"

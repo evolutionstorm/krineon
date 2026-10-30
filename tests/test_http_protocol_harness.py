@@ -76,6 +76,53 @@ class HttpProtocolHarnessTests(unittest.TestCase):
                                 "attacker": {"role": "user", "tenant": "red", "cookies": {}, "variables": {}},
                                 "victim": {"role": "admin", "tenant": "blue", "cookies": {}, "variables": {}},
                             },
+                            "stateModel": {
+                                "initialState": "anonymous",
+                                "transitions": [
+                                    {
+                                        "stepId": "login",
+                                        "from": "anonymous",
+                                        "to": "attacker-authenticated",
+                                        "operation": "owned attacker login",
+                                        "authorityBefore": "anonymous",
+                                        "authorityAfter": "attacker role",
+                                        "ownershipBefore": "no session",
+                                        "ownershipAfter": "attacker session",
+                                        "invariant": "the session belongs only to the attacker tenant"
+                                    },
+                                    {
+                                        "stepId": "prime",
+                                        "from": "attacker-authenticated",
+                                        "to": "cache-primed",
+                                        "operation": "attacker primes shared state",
+                                        "authorityBefore": "attacker role",
+                                        "authorityAfter": "attacker role",
+                                        "ownershipBefore": "attacker session",
+                                        "ownershipAfter": "attacker-produced cache entry",
+                                        "invariant": "attacker state must not become victim state"
+                                    },
+                                    {
+                                        "stepId": "victim-redirect",
+                                        "from": "cache-primed",
+                                        "to": "victim-read",
+                                        "operation": "independent victim reads",
+                                        "authorityBefore": "victim role",
+                                        "authorityAfter": "victim role",
+                                        "ownershipBefore": "victim request",
+                                        "ownershipAfter": "victim response",
+                                        "invariant": "the victim must not observe attacker-owned state"
+                                    }
+                                ],
+                                "requiredTransitionPairs": [
+                                    ["anonymous", "attacker-authenticated"],
+                                    ["attacker-authenticated", "cache-primed"],
+                                    ["cache-primed", "victim-read"]
+                                ],
+                                "reductionMustPreserve": [
+                                    "attacker login precedes cache prime",
+                                    "victim read remains an independent session"
+                                ]
+                            },
                             "steps": [
                                 {
                                     "id": "login",
@@ -194,6 +241,8 @@ class HttpProtocolHarnessTests(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}\nresult:\n{retained}")
                 result = json.loads((output / "protocol-run.json").read_text())
                 self.assertEqual(result["status"], "passed")
+                self.assertTrue(result["transitionCoverage"]["passed"])
+                self.assertEqual(len(result["stateTrace"]), 3)
                 self.assertEqual(len(result["steps"]), 10)
                 self.assertEqual(len(result["steps"][5]["redirectChain"]), 2)
                 self.assertGreaterEqual(len(result["steps"][6]["response"]["chunks"]), 2)

@@ -177,15 +177,22 @@ Krineon runs the following campaign:
    representation changes, native parsers, and execution authority.
 3. Derives falsifiable hypotheses for the focused authorization-to-route
    boundary and runs the cheapest distinguishing experiment on an owned target.
-4. Launches independent research routes and prevents one approach family from
+4. Models each primitive as a typed capability and connects it only when
+   principal, process, namespace, runtime, state, lifetime, ordering,
+   deployment, and acquisition constraints agree.
+5. Treats login, cache priming, ownership transfer, worker reuse, and victim
+   reads as reducible but history-preserving state sequences.
+6. Launches independent research routes and prevents one approach family from
    consuming all worker capacity.
-5. Tracks blockers, primitives, negative results, and possible cross-library
+7. Tracks blockers, primitives, scoped negative results, and possible cross-library
    chains in a durable campaign registry.
-6. Tests promising chains against supported release or production-equivalent
+8. Alternates broad exploration with one bounded focused-chain slot only after
+   retained evidence unlocks a concrete missing-link experiment.
+9. Tests promising chains against supported release or production-equivalent
    builds in an owned environment.
-7. Requires coordinator-signed experiments, recomputed raw observations, an
+10. Requires coordinator-signed experiments, recomputed raw observations, an
    enforcing negative control, and fresh-process adversarial replay.
-8. Produces a report package only when the complete Critical/RCE impact is
+11. Produces a report package only when the complete Critical/RCE impact is
    demonstrated.
 
 When a route fails, Krineon records the enforcing mechanism and creates a new
@@ -252,5 +259,7 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Orchestration and independent replay](references/orchestration.md)
 - [Evidence gates](references/evidence-gates.md)
 - [Semantic hypothesis experiments](references/semantic-experiments.md)
+- [Execution-boundary and typed chain reasoning](references/chain-reasoning.md)
+- [Held-out multi-stage evaluation](references/multistage-evaluation.md)
 - [Chrome and V8 campaigns](references/chrome-v8.md)
 - [Safety rules](references/safety.md)

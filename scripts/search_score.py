@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import uuid
 from pathlib import Path
@@ -204,6 +205,66 @@ def semantic_information_metrics(root: Path) -> dict[str, Any]:
     }
 
 
+def chain_progress_metrics(root: Path) -> dict[str, Any]:
+    database = root / "orchestration.db"
+    if not database.is_file():
+        return {
+            "invariantViolations": 0,
+            "controlledCapabilities": 0,
+            "newConsumersReached": 0,
+            "acquisitionPrerequisitesResolved": 0,
+            "compatiblePrimitiveEdges": 0,
+            "confirmedChainPreconditions": 0,
+            "falsifiedChainPreconditions": 0,
+            "chainUncertaintiesResolved": 0,
+            "chainProgressScore": 0,
+        }
+    connection = sqlite3.connect(database)
+    try:
+        rows = connection.execute(
+            "SELECT payload_json FROM research_leads WHERE state<>'disproved'"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        rows = []
+    finally:
+        connection.close()
+    milestone_counts: dict[str, int] = {}
+    connected: set[tuple[str, str]] = set()
+    resolved: set[str] = set()
+    falsified: set[str] = set()
+    uncertainties: set[str] = set()
+    score = 0
+    for (payload_json,) in rows:
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        progress = payload.get("chainProgress")
+        if not isinstance(progress, dict):
+            continue
+        for milestone in progress.get("milestones", []):
+            milestone_counts[str(milestone)] = milestone_counts.get(str(milestone), 0) + 1
+        primitive_id = str((payload.get("capabilityModel") or {}).get("id") or "unknown")
+        connected.update(
+            (primitive_id, str(value)) for value in progress.get("connectedPrimitives", [])
+        )
+        resolved.update(map(str, progress.get("resolvedPreconditions", [])))
+        falsified.update(map(str, progress.get("falsifiedPreconditions", [])))
+        uncertainties.update(map(str, progress.get("uncertaintiesResolved", [])))
+        score += int(payload.get("chainProgressScore", 0))
+    return {
+        "invariantViolations": milestone_counts.get("invariant-violation-reproduced", 0),
+        "controlledCapabilities": milestone_counts.get("attacker-capability-controlled", 0),
+        "newConsumersReached": milestone_counts.get("new-consumer-reached", 0),
+        "acquisitionPrerequisitesResolved": milestone_counts.get("acquisition-prerequisite-resolved", 0),
+        "compatiblePrimitiveEdges": len(connected),
+        "confirmedChainPreconditions": len(resolved),
+        "falsifiedChainPreconditions": len(falsified),
+        "chainUncertaintiesResolved": len(uncertainties),
+        "chainProgressScore": score,
+    }
+
+
 def score_vector(root: Path, profile: str, benchmark: str) -> dict[str, Any]:
     coverage = latest_coverage(root, profile)
     metrics = coverage.get("metrics") if isinstance(coverage, dict) else {}
@@ -218,6 +279,7 @@ def score_vector(root: Path, profile: str, benchmark: str) -> dict[str, Any]:
         "hoursToFirstRediscovery": rediscovery_hours(root, benchmark),
         **validated_root_cause_metrics(root),
         **semantic_information_metrics(root),
+        **chain_progress_metrics(root),
     }
 
 
@@ -237,6 +299,9 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
             "validatedRootCausesPerCpuHour": "higher-is-better-primary",
             "securityInformationGain": "higher-is-better",
             "informationGainPerHour": "higher-is-better",
+            "chainProgressScore": "higher-is-better",
+            "compatiblePrimitiveEdges": "higher-is-better",
+            "chainUncertaintiesResolved": "higher-is-better",
         },
     }
     output = (
@@ -288,6 +353,17 @@ def cmd_compare(args: argparse.Namespace) -> int:
         ),
         "informationGainPerHour": improved(
             before.get("informationGainPerHour"), after.get("informationGainPerHour")
+        ),
+        "chainProgressScore": improved(
+            before.get("chainProgressScore"), after.get("chainProgressScore")
+        ),
+        "compatiblePrimitiveEdges": improved(
+            before.get("compatiblePrimitiveEdges"),
+            after.get("compatiblePrimitiveEdges"),
+        ),
+        "chainUncertaintiesResolved": improved(
+            before.get("chainUncertaintiesResolved"),
+            after.get("chainUncertaintiesResolved"),
         ),
     }
     primary_moved = deltas["validatedRootCausesPerCpuHour"] or deltas["validatedRootCauses"]

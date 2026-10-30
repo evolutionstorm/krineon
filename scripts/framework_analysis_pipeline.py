@@ -404,6 +404,20 @@ def scan_javascript(
             if not name:
                 continue
             base = name.rsplit(".", 1)[-1]
+            facts.append(
+                fact(
+                    path,
+                    root,
+                    "call-operation",
+                    tokens[start],
+                    {
+                        "callee": name,
+                        "literalArguments": call_literal_arguments(tokens, index),
+                        "classification": classification,
+                        "snippet": statement_snippet(source, tokens[start].line),
+                    },
+                )
+            )
             if base in auth_signals:
                 facts.append(fact(path, root, "authentication-signal", tokens[start], {"callee": name, "classification": classification, "snippet": statement_snippet(source, tokens[start].line)}))
             if base in cache_signals:
@@ -778,7 +792,7 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
         dependency_facts = [
             row for row in facts
             if row.get("source") in reachable_sources
-            and row["kind"] in {"authentication-signal", "cache-operation", "environment-read", "dynamic-import"}
+            and row["kind"] in {"authentication-signal", "cache-operation", "environment-read", "dynamic-import", "call-operation"}
         ]
         if dependency_facts:
             relations.append({
@@ -792,6 +806,7 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
                 "cacheFacts": [row["id"] for row in dependency_facts if row["kind"] == "cache-operation"],
                 "environmentFacts": [row["id"] for row in dependency_facts if row["kind"] == "environment-read"],
                 "dynamicImportFacts": [row["id"] for row in dependency_facts if row["kind"] == "dynamic-import"],
+                "operationFacts": [row["id"] for row in dependency_facts if row["kind"] == "call-operation"],
                 "reachabilityStatus": "source-module-graph-only-runtime-verification-required",
             })
         cache_facts = [
@@ -833,6 +848,7 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
             "indeterminateMiddleware": sorted(set(indeterminate)),
             "handlerAuthSignals": [row["id"] for row in dependency_facts if row["kind"] == "authentication-signal"],
             "middlewareAuthSignals": middleware_auth,
+            "operationFacts": [row["id"] for row in dependency_facts if row["kind"] == "call-operation"],
             "dominanceStatus": "runtime-verification-required",
         })
     return relations

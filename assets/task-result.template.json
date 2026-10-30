@@ -76,6 +76,73 @@
         "evidence": ["campaign-relative retained evidence file"],
         "approachFamilies": ["one registered semantic family"],
         "nextExperiment": "The smallest experiment that improves or falsifies this lead",
+        "criticalBoundary": {
+          "id": "eventual-critical-boundary",
+          "operation": "data-to-executable-behavior",
+          "eventualImpact": "The exact Critical or RCE effect this route could eventually reach",
+          "intermediateCapability": "The next capability required before that boundary",
+          "requiredCapabilities": [
+            {
+              "type": "manifest-valid-module-selection",
+              "properties": ["attacker-selected"],
+              "limitations": [],
+              "forbiddenLimitations": ["debug-only"]
+            }
+          ],
+          "context": {
+            "principal": "attacker",
+            "process": "production-server",
+            "namespace": "application",
+            "runtime": "production"
+          },
+          "constraints": {
+            "lifetime": [], "ordering": [], "deployment": [], "acquisition": [],
+            "requiredState": [], "providedState": []
+          },
+          "sourceEvidence": ["pinned source consumer reference"]
+        },
+        "capabilityModel": {
+          "id": "retained-primitive",
+          "attackerControlledInputs": ["exact public input"],
+          "produces": [
+            {
+              "type": "attacker-shaped-value",
+              "properties": ["controlled-bytes"],
+              "limitations": ["same-process-only"],
+              "forbiddenLimitations": []
+            }
+          ],
+          "requires": [],
+          "context": {
+            "principal": "attacker",
+            "process": "production-server",
+            "namespace": "application",
+            "runtime": "production"
+          },
+          "constraints": {
+            "lifetime": [], "ordering": [], "deployment": [], "acquisition": [],
+            "requiredState": [], "providedState": ["primitive-reached"]
+          },
+          "stateSequence": {
+            "initialState": "fresh",
+            "transitions": [],
+            "reductionMustPreserve": []
+          },
+          "sourceEvidence": ["pinned producer reference"],
+          "runtimeEvidence": [],
+          "progress": {
+            "milestones": ["invariant-violation-reproduced"],
+            "resolvedPreconditions": [], "falsifiedPreconditions": [],
+            "connectedPrimitives": [], "uncertaintiesResolved": []
+          },
+          "negativeKnowledge": []
+        },
+        "chainProgress": {
+          "milestones": ["invariant-violation-reproduced"],
+          "resolvedPreconditions": [], "falsifiedPreconditions": [],
+          "connectedPrimitives": [], "uncertaintiesResolved": []
+        },
+        "negativeKnowledge": [],
         "invariantBreak": {
           "boundary": "producer to consumer",
           "invariant": "the target-owned rule that should hold",

@@ -280,11 +280,16 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
                     "cache-operation",
                     "environment-read",
                     "authentication-signal",
+                    "call-operation",
                     "prerender-cache",
                 }.issubset(kinds)
             )
             auth_facts = [row for row in record["facts"] if row["kind"] == "authentication-signal"]
             self.assertEqual({row["callee"] for row in auth_facts}, {"auth", "requireAuth"})
+            operation_facts = [
+                row for row in record["facts"] if row["kind"] == "call-operation"
+            ]
+            self.assertIn("requireAuth", {row["callee"] for row in operation_facts})
             relation_kinds = {row["kind"] for row in record["relations"]}
             self.assertTrue(
                 {
@@ -297,6 +302,12 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
                 }.issubset(relation_kinds)
             )
             self.assertTrue(any(row.get("crossesDirectiveBoundary") for row in record["relations"]))
+            self.assertTrue(
+                any(
+                    row["kind"] == "middleware-route" and row.get("operationFacts")
+                    for row in record["relations"]
+                )
+            )
             self.assertTrue(any(row["kind"] == "source-to-bundle" and row["source"].endswith("page.tsx") for row in record["relations"]))
             cache_facts = [row for row in record["facts"] if row["kind"] == "cache-operation" and row.get("operation") == "unstable_cache"]
             self.assertEqual(cache_facts[0]["literalArguments"], ["admin"])

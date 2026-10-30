@@ -108,6 +108,14 @@ bypass, public alias, and unprotected-baseline explanations. Do not claim this
 depth for other ecosystems until an equally concrete boundary adapter exists.
 Read [semantic experiments](references/semantic-experiments.md).
 
+Every route must also name its eventual Critical authority boundary, the next
+intermediate capability, and the pinned-source reason that capability might
+reach the boundary. Model primitives as typed producer/consumer contracts;
+never connect them by prose resemblance. Require all boundary capabilities,
+principal/process/namespace/runtime compatibility, and state, lifetime,
+ordering, deployment, and acquisition constraints. Read
+[execution-boundary and chain reasoning](references/chain-reasoning.md).
+
 ## Campaign orchestration
 
 Use Krineon's durable scheduler as the source of truth. Before scaling, run its
@@ -164,6 +172,13 @@ primitive must create a concrete missing-link experiment. Allocate budget by
 validated root causes and security explanations eliminated per unit cost, then
 by minimized stacks and coverage; task volume is not progress.
 
+Record negative knowledge only with exact input, conditions, guard, consumer,
+observation, evidence, and reopening criteria. Alternate broad exploration
+with one bounded focused investigation only after typed retained evidence
+unlocks a missing-link experiment. Measure invariant breaks, controlled
+capabilities, new consumers, resolved acquisition prerequisites, compatible
+edges, preconditions, and uncertainty removed.
+
 ## Target-specific execution
 
 Load only references relevant to the active target:
@@ -184,6 +199,8 @@ Load only references relevant to the active target:
   Seatbelt validation: [macOS arm64](references/macos-arm64.md).
 - Search efficacy on a frozen local corpus with evaluator-held target oracles:
   [rediscovery benchmark](references/rediscovery-benchmark.md).
+- End-to-end discovery without a supplied hypothesis or reproducer:
+  [held-out multi-stage evaluation](references/multistage-evaluation.md).
 
 Run the real supported production configuration when one is available. For web
 chains, retain raw requests and responses, duplicate-header/framing behavior,

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "target": {
+    "commit": "full frozen revision",
+    "artifacts": [
+      {"path": "owned target artifact", "sha256": "sha256"}
+    ]
+  },
+  "disclosureToCampaign": {
+    "scopeOnly": true,
+    "bugHypothesisSupplied": false,
+    "triggerSupplied": false,
+    "reproducerSupplied": false,
+    "patchedRevisionSupplied": false
+  },
+  "evaluatorHeldRequirements": {
+    "minimumLinkedStages": 3,
+    "minimumComponents": 2,
+    "blockedPlausibleRoute": true,
+    "differentMechanismRequired": true,
+    "statefulTransitionRequired": true
+  },
+  "metrics": {
+    "hoursToInvariantBreak": null,
+    "hoursToControlledCapability": null,
+    "hoursToNewConsumer": null,
+    "hoursToCompatibleEdge": null,
+    "hoursToCompleteChain": null,
+    "hoursToIndependentReplay": null,
+    "validatedRootCausesPerProcessHour": null
+  }
+}

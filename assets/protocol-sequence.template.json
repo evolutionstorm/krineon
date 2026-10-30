@@ -7,6 +7,24 @@
     "attacker": {"role": "user", "tenant": "attacker", "cookies": {}, "variables": {}},
     "victim": {"role": "user", "tenant": "victim", "cookies": {}, "variables": {}}
   },
+  "stateModel": {
+    "initialState": "fresh",
+    "transitions": [
+      {
+        "stepId": "baseline",
+        "from": "fresh",
+        "to": "baseline-observed",
+        "operation": "read the owned baseline",
+        "authorityBefore": "anonymous",
+        "authorityAfter": "anonymous",
+        "ownershipBefore": "no retained response",
+        "ownershipAfter": "researcher-owned observation",
+        "invariant": "the baseline must not consume another principal's state"
+      }
+    ],
+    "requiredTransitionPairs": [["fresh", "baseline-observed"]],
+    "reductionMustPreserve": ["the baseline remains the first operation"]
+  },
   "steps": [
     {
       "id": "baseline",

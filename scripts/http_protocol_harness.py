@@ -644,6 +644,108 @@ class SequenceRunner:
         return result
 
 
+def validate_state_model(value: Any, step_ids: list[str]) -> dict[str, Any]:
+    if value is None:
+        return {
+            "initialState": "unspecified",
+            "transitions": [],
+            "requiredTransitionPairs": [],
+            "reductionMustPreserve": [],
+        }
+    if not isinstance(value, dict):
+        raise RuntimeError("stateModel must be an object")
+    initial = str(value.get("initialState") or "").strip()
+    if not initial:
+        raise RuntimeError("stateModel.initialState is required")
+    raw_transitions = value.get("transitions")
+    if not isinstance(raw_transitions, list) or not raw_transitions:
+        raise RuntimeError("stateModel.transitions must be a non-empty list")
+    order = {step_id: index for index, step_id in enumerate(step_ids)}
+    transitions: list[dict[str, str]] = []
+    prior = initial
+    previous_index = -1
+    for index, raw in enumerate(raw_transitions):
+        field = f"stateModel.transitions[{index}]"
+        if not isinstance(raw, dict):
+            raise RuntimeError(f"{field} must be an object")
+        normalized = {
+            name: str(raw.get(name) or "").strip()
+            for name in (
+                "stepId",
+                "from",
+                "to",
+                "operation",
+                "authorityBefore",
+                "authorityAfter",
+                "ownershipBefore",
+                "ownershipAfter",
+                "invariant",
+            )
+        }
+        missing = [name for name, content in normalized.items() if not content]
+        if missing:
+            raise RuntimeError(f"{field} is missing: {', '.join(missing)}")
+        if normalized["stepId"] not in order:
+            raise RuntimeError(f"{field}.stepId does not name a protocol step")
+        if order[normalized["stepId"]] <= previous_index:
+            raise RuntimeError("state transitions must follow protocol step order")
+        if normalized["from"] != prior:
+            raise RuntimeError(
+                f"{field}.from must continue state {prior!r}"
+            )
+        previous_index = order[normalized["stepId"]]
+        prior = normalized["to"]
+        transitions.append(normalized)
+    raw_pairs = value.get("requiredTransitionPairs")
+    if not isinstance(raw_pairs, list) or not raw_pairs:
+        raise RuntimeError("stateModel.requiredTransitionPairs must be non-empty")
+    pairs: list[list[str]] = []
+    for index, pair in enumerate(raw_pairs):
+        if (
+            not isinstance(pair, list)
+            or len(pair) != 2
+            or not all(isinstance(item, str) and item.strip() for item in pair)
+        ):
+            raise RuntimeError(
+                f"stateModel.requiredTransitionPairs[{index}] must be [from, to]"
+            )
+        pairs.append([pair[0].strip(), pair[1].strip()])
+    preserve = value.get("reductionMustPreserve")
+    if not isinstance(preserve, list) or not preserve or not all(
+        isinstance(item, str) and item.strip() for item in preserve
+    ):
+        raise RuntimeError("stateModel.reductionMustPreserve must be non-empty text")
+    return {
+        "initialState": initial,
+        "transitions": transitions,
+        "requiredTransitionPairs": pairs,
+        "reductionMustPreserve": list(dict.fromkeys(item.strip() for item in preserve)),
+    }
+
+
+def state_trace(
+    state_model: dict[str, Any], retained_steps: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    by_step = {str(step["id"]): step for step in retained_steps}
+    trace: list[dict[str, Any]] = []
+    exercised: set[tuple[str, str]] = set()
+    for transition in state_model["transitions"]:
+        passed = bool(by_step[transition["stepId"]]["passed"])
+        record = {**transition, "exercised": passed}
+        trace.append(record)
+        if passed:
+            exercised.add((transition["from"], transition["to"]))
+    required = [tuple(pair) for pair in state_model["requiredTransitionPairs"]]
+    missing = [list(pair) for pair in required if pair not in exercised]
+    coverage = {
+        "declared": [list(pair) for pair in required],
+        "exercised": [list(pair) for pair in sorted(exercised)],
+        "missing": missing,
+        "passed": not missing,
+    }
+    return trace, coverage
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("campaign", type=Path)
@@ -685,12 +787,14 @@ def main(argv: list[str] | None = None) -> int:
         ids = [str(step.get("id") or "") for step in steps if isinstance(step, dict)]
         if len(ids) != len(steps) or len(set(ids)) != len(ids) or not all(SAFE_ID.fullmatch(value) for value in ids):
             raise RuntimeError("step IDs must be unique safe identifiers")
+        state_model = validate_state_model(spec.get("stateModel"), ids)
         output = args.output.expanduser().resolve()
         if output.exists() and any(output.iterdir()):
             raise RuntimeError("output directory must be empty")
         output.mkdir(parents=True, exist_ok=True)
         runner = SequenceRunner(root, spec_path, spec, output)
         retained_steps = [runner.run_step(step) for step in steps]
+        trace, transition_coverage = state_trace(state_model, retained_steps)
         session_summary = {
             name: {
                 "role": value.get("role"),
@@ -710,8 +814,19 @@ def main(argv: list[str] | None = None) -> int:
             "harness": {"path": str(Path(__file__).resolve()), "sha256": sha256_file(Path(__file__).resolve())},
             "targets": spec["targets"],
             "steps": retained_steps,
+            "stateTrace": trace,
+            "transitionCoverage": transition_coverage,
+            "reductionContract": {
+                "mustPreserve": state_model["reductionMustPreserve"],
+                "historySensitive": bool(state_model["transitions"]),
+            },
             "sessions": session_summary,
-            "status": "passed" if all(step["passed"] for step in retained_steps) else "failed",
+            "status": (
+                "passed"
+                if all(step["passed"] for step in retained_steps)
+                and transition_coverage["passed"]
+                else "failed"
+            ),
         }
         write_json(output / "protocol-run.json", result)
         print(output / "protocol-run.json")

@@ -199,6 +199,67 @@ class HarnessTests(unittest.TestCase):
             }
         }
 
+    @staticmethod
+    def chain_contract(identifier: str) -> dict[str, object]:
+        progress = {
+            "milestones": ["invariant-violation-reproduced"],
+            "resolvedPreconditions": ["attacker input reaches the producer"],
+            "falsifiedPreconditions": [],
+            "connectedPrimitives": [],
+            "uncertaintiesResolved": ["the producer and consumer disagree"],
+        }
+        context = {
+            "principal": "attacker",
+            "process": "target",
+            "namespace": "application",
+            "runtime": "production",
+        }
+        constraints = {
+            "lifetime": [],
+            "ordering": [],
+            "deployment": ["production artifact"],
+            "acquisition": ["public input"],
+            "requiredState": [],
+            "providedState": ["producer-reached"],
+        }
+        capability = {
+            "type": "controlled-value-domain-disagreement",
+            "properties": ["attacker-shaped"],
+            "limitations": [],
+            "forbiddenLimitations": [],
+        }
+        return {
+            "criticalBoundary": {
+                "id": f"boundary-{identifier}",
+                "operation": "data-to-executable-behavior",
+                "eventualImpact": "attacker-controlled code execution in the target process",
+                "intermediateCapability": "deliver an attacker-shaped value to a code-selection consumer",
+                "requiredCapabilities": [capability],
+                "context": context,
+                "constraints": constraints,
+                "sourceEvidence": ["src/consumer.cc:1"],
+            },
+            "capabilityModel": {
+                "id": f"primitive-{identifier}",
+                "attackerControlledInputs": ["request bytes"],
+                "produces": [capability],
+                "requires": [],
+                "context": context,
+                "constraints": constraints,
+                "stateSequence": {
+                    "initialState": "fresh",
+                    "transitions": [],
+                    "reductionMustPreserve": [],
+                },
+                "sourceEvidence": ["src/consumer.cc:1"],
+                "runtimeEvidence": [],
+                "progress": progress,
+                "negativeKnowledge": [],
+            },
+            "chainProgress": progress,
+            "negativeKnowledge": [],
+        }
+
     @classmethod
     def valid_replay_result(
         cls,
@@ -841,6 +902,7 @@ class HarnessTests(unittest.TestCase):
             evidence = campaign / "evidence" / "invariant-observation.json"
             evidence.write_text('{"producer":"wide","consumer":"narrow"}\n')
             lead = {
+                **self.chain_contract("invariant"),
                 "kind": "invariant-break",
                 "title": "Producer and consumer disagree on the value domain",
                 "status": "active",
@@ -878,6 +940,7 @@ class HarnessTests(unittest.TestCase):
             triage_path = crash_dir / "triage.json"
             triage_path.write_text(json.dumps(triage) + "\n")
             stack_lead = {
+                **self.chain_contract("stack"),
                 "kind": "minimized-stack",
                 "title": "Unique minimized first-fault stack",
                 "status": "active",
@@ -2128,6 +2191,7 @@ class HarnessTests(unittest.TestCase):
                     "round": number,
                     "routes": [
                         {
+                            "criticalBoundary": self.chain_contract("route-ingress")["criticalBoundary"],
                             "id": "route-ingress",
                             "family": "ingress-authority",
                             "title": "Ingress authority route",
@@ -2136,6 +2200,7 @@ class HarnessTests(unittest.TestCase):
                             "incompatibleWith": ["route-parser", "route-memory"],
                         },
                         {
+                            "criticalBoundary": self.chain_contract("route-parser")["criticalBoundary"],
                             "id": "route-parser",
                             "family": "representation-parser",
                             "title": "Representation route",
@@ -2144,6 +2209,7 @@ class HarnessTests(unittest.TestCase):
                             "incompatibleWith": ["route-ingress", "route-memory"],
                         },
                         {
+                            "criticalBoundary": self.chain_contract("route-memory")["criticalBoundary"],
                             "id": "route-memory",
                             "family": "memory-lifetime",
                             "title": "Lifetime route",
@@ -2190,6 +2256,7 @@ class HarnessTests(unittest.TestCase):
                 payload = self.valid_task_result(claim["taskId"])
                 has_intermediate = claim["routeId"] == "route-ingress"
                 payload["routeDevelopment"] = {
+                    "criticalBoundary": self.chain_contract(claim["routeId"])["criticalBoundary"],
                     "routeId": claim["routeId"],
                     "round": 1,
                     "strengths": ["One source-derived invariant is testable."],
@@ -2200,6 +2267,7 @@ class HarnessTests(unittest.TestCase):
                     "intermediateBugs": (
                         [
                             {
+                                **self.chain_contract("ingress-intermediate"),
                                 "id": "IB-INGRESS-1",
                                 "rootCause": "An authority check observes a different representation.",
                                 "primitive": "attacker-controlled privileged state transition",
