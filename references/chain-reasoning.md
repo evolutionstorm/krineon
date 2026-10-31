@@ -39,6 +39,12 @@ capability or state invalidation. Use `key=value`, `key!=value`, or `not:key`
 when lifetime, deployment, or acquisition conditions must express a concrete
 contradiction.
 
+Use chain schema version 2 for strict authority reasoning. Each primitive must
+also record its input type, output authority, attacker acquisition method and
+evidence, measured `successes/attempts`, and unresolved assumptions. An
+unmeasured acquisition or unresolved assumption makes the edge `unknown`; it
+cannot complete a path.
+
 `scripts/chain_reasoning.py` classifies each proposed connection as `feasible`,
 `unknown`, or `impossible`. It explores accumulated execution states instead of
 joining capability labels pairwise. Capabilities and state persist until
@@ -78,6 +84,15 @@ matching experimental scope. Scope includes mechanism, relevant inputs,
 configuration, state, and prerequisite version. A shared producer or consumer
 does not imply a shared falsification. A materially changed scope gets a new
 identity and can reopen investigation without erasing the earlier result.
+`confirmed` is an evidence-bound state: the coordinator must independently run
+the frozen recipe and retain a signed observation whose raw artifacts still
+verify. A worker outcome or a chain milestone cannot confirm an experiment by
+itself. Frontier reconciliation demotes legacy confirmations without a valid
+coordinator replay to `inconclusive` instead of preserving an unsupported fact.
+The frontier may retain a ranked experiment without executing it. It enters the
+runtime queue only after a machine-executable oracle supplies baseline,
+enforcing-negative, and positive cases plus expected observations. This keeps
+missing-link prose from becoming an operational claim.
 
 ## Preserve state history
 
@@ -110,14 +125,17 @@ reference model, with an unknown, allowed, or rejected implementation outcome.
 
 ## Separate observations from claims
 
-Research records have four distinct maturity levels:
+Research records advance through six promotion levels:
 
 1. `observation`: a retained expected-versus-observed difference with no
    required Critical narrative;
-2. `primitive`: an attacker capability with typed requirements and effects;
-3. `chain-hypothesis`: a primitive mapped to an eventual Critical boundary;
-4. `validated-connection`: at least two primitives connected with retained
-   evidence and a jointly feasible execution contract.
+2. `source-supported-mechanism`: scoped def-use and invariant evidence;
+3. `runtime-differential`: a machine-observed disagreement with controls;
+4. `verified-primitive`: an attacker capability with measured requirements and
+   effects;
+5. `compatible-chain-edge`: at least two primitives connected in one feasible
+   execution; and
+6. `complete-terminal`: the filing gate verifies the real Critical effect.
 
 Only the final filing gate may claim a vulnerability. Keeping an observation
 unmapped is preferable to inventing a capability or impact merely to advance a

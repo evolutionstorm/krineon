@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from .semantic_ir import build_semantic_ir
+except ImportError:
+    from semantic_ir import build_semantic_ir
+
 
 PROJECT = Path(__file__).resolve().parents[1]
 RESEARCH_HARNESS = PROJECT / "scripts" / "research_harness.py"
@@ -449,6 +454,53 @@ def assignment_sources(tokens: list[Token], equals_index: int) -> tuple[list[str
     return identifiers, not identifiers
 
 
+def static_import_bindings(
+    tokens: list[Token], import_index: int, specifier_index: int
+) -> list[dict[str, str]]:
+    """Extract conservative ESM local/imported binding pairs."""
+
+    values: list[dict[str, str]] = []
+    cursor = import_index + 1
+    if cursor >= specifier_index or tokens[cursor].kind == "string":
+        return values
+    if tokens[cursor].value == "type":
+        cursor += 1
+    if cursor < specifier_index and tokens[cursor].kind == "identifier":
+        values.append({"imported": "default", "local": tokens[cursor].value})
+        cursor += 1
+        if cursor < specifier_index and tokens[cursor].value == ",":
+            cursor += 1
+    if cursor < specifier_index and tokens[cursor].value == "*":
+        if (
+            cursor + 2 < specifier_index
+            and tokens[cursor + 1].value == "as"
+            and tokens[cursor + 2].kind == "identifier"
+        ):
+            values.append({"imported": "*", "local": tokens[cursor + 2].value})
+        return values
+    if cursor < specifier_index and tokens[cursor].value == "{":
+        cursor += 1
+        while cursor < specifier_index and tokens[cursor].value != "}":
+            if tokens[cursor].value in {",", "type"}:
+                cursor += 1
+                continue
+            if tokens[cursor].kind != "identifier":
+                cursor += 1
+                continue
+            imported = tokens[cursor].value
+            local = imported
+            if (
+                cursor + 2 < specifier_index
+                and tokens[cursor + 1].value == "as"
+                and tokens[cursor + 2].kind == "identifier"
+            ):
+                local = tokens[cursor + 2].value
+                cursor += 2
+            values.append({"imported": imported, "local": local})
+            cursor += 1
+    return values
+
+
 def scan_javascript(
     path: Path,
     root: Path,
@@ -476,6 +528,30 @@ def scan_javascript(
             index += 1
 
     for index, token in enumerate(tokens):
+        if token.value == "=" and index > 0:
+            member, member_start = dotted_name(tokens, index - 1)
+            if "." in member:
+                sources, constant = assignment_sources(tokens, index)
+                facts.append(
+                    fact(
+                        path,
+                        root,
+                        "property-assignment",
+                        tokens[member_start],
+                        {
+                            "targetSymbol": member,
+                            "baseSymbol": member.split(".", 1)[0],
+                            "propertyPath": member.split(".")[1:],
+                            "sourceIdentifiers": sources,
+                            "constantAssignment": constant,
+                            "scopeId": scope_ids[index],
+                            "tokenIndex": index,
+                            "controlPath": control_paths[index],
+                            "classification": classification,
+                            "snippet": statement_snippet(source, token.line),
+                        },
+                    )
+                )
         if (
             token.value == "="
             and index > 0
@@ -516,7 +592,21 @@ def scan_javascript(
                         specifier = tokens[cursor]
                         break
                 if specifier:
-                    facts.append(fact(path, root, "static-import", token, {"specifier": specifier.value, "classification": classification}))
+                    facts.append(
+                        fact(
+                            path,
+                            root,
+                            "static-import",
+                            token,
+                            {
+                                "specifier": specifier.value,
+                                "bindings": static_import_bindings(
+                                    tokens, index, tokens.index(specifier, index + 1, upper)
+                                ),
+                                "classification": classification,
+                            },
+                        )
+                    )
         if token.value == "export":
             upper = min(len(tokens), index + 30)
             for cursor in range(index + 1, upper):
@@ -526,14 +616,52 @@ def scan_javascript(
                     facts.append(fact(path, root, "static-import", token, {"specifier": tokens[cursor + 1].value, "reexport": True, "classification": classification}))
                     break
             cursor = index + 1
+            if cursor < len(tokens) and tokens[cursor].value == "default":
+                local = "<anonymous-default>"
+                symbol_token = tokens[cursor]
+                if cursor + 1 < len(tokens) and tokens[cursor + 1].value in {"function", "class"}:
+                    if cursor + 2 < len(tokens) and tokens[cursor + 2].kind == "identifier":
+                        local = tokens[cursor + 2].value
+                        symbol_token = tokens[cursor + 2]
+                    cursor += 1
+                elif cursor + 1 < len(tokens) and tokens[cursor + 1].kind == "identifier":
+                    local = tokens[cursor + 1].value
+                    symbol_token = tokens[cursor + 1]
+                facts.append(
+                    fact(
+                        path,
+                        root,
+                        "export-symbol",
+                        symbol_token,
+                        {"exported": "default", "local": local, "classification": classification},
+                    )
+                )
             if cursor < len(tokens) and tokens[cursor].value == "async":
                 cursor += 1
             if cursor < len(tokens) and tokens[cursor].value == "function" and cursor + 1 < len(tokens):
                 name = tokens[cursor + 1].value
+                facts.append(
+                    fact(
+                        path,
+                        root,
+                        "export-symbol",
+                        tokens[cursor + 1],
+                        {"exported": name, "local": name, "classification": classification},
+                    )
+                )
                 if name in HTTP_METHODS:
                     facts.append(fact(path, root, "http-handler", tokens[cursor + 1], {"method": name, "classification": classification}))
             if cursor + 1 < len(tokens) and tokens[cursor].value in {"const", "let", "var"}:
                 name = tokens[cursor + 1].value
+                facts.append(
+                    fact(
+                        path,
+                        root,
+                        "export-symbol",
+                        tokens[cursor + 1],
+                        {"exported": name, "local": name, "classification": classification},
+                    )
+                )
                 if name in HTTP_METHODS:
                     facts.append(fact(path, root, "http-handler", tokens[cursor + 1], {"method": name, "classification": classification}))
                 if name in {"runtime", "revalidate", "dynamic", "preferredRegion"}:
@@ -907,7 +1035,11 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
         operations = [
             row for row in source_facts if row["kind"] == "call-operation"
         ]
-        assignments = [row for row in source_facts if row["kind"] == "assignment"]
+        assignments = [
+            row
+            for row in source_facts
+            if row["kind"] in {"assignment", "property-assignment"}
+        ]
         for auth in auth_rows:
             auth_scope = str(auth.get("scopeId") or "module")
             auth_control = tuple(auth.get("controlPath", []))
@@ -1047,11 +1179,65 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
             "targetModule": target,
             "specifier": row.get("specifier"),
             "dynamic": row["kind"] == "dynamic-import",
+            "bindings": row.get("bindings", []),
             "sourceDirective": directives.get(row["source"], {}).get("directive"),
             "targetDirective": directives.get(target or "", {}).get("directive"),
         }
         relation["crossesDirectiveBoundary"] = bool(relation["sourceDirective"] and relation["targetDirective"] and relation["sourceDirective"] != relation["targetDirective"])
         relations.append(relation)
+        if relation["dynamic"] or not target:
+            continue
+        target_exports = {
+            str(value.get("exported"))
+            for value in by_source.get(target, [])
+            if value.get("kind") == "export-symbol" and value.get("exported")
+        }
+        source_calls = [
+            value
+            for value in by_source.get(str(row.get("source") or ""), [])
+            if value.get("kind") == "call-operation"
+        ]
+        for binding in relation["bindings"]:
+            if not isinstance(binding, dict):
+                continue
+            local = str(binding.get("local") or "")
+            imported = str(binding.get("imported") or "")
+            if not local:
+                continue
+            for call in source_calls:
+                callee = str(call.get("callee") or "")
+                if callee != local and not callee.startswith(local + "."):
+                    continue
+                resolved_export = (
+                    callee[len(local) + 1 :].split(".", 1)[0]
+                    if imported == "*" and callee.startswith(local + ".")
+                    else imported
+                )
+                relations.append(
+                    {
+                        "id": stable_id(
+                            "FR",
+                            "cross-module-call",
+                            row["id"],
+                            call["id"],
+                            resolved_export,
+                        ),
+                        "kind": "cross-module-call",
+                        "importFact": row["id"],
+                        "callFact": call["id"],
+                        "sourceModule": row["source"],
+                        "targetModule": target,
+                        "localBinding": local,
+                        "importedSymbol": imported,
+                        "resolvedExport": resolved_export,
+                        "targetExportObserved": resolved_export in target_exports,
+                        "status": (
+                            "statically-linked-export"
+                            if resolved_export in target_exports
+                            else "target-export-runtime-resolution-required"
+                        ),
+                    }
+                )
     adjacency: dict[str, set[str]] = {}
     for relation in relations:
         if relation["kind"] == "module-edge" and relation.get("targetModule"):
@@ -1189,6 +1375,25 @@ def build_relations(root: Path, facts: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def make_hypothesis(kind: str, title: str, fact_ids: list[str], experiment: dict[str, Any]) -> dict[str, Any]:
+    experiment = dict(experiment)
+    experiment.setdefault(
+        "competingExplanations",
+        [
+            {"id": "H1", "claim": "the security-relevant components disagree"},
+            {"id": "H2", "claim": "the selected resource or behavior is intentionally public"},
+            {"id": "H3", "claim": "the observation is an error, fallback, or test artifact"},
+            {"id": "H4", "claim": "a proxy or earlier component caused the observed transformation"},
+        ],
+    )
+    experiment.setdefault(
+        "expectedObservations",
+        {
+            "H1": "the positive differs while the baseline and enforcing negative control agree",
+            "H2": "the anonymous baseline reaches the same resource or authority",
+            "H3": "the positive never reaches the mapped consumer or production artifact",
+            "H4": "the representation changes before the measured checker operation",
+        },
+    )
     identity = stable_id("FH", kind, sorted(set(fact_ids)), experiment)
     return {
         "id": identity,
@@ -1199,6 +1404,42 @@ def make_hypothesis(kind: str, title: str, fact_ids: list[str], experiment: dict
         "runtimeExperiment": experiment,
         "state": "not-executed",
         "conclusion": "none-until-runtime-discriminator",
+    }
+
+
+def normalize_runtime_oracle(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("executable") is not True:
+        raise RuntimeError("runtimeOracle must be an executable object")
+    runner = str(value.get("runner") or "").strip()
+    one_variable = str(value.get("oneVariable") or "").strip()
+    interpreter = str(value.get("automaticInterpreter") or "").strip()
+    if not runner or not one_variable or not interpreter:
+        raise RuntimeError(
+            "runtimeOracle requires runner, oneVariable, and automaticInterpreter"
+        )
+    cases = value.get("cases")
+    if not isinstance(cases, list):
+        raise RuntimeError("runtimeOracle.cases must contain baseline, negative, and positive")
+    case_names = {
+        str(row.get("name")) for row in cases if isinstance(row, dict)
+    }
+    if case_names != {"baseline", "negative", "positive"}:
+        raise RuntimeError("runtimeOracle.cases must be exactly baseline, negative, and positive")
+    expected = value.get("expectedObservations")
+    if not isinstance(expected, dict) or not {"H1", "H2", "H3", "H4"}.issubset(expected):
+        raise RuntimeError("runtimeOracle.expectedObservations requires H1 through H4")
+    if value.get("coordinatorExecution") is not True:
+        raise RuntimeError("runtimeOracle.coordinatorExecution must be true")
+    return {
+        "executable": True,
+        "runner": runner,
+        "oneVariable": one_variable,
+        "automaticInterpreter": interpreter,
+        "coordinatorExecution": True,
+        "cases": cases,
+        "expectedObservations": {key: str(expected[key]) for key in ("H1", "H2", "H3", "H4")},
     }
 
 
@@ -1378,13 +1619,19 @@ def schedule_hypotheses(campaign: Path, hypotheses: list[dict[str, Any]]) -> lis
         raise RuntimeError("--ingest requires an initialized orchestration.db")
     scheduled: list[dict[str, Any]] = []
     for hypothesis in hypotheses:
+        oracle = hypothesis.get("runtimeExperiment", {}).get("executableOracle")
+        if not isinstance(oracle, dict) or oracle.get("executable") is not True:
+            continue
         task_id = "framework-" + hypothesis["id"].split("-", 1)[-1]
+        retained_hypothesis = campaign / "evidence" / "framework-hypotheses" / f"{hypothesis['id']}.json"
+        write_json(retained_hypothesis, hypothesis)
+        retained_reference = retained_hypothesis.relative_to(campaign).as_posix()
         family = APPROACH_FAMILY.get(hypothesis["kind"], "stock-reachability")
         command = [
             sys.executable, str(RESEARCH_HARNESS), "task-add", str(campaign), task_id,
             "--title", hypothesis["title"],
             "--lane", "framework-runtime-hypothesis",
-            "--objective", f"Execute hypothesis {hypothesis['id']} against the pinned production adapter artifact. Retain raw controls and the measured discriminator; a source fact is not a vulnerability verdict.",
+            "--objective", f"Execute the coordinator-owned oracle in {retained_reference} against the pinned production adapter artifact. Retain raw controls and run its automatic interpreter; a source fact is not a vulnerability verdict.",
             "--approach-family", family,
             "--success-criterion", "A production adapter and protocol/browser replay records the stated discriminator and its negative control with source-mapped runtime coverage.",
             "--priority", "520",
@@ -1478,6 +1725,26 @@ def main(argv: list[str] | None = None) -> int:
         )
         relations.extend(source_relations)
         hypotheses = build_hypotheses(facts, relations, int(spec.get("maxHypotheses", 500)))
+        runtime_oracle = normalize_runtime_oracle(spec.get("runtimeOracle"))
+        if runtime_oracle is not None:
+            for hypothesis in hypotheses:
+                hypothesis["runtimeExperiment"]["executableOracle"] = runtime_oracle
+        analysis_run_id = (
+            dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            + "-"
+            + uuid.uuid4().hex[:8]
+        )
+        semantic_ir = build_semantic_ir(
+            {
+                "framework": framework,
+                "runId": analysis_run_id,
+                "facts": facts,
+                "relations": relations,
+            },
+            [],
+        )
+        semantic_ir_path = output / "semantic-ir.json"
+        write_json(semantic_ir_path, semantic_ir)
         scheduled = schedule_hypotheses(campaign_root, hypotheses) if args.ingest else []
         fact_counts: dict[str, int] = {}
         for row in facts:
@@ -1488,7 +1755,7 @@ def main(argv: list[str] | None = None) -> int:
         run = {
             "schemaVersion": 1,
             "producer": "krineon-framework-analysis",
-            "runId": dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:8],
+            "runId": analysis_run_id,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
             "framework": framework,
             "campaignCommit": campaign.get("commit"),
@@ -1513,6 +1780,13 @@ def main(argv: list[str] | None = None) -> int:
             "selection": {key: {"selected": len(value), "omittedByLimit": omitted[key], "patterns": patterns[key]} for key, value in selected.items()},
             "runtimeFiles": inventories,
             "sourceMaps": map_records,
+            "semanticIR": artifact(semantic_ir_path),
+            "semanticIRSummary": {
+                "operations": len(semantic_ir["operations"]),
+                "dataEdges": len(semantic_ir["dataEdges"]),
+                "securityPaths": len(semantic_ir["securityPaths"]),
+                "experimentCandidates": len(semantic_ir["experimentCandidates"]),
+            },
             "facts": facts,
             "factCounts": fact_counts,
             "relations": relations,

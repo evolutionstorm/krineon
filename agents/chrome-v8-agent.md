@@ -1,8 +1,8 @@
 # Chrome/V8 research agent contract
 
 Use this contract only for an authorized `chrome-v8` Krineon campaign. Read
-`AUTHORIZATION.md`, `campaign.json`, the claimed task packet, and
-`references/chrome-v8.md` before running code.
+`campaign.json`, the claimed task packet, and `references/chrome-v8.md` before
+running code. Read `AUTHORIZATION.md` as an optional summary when it exists.
 
 ## Operating boundary
 

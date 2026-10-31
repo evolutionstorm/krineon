@@ -10,7 +10,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.static_analysis_pipeline import parse_z3_spec, select_normalized_leads
+from scripts.static_analysis_pipeline import (
+    parse_z3_spec,
+    select_normalized_leads,
+    source_language_inventory,
+)
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -28,6 +32,21 @@ class StaticAnalysisPipelineTests(unittest.TestCase):
             msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
         )
         return completed
+
+    def test_language_inventory_drives_mandatory_analyzer_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "server.cc").write_text("int main() { return 0; }\n")
+            (root / "src" / "server.h").write_text("int main();\n")
+            (root / "tool.ts").write_text("export const value = 1;\n")
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "ignored.ts").write_text("ignored\n")
+            inventory = source_language_inventory(root)
+            self.assertEqual(inventory["trailmarkLanguage"], "cpp")
+            self.assertEqual(inventory["joernLanguage"], "c")
+            self.assertTrue(inventory["cppcheckCompatible"])
+            self.assertNotIn("ignored.ts", json.dumps(inventory))
 
     @unittest.skipUnless(shutil.which("z3"), "Z3 binary is unavailable")
     def test_z3_solver_emits_concrete_wrap_payloads(self) -> None:

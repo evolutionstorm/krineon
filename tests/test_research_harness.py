@@ -13,8 +13,13 @@ from pathlib import Path
 
 from tests.path_proof_fixture import install_machine_path_evidence
 from scripts.research_harness import (
+    complete_experiment_frontier,
     connect_orchestration,
+    ingest_research_leads,
+    lead_policy,
+    reconcile_experiment_frontier,
     rebuild_campaign_capability_graph,
+    reserve_active_lead_slot,
     schedule_experiment_frontier,
     scoped_negative_matches_experiment,
     validate_research_lead,
@@ -29,6 +34,206 @@ REALITY_RUNNER = PROJECT / "scripts" / "reality_runner.py"
 
 
 class HarnessTests(unittest.TestCase):
+    def test_lead_without_executable_oracle_is_retained_but_not_scheduled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            evidence = campaign / "evidence" / "source-observation.json"
+            evidence.write_text('{"observed":"different"}\n')
+            lead = validate_research_lead(
+                campaign,
+                {
+                    "kind": "observation",
+                    "title": "Two consumers disagree",
+                    "status": "active",
+                    "sourceReferences": ["src/consumer.js:10"],
+                    "evidence": ["evidence/source-observation.json"],
+                    "approachFamilies": ["representation-parser"],
+                    "nextExperiment": "Run the bounded three-case differential.",
+                    "observation": {
+                        "invariant": "both consumers resolve one identity",
+                        "expected": "same identity",
+                        "observed": "different identity",
+                        "reproducible": False,
+                    },
+                },
+            )
+            connection = connect_orchestration(campaign)
+            try:
+                task = connection.execute(
+                    "SELECT * FROM tasks ORDER BY task_id LIMIT 1"
+                ).fetchone()
+                with connection:
+                    ingest_research_leads(
+                        campaign,
+                        connection,
+                        task=task,
+                        worker_id="source-worker",
+                        leads=[lead],
+                    )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) AS count FROM tasks WHERE lane='research-lead-validation'"
+                    ).fetchone()["count"],
+                    0,
+                )
+                payload = json.loads(
+                    connection.execute(
+                        "SELECT payload_json FROM research_leads"
+                    ).fetchone()["payload_json"]
+                )
+                self.assertEqual(
+                    payload["schedulingDecision"]["reason"],
+                    "no machine-executable oracle",
+                )
+            finally:
+                connection.close()
+
+    def test_stronger_lead_replaces_weaker_mechanism_frontier_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            connection = connect_orchestration(campaign)
+            try:
+                seed_task = connection.execute(
+                    "SELECT task_id FROM tasks ORDER BY task_id LIMIT 1"
+                ).fetchone()["task_id"]
+                now = "2026-01-01T00:00:00+00:00"
+                for index in range(3):
+                    payload = {
+                        "mechanismFingerprint": "shared-mechanism",
+                        "promotionLevel": "observation",
+                    }
+                    connection.execute(
+                        "INSERT INTO research_leads(lead_id,semantic_identity,kind,"
+                        "evidence_grade,state,title,payload_json,first_task_id,"
+                        "first_worker_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            f"L{index}",
+                            f"observation:{index}",
+                            "observation",
+                            "observation",
+                            "active",
+                            f"lead {index}",
+                            json.dumps(payload),
+                            seed_task,
+                            "seed-worker",
+                            now,
+                            now,
+                        ),
+                    )
+                admitted, replaced = reserve_active_lead_slot(
+                    connection,
+                    mechanism="shared-mechanism",
+                    promotion="verified-primitive",
+                    policy=lead_policy(connection),
+                )
+                self.assertTrue(admitted)
+                self.assertEqual(len(replaced), 1)
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) AS count FROM research_leads WHERE state='suppressed'"
+                    ).fetchone()["count"],
+                    1,
+                )
+            finally:
+                connection.close()
+
+    def test_confirmed_frontier_requires_coordinator_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            connection = connect_orchestration(campaign)
+            try:
+                task = connection.execute(
+                    "SELECT * FROM tasks ORDER BY task_id LIMIT 1"
+                ).fetchone()
+                self.assertIsNotNone(task)
+                connection.execute(
+                    "INSERT INTO experiment_frontier(frontier_id,experiment_id,"
+                    "graph_version,state,score,payload_json,task_id,outcome_json,"
+                    "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "EF-confirmation-gate",
+                        "confirmation-gate",
+                        1,
+                        "running",
+                        100,
+                        "{}",
+                        task["task_id"],
+                        None,
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "confirmed experiment requires a machine-verified coordinator replay",
+                ):
+                    complete_experiment_frontier(
+                        campaign,
+                        connection,
+                        task=task,
+                        result={
+                            "experimentOutcome": {
+                                "state": "confirmed",
+                                "evidence": ["worker-authored claim"],
+                            }
+                        },
+                        task_outcome="completed",
+                        validated_leads=[],
+                        coordinator_replay=None,
+                    )
+                state = connection.execute(
+                    "SELECT state FROM experiment_frontier WHERE frontier_id=?",
+                    ("EF-confirmation-gate",),
+                ).fetchone()["state"]
+                self.assertEqual(state, "running")
+            finally:
+                connection.close()
+
+    def test_reconcile_demotes_legacy_confirmation_without_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            connection = connect_orchestration(campaign)
+            try:
+                task_id = connection.execute(
+                    "SELECT task_id FROM tasks ORDER BY task_id LIMIT 1"
+                ).fetchone()["task_id"]
+                connection.execute(
+                    "INSERT INTO experiment_frontier(frontier_id,experiment_id,"
+                    "graph_version,state,score,payload_json,task_id,outcome_json,"
+                    "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "EF-legacy-unreplayed",
+                        "legacy-unreplayed",
+                        1,
+                        "confirmed",
+                        100,
+                        "{}",
+                        task_id,
+                        json.dumps({"evidence": ["worker-only"]}),
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
+                reconcile_experiment_frontier(campaign, connection)
+                row = connection.execute(
+                    "SELECT state,outcome_json FROM experiment_frontier WHERE frontier_id=?",
+                    ("EF-legacy-unreplayed",),
+                ).fetchone()
+                self.assertEqual(row["state"], "inconclusive")
+                outcome = json.loads(row["outcome_json"])
+                self.assertFalse(outcome["coordinatorReplayVerified"])
+                self.assertIn("lacked", outcome["reason"])
+            finally:
+                connection.close()
+
     def test_experiment_frontier_advances_past_terminal_top_rank(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaign = self.create_campaign(Path(tmp))
@@ -54,6 +259,21 @@ class HarnessTests(unittest.TestCase):
                     "setupSequence": [],
                     "oracle": "consumer reached",
                     "falsifier": "guard blocks consumer",
+                    "executableOracle": {
+                        "kind": "command-differential",
+                        "runner": "coordinator-owned-frontier-fixture",
+                        "oneVariable": "the exact missing capability",
+                        "cases": [
+                            {"name": "baseline", "input": "baseline"},
+                            {"name": "negative", "input": "restored"},
+                            {"name": "positive", "input": identifier},
+                        ],
+                        "expectedObservations": {
+                            "baseline": "consumer not reached",
+                            "negative": "consumer not reached",
+                            "positive": "consumer reached",
+                        },
+                    },
                     "uncertainty": [],
                     "ranking": {"score": score},
                     "sourceEvidence": ["src/fixture.js:1"],
@@ -87,7 +307,7 @@ class HarnessTests(unittest.TestCase):
                 "UPDATE tasks SET state='completed' WHERE task_id=?", (first_task,)
             )
             connection.execute(
-                "UPDATE experiment_frontier SET state='confirmed' WHERE task_id=?",
+                "UPDATE experiment_frontier SET state='refuted' WHERE task_id=?",
                 (first_task,),
             )
             analysis["scopedNegativeKnowledge"] = [
@@ -120,7 +340,7 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(
                 [(row["experiment_id"], row["state"]) for row in states],
                 [
-                    ("first", "confirmed"),
+                    ("first", "refuted"),
                     ("second", "refuted"),
                     ("third", "running"),
                 ],
@@ -490,7 +710,7 @@ class HarnessTests(unittest.TestCase):
             launch = json.loads((campaign / "launch-plan.json").read_text())
             self.assertEqual(len(launch["tasks"]), 18)
             self.assertTrue((campaign / "tasks" / "wave-1-public-ingress-map.md").is_file())
-            self.assertTrue((campaign / "AUTHORIZATION.md").is_file())
+            self.assertFalse((campaign / "AUTHORIZATION.md").exists())
 
     @unittest.skipUnless(shutil.which("git"), "Git is required for dependency pinning")
     def test_dependency_add_pins_and_provisions_isolated_worktree(self) -> None:
@@ -955,7 +1175,7 @@ class HarnessTests(unittest.TestCase):
             self.assertTrue(Path(assignment["workspace"]).is_dir())
             self.assertTrue((Path(assignment["workspace"]) / "KRINEON_ASSIGNMENT.json").is_file())
             self.assertTrue((Path(assignment["workspace"]) / "KRINEON_CAMPAIGN.json").is_file())
-            self.assertTrue((Path(assignment["workspace"]) / "AUTHORIZATION.md").is_file())
+            self.assertFalse((Path(assignment["workspace"]) / "AUTHORIZATION.md").exists())
             self.assertTrue(
                 (Path(assignment["workspace"]) / "KRINEON_TASK_RESULT.template.json").is_file()
             )
@@ -995,6 +1215,47 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(wave_one.stdout)["lane"], "public-ingress-map"
             )
+
+    def test_worker_allocation_reserves_turn_for_less_loaded_active_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign), "--max-concurrency", "2")
+            self.run_cli("queue", str(campaign))
+            for worker, agent in (("worker-a", "codex:a"), ("worker-b", "codex:b")):
+                self.run_cli(
+                    "worker-register",
+                    str(campaign),
+                    worker,
+                    "--agent",
+                    agent,
+                )
+            with sqlite3.connect(campaign / "orchestration.db") as connection:
+                for index in range(1):
+                    connection.execute(
+                        "INSERT INTO submissions(idempotency_key,task_id,worker_id,digest,"
+                        "result_path,outcome,submitted_at) VALUES(?,?,?,?,?,?,?)",
+                        (
+                            f"historic-{index}",
+                            "coordinator-setup",
+                            "worker-a",
+                            str(index) * 64,
+                            f"results/historic-{index}.json",
+                            "completed",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                connection.commit()
+            held = json.loads(
+                self.run_cli(
+                    "claim", str(campaign), "worker-a", "--json", expected=3
+                ).stdout
+            )
+            self.assertEqual(held["reason"], "fairness-turn-reserved")
+            self.assertEqual(held["workerAllocation"]["preferredAgents"], ["codex:b"])
+            claimed = json.loads(
+                self.run_cli("claim", str(campaign), "worker-b", "--json").stdout
+            )
+            self.assertTrue(claimed["claimed"])
 
     def test_partial_invariant_lead_is_ranked_deduplicated_and_advances_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1151,6 +1412,18 @@ class HarnessTests(unittest.TestCase):
                 )
                 + "\n"
             )
+            executable_oracle = {
+                "kind": "coordinator-replay",
+                "recipe": replay_recipe.relative_to(campaign).as_posix(),
+                "oneVariable": "the disputed producer/consumer representation",
+                "expectedObservations": {
+                    "baseline": "the challenge is absent",
+                    "negative": "the restoring control keeps the challenge absent",
+                    "positive": "the minimized disputed representation emits the challenge",
+                },
+            }
+            for retained_lead in result["taskResult"]["researchLeads"]:
+                retained_lead["executableOracle"] = executable_oracle
             result["taskResult"]["coordinatorReplay"] = {
                 "recipe": replay_recipe.relative_to(campaign).as_posix(),
                 "repetitions": 1,
@@ -1411,10 +1684,6 @@ class HarnessTests(unittest.TestCase):
                 "--commit",
                 "a" * 40,
             )
-            record = json.loads((campaign / "campaign.json").read_text())
-            record["authorization"]["confirmed"] = True
-            record["authorization"]["basis"] = "owned gate fixture"
-            (campaign / "campaign.json").write_text(json.dumps(record) + "\n")
             self.run_cli("plan", str(campaign))
             self.run_cli("queue", str(campaign))
             self.run_cli(
@@ -1824,13 +2093,17 @@ class HarnessTests(unittest.TestCase):
             )
             self.run_cli("plan", str(campaign))
             self.run_cli("queue", str(campaign))
+            with connect_orchestration(campaign) as queued:
+                controlled_task_id = queued.execute(
+                    "SELECT task_id FROM tasks ORDER BY task_id LIMIT 1"
+                ).fetchone()["task_id"]
             recipe = campaign / "evidence" / "recipes" / "controlled-task.json"
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text(
                 json.dumps(
                     {
                         "schemaVersion": 1,
-                        "findingId": "controlled-task",
+                        "findingId": controlled_task_id,
                         "targetArtifacts": [target_name],
                         "subjectArtifact": target_name,
                         "subjectArgvIndex": 1,
@@ -1881,13 +2154,53 @@ class HarnessTests(unittest.TestCase):
                         }
                     }
                 },
-                "controlled-task",
+                controlled_task_id,
                 [],
             )
             self.assertIsNotNone(controlled)
             finding = {"controlledExperiments": [controlled]}
             self.assertTrue(
                 controlled_experiment_is_machine_verified(campaign, finding)
+            )
+            connection = connect_orchestration(campaign)
+            connection.execute(
+                "INSERT INTO experiment_frontier(frontier_id,experiment_id,"
+                "graph_version,state,score,payload_json,task_id,outcome_json,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "EF-controlled-confirmation",
+                    "controlled-confirmation",
+                    1,
+                    "running",
+                    100,
+                    "{}",
+                    controlled_task_id,
+                    None,
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
+            complete_experiment_frontier(
+                campaign,
+                connection,
+                task={"task_id": controlled_task_id},
+                result={
+                    "experimentOutcome": {
+                        "state": "confirmed",
+                        "evidence": ["coordinator-controlled observation"],
+                    }
+                },
+                task_outcome="completed",
+                validated_leads=[],
+                coordinator_replay=controlled,
+            )
+            confirmed = connection.execute(
+                "SELECT state,outcome_json FROM experiment_frontier WHERE frontier_id=?",
+                ("EF-controlled-confirmation",),
+            ).fetchone()
+            self.assertEqual(confirmed["state"], "confirmed")
+            self.assertTrue(
+                json.loads(confirmed["outcome_json"])["coordinatorReplayVerified"]
             )
             observation = json.loads(
                 (campaign / controlled["controlledObservation"]).read_text()
@@ -1897,6 +2210,13 @@ class HarnessTests(unittest.TestCase):
             self.assertFalse(
                 controlled_experiment_is_machine_verified(campaign, finding)
             )
+            reconcile_experiment_frontier(campaign, connection)
+            repaired = connection.execute(
+                "SELECT state FROM experiment_frontier WHERE frontier_id=?",
+                ("EF-controlled-confirmation",),
+            ).fetchone()
+            self.assertEqual(repaired["state"], "inconclusive")
+            connection.close()
 
     def test_replay_excludes_agent_aliases_and_worker_identity_is_immutable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2186,7 +2506,7 @@ class HarnessTests(unittest.TestCase):
             self.run_cli("queue", str(campaign))
             for worker, agent in (
                 ("worker-a", "codex:a"),
-                ("worker-a-alias", "codex:a"),
+                ("worker-a-alias", "codex:b"),
                 ("worker-b", "codex:b"),
                 ("worker-c", "codex:c"),
                 ("worker-d", "codex:d"),
@@ -2211,8 +2531,14 @@ class HarnessTests(unittest.TestCase):
                 "--idempotency-key",
                 "setup-priority-test",
             )
+            held = json.loads(
+                self.run_cli(
+                    "claim", str(campaign), "worker-a", "--json", expected=3
+                ).stdout
+            )
+            self.assertEqual(held["reason"], "fairness-turn-reserved")
             first = json.loads(
-                self.run_cli("claim", str(campaign), "worker-a", "--json").stdout
+                self.run_cli("claim", str(campaign), "worker-b", "--json").stdout
             )
             self.assertEqual(first["taskId"], "public-ingress-map")
             refused = json.loads(
@@ -2224,14 +2550,14 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(refused["reason"], "agent-already-holds-running-task")
             self.assertEqual(refused["taskId"], "public-ingress-map")
             second = json.loads(
-                self.run_cli("claim", str(campaign), "worker-b", "--json").stdout
+                self.run_cli("claim", str(campaign), "worker-c", "--json").stdout
             )
             self.assertEqual(second["taskId"], "execution-sink-backtrace")
             third = json.loads(
-                self.run_cli("claim", str(campaign), "worker-c", "--json").stdout
+                self.run_cli("claim", str(campaign), "worker-d", "--json").stdout
             )
             self.assertEqual(third["taskId"], "capability-code-loading-invariants")
-            self.run_cli("claim", str(campaign), "worker-d", "--json", expected=3)
+            self.run_cli("claim", str(campaign), "worker-a", "--json", expected=3)
             capped = json.loads(
                 self.run_cli("orchestration-status", str(campaign), "--json").stdout
             )["schedulerDemand"]

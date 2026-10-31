@@ -1,7 +1,8 @@
 # Program-guidelines intake
 
-Use this workflow when the researcher supplies program rules and scope instead
-of a prepared campaign.
+Use this optional workflow when the researcher supplies program rules and scope
+instead of, or in addition to, a prepared source campaign. Source-only analysis
+does not require intake or an `AUTHORIZATION.md` file.
 
 ## Intake contract
 
@@ -47,6 +48,10 @@ Without `--confirm-authorization`, the plan and durable queue are still
 created, but dynamic execution stays disabled. Without a unique repository,
 the setup task receives `pending-source-repository` and `pending-pin`; it must
 resolve both before runtime work.
+
+Pass `--authorization-record` only when a human-readable `AUTHORIZATION.md`
+summary is useful. Structured authorization in `campaign.json`, not the
+presence of that file, controls dynamic and live actions.
 
 ## Agent behavior
 

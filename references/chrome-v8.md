@@ -36,9 +36,10 @@ python3 scripts/research_harness.py plan CAMPAIGN \
 python3 scripts/research_harness.py queue CAMPAIGN
 ```
 
-Edit `AUTHORIZATION.md` and `campaign.json` before dynamic execution. Dynamic
-commands refuse campaigns without `authorization.confirmed: true` and a named
-allowed environment.
+Set structured authorization in `campaign.json` before dynamic execution. An
+optional `AUTHORIZATION.md` may summarize it, but does not control execution.
+Dynamic commands refuse campaigns without `authorization.confirmed: true` and
+a named allowed environment.
 
 The official V8 build flow uses `gclient sync`, platform build dependencies,
 and `tools/dev/gm.py`; `d8` is V8's developer shell. Record the commands and GN

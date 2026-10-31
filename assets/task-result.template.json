@@ -68,7 +68,23 @@
         "sourceReferences": ["pinned source, assertion, or test reference"],
         "evidence": ["campaign-relative retained evidence file"],
         "approachFamilies": ["one registered semantic family"],
+        "mechanismFingerprint": "stable-boundary-mechanism-id",
         "nextExperiment": "The cheapest experiment that distinguishes competing explanations",
+        "executableOracle": {
+          "kind": "http-differential",
+          "runner": "owned production HTTP adapter",
+          "oneVariable": "one request representation",
+          "cases": [
+            {"name": "baseline", "request": {"method": "GET", "path": "/control"}},
+            {"name": "negative", "request": {"method": "GET", "path": "/protected"}},
+            {"name": "positive", "request": {"method": "GET", "path": "/candidate"}}
+          ],
+          "expectedObservations": {
+            "baseline": "public control response",
+            "negative": "security boundary enforces rejection",
+            "positive": "candidate observation that distinguishes the hypotheses"
+          }
+        },
         "negativeKnowledge": [],
         "observation": {
           "invariant": "the target-owned rule expected to hold",
@@ -93,7 +109,9 @@
         ],
         "evidence": ["campaign-relative retained evidence file"],
         "approachFamilies": ["one registered semantic family"],
+        "mechanismFingerprint": "stable-producer-consumer-mechanism",
         "nextExperiment": "The smallest experiment that improves or falsifies this lead",
+        "executableOracle": null,
         "criticalBoundary": {
           "id": "eventual-critical-boundary",
           "operation": "data-to-executable-behavior",

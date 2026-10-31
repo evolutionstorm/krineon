@@ -19,6 +19,13 @@ versus executor, interpreter versus optimizing tier, parser versus re-parser,
 copy versus zero-copy consumer, synchronous versus deferred path, or owner
 versus concurrent consumer.
 
+The static pipeline invokes every installed compatible core analyzer:
+Trailmark for structure and entry points, Joern for CPG construction, cppcheck
+for C/C++ diagnostics, and Z3 for supplied source-bound constraints. An
+installed tool may be marked not applicable only after the pipeline exercises
+its capability and records why the target or current hypothesis does not fit.
+Missing specifications never permit a fabricated model.
+
 Their inventories and graphs remain researcher notes. The former syntax census
 and bundled Joern queries were removed because they did not produce executable
 differentials or improve the measured search vector.

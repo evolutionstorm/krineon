@@ -67,7 +67,7 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
         )
         self.assertTrue(flows[0]["defUseChecks"]["sameLexicalFunction"])
 
-    def test_ingest_is_idempotent_and_schedules_runtime_validation_only(self) -> None:
+    def test_ingest_requires_executable_oracle_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             campaign = root / "campaign"
@@ -125,9 +125,44 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
                 )
                 + "\n"
             )
+            completed = subprocess.run(
+                [sys.executable, str(PIPELINE), str(campaign), str(spec), str(campaign / "analysis-no-oracle"), "--ingest"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            with sqlite3.connect(campaign / "orchestration.db") as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE lane = ?",
+                        ("framework-runtime-hypothesis",),
+                    ).fetchone()[0],
+                    0,
+                )
+            spec_value = json.loads(spec.read_text())
+            spec_value["runtimeOracle"] = {
+                "executable": True,
+                "runner": "owned production adapter",
+                "oneVariable": "request representation",
+                "automaticInterpreter": "compare mapped runtime identities",
+                "coordinatorExecution": True,
+                "cases": [
+                    {"name": "baseline", "request": "protected control"},
+                    {"name": "negative", "request": "invariant-restored control"},
+                    {"name": "positive", "request": "one disputed representation"},
+                ],
+                "expectedObservations": {
+                    "H1": "only the positive reaches a different resource",
+                    "H2": "the baseline is also public",
+                    "H3": "the positive never reaches the mapped consumer",
+                    "H4": "the value changes before the measured checker",
+                },
+            }
+            spec.write_text(json.dumps(spec_value) + "\n")
             for index in range(2):
                 completed = subprocess.run(
-                    [sys.executable, str(PIPELINE), str(campaign), str(spec), str(campaign / f"analysis-{index}"), "--ingest"],
+                    [sys.executable, str(PIPELINE), str(campaign), str(spec), str(campaign / f"analysis-with-oracle-{index}"), "--ingest"],
                     check=False,
                     capture_output=True,
                     text=True,
@@ -186,6 +221,14 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
             (react / "src" / "client.tsx").write_text("'use client';\nexport const Client = () => 'ok';\n")
             react_record = self.run_pipeline(root, "react", react, ["src/**/*.tsx"])
             self.assertTrue(any(row.get("crossesDirectiveBoundary") for row in react_record["relations"]))
+            linked_calls = [
+                row
+                for row in react_record["relations"]
+                if row.get("kind") == "cross-module-call"
+            ]
+            self.assertEqual(len(linked_calls), 1)
+            self.assertEqual(linked_calls[0]["resolvedExport"], "Client")
+            self.assertEqual(linked_calls[0]["status"], "statically-linked-export")
             self.assertIn("directive-boundary", {row["kind"] for row in react_record["hypotheses"]})
 
             node = root / "node-project"
@@ -320,6 +363,10 @@ class FrameworkAnalysisPipelineTests(unittest.TestCase):
             self.assertFalse(record["analysisContract"]["vulnerabilityVerdictsProduced"])
             self.assertTrue(record["analysisContract"]["runtimeValidationRequired"])
             self.assertEqual(record["parser"]["kind"], "structural-javascript-tokenizer")
+            semantic_ir = json.loads((output / "semantic-ir.json").read_text())
+            self.assertEqual(semantic_ir["sourceAnalysisRunId"], record["runId"])
+            self.assertTrue(semantic_ir["controlFlowGraphs"])
+            self.assertTrue(semantic_ir["requestRepresentationEdges"])
             middleware_relations = [
                 row
                 for row in record["relations"]

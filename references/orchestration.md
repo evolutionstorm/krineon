@@ -18,7 +18,10 @@ frozen local target and must reject the worker's claimed positive observation.
 `worker-register` blocks scale-out until that machine gate passes. Runtime
 leads later require their own `taskResult.coordinatorReplay`; the coordinator
 executes the frozen artifact itself and ignores a worker-supplied `passed`
-label.
+label. The same rule governs the durable experiment frontier. A transition to
+`confirmed` stores the coordinator replay record and revalidates its signature,
+hashes, raw outputs, and task identity. Missing or damaged replay evidence
+leaves the experiment `inconclusive`.
 
 Submission uses a separate `verifying` state. The scheduler commits that state
 and releases its SQLite write lock before coordinator re-execution. Claims,
@@ -156,11 +159,16 @@ python3 scripts/research_harness.py claim CAMPAIGN worker-a --json
 The claim returns a task packet, isolated workspace, attempt number, lease
 token, expiry, and timeout. The lease token is a capability and must not be
 placed in public evidence. Long-running workers renew it with `heartbeat`.
+Claims are balanced by immutable agent identity and accepted-submission count.
+When another recently active, eligible agent is less loaded, the scheduler
+reserves that turn instead of allowing one fast-polling worker or alias to
+consume the queue. Stale workers age out of the fairness window.
 
 If the campaign records `localCheckout`, the scheduler creates a detached Git
 worktree at the pinned commit. Otherwise it creates a distinct empty workspace.
-Every workspace receives the task and assignment, campaign and authorization
-records, the Critical/RCE reference, and `KRINEON_TASK_RESULT.template.json`.
+Every workspace receives the task and assignment, campaign record, Critical/RCE
+reference, and `KRINEON_TASK_RESULT.template.json`. It receives
+`AUTHORIZATION.md` only when the optional summary exists.
 An external runtime adapter may hydrate that directory but must not share
 another worker's tree.
 
@@ -415,11 +423,21 @@ Use [assets/agent-handoff.template.md](../assets/agent-handoff.template.md).
 
 There are two registries. `research_leads` in `orchestration.db` stores unique
 observations, minimized stacks, invariant breaks, and verified primitives.
-Each record separately states whether it is an observation, primitive, chain
-hypothesis, or validated connection. An observation does not need an immediate
+Each record advances through observation, source-supported mechanism, runtime
+differential, verified primitive, compatible chain edge, and complete terminal.
+An observation does not need an immediate
 Critical-boundary narrative. Typed records also feed the versioned campaign
 capability graph, which ranks shared missing-link experiments across routes.
-Those records advance through focused experiments without satisfying candidate gates.
+Those records advance through focused experiments without satisfying candidate
+gates. Only leads with a machine-executable baseline/negative/positive oracle
+enter the runtime queue.
+
+The default active frontier is capped at 25 leads, three active leads per
+mechanism, three experiments per mechanism, and one queued or running
+experiment per mechanism. A stronger promotion may suppress a weaker active
+lead, but never deletes its evidence. Prose and source-only leads expire after
+seven days without measurable promotion. Repeated equivalent observations add
+no experiment budget.
 `registry.json` stores candidate findings only after a plausible complete chain
 exists. Never create or embellish a finding merely to preserve partial search
 output.

@@ -20,6 +20,12 @@ BOUNDARY_OPERATIONS = {
     "managed-native-ownership-crossing",
     "lower-trust-to-higher-trust-execution",
     "program-defined-critical-authority",
+    "process-code-execution",
+    "sandbox-capability-acquisition",
+    "cross-tenant-authorization",
+    "arbitrary-server-module-loading",
+    "privileged-filesystem-network-authority",
+    "cryptographic-signing-other-identity",
 }
 
 PROGRESS_MILESTONES = {
@@ -372,6 +378,9 @@ def normalize_boundary(value: Any, field: str = "criticalBoundary") -> dict[str,
     return {
         "id": require_text(value.get("id", operation), f"{field}.id"),
         "operation": operation,
+        "terminalClass": require_text(
+            value.get("terminalClass", operation), f"{field}.terminalClass"
+        ),
         "eventualImpact": require_text(
             value.get("eventualImpact"), f"{field}.eventualImpact"
         ),
@@ -394,7 +403,9 @@ def normalize_boundary(value: Any, field: str = "criticalBoundary") -> dict[str,
     }
 
 
-def normalize_primitive(value: Any, field: str = "primitive") -> dict[str, Any]:
+def normalize_primitive(
+    value: Any, field: str = "primitive", *, strict_authority: bool = False
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{field} must be an object")
     produces = value.get("produces")
@@ -406,7 +417,33 @@ def normalize_primitive(value: Any, field: str = "primitive") -> dict[str, Any]:
     maximum_executions = int(value.get("maxExecutions", 1))
     if not 1 <= maximum_executions <= 16:
         raise RuntimeError(f"{field}.maxExecutions must be between 1 and 16")
-    return {
+    acquisition = value.get("acquisition")
+    reliability = value.get("reliability")
+    unresolved = value.get("unresolvedAssumptions", [])
+    if strict_authority:
+        if not isinstance(acquisition, dict):
+            raise RuntimeError(f"{field}.acquisition is required in strict authority mode")
+        if not isinstance(reliability, dict):
+            raise RuntimeError(f"{field}.reliability is required in strict authority mode")
+        require_text(value.get("inputType"), f"{field}.inputType")
+        require_text(value.get("outputAuthority"), f"{field}.outputAuthority")
+    if acquisition is None:
+        acquisition = {
+            "method": "unspecified",
+            "attackerAccessible": None,
+            "evidence": [],
+        }
+    if not isinstance(acquisition, dict):
+        raise RuntimeError(f"{field}.acquisition must be an object")
+    if reliability is None:
+        reliability = {"successes": 0, "attempts": 0, "evidence": []}
+    if not isinstance(reliability, dict):
+        raise RuntimeError(f"{field}.reliability must be an object")
+    successes = int(reliability.get("successes", 0))
+    attempts = int(reliability.get("attempts", 0))
+    if successes < 0 or attempts < 0 or successes > attempts:
+        raise RuntimeError(f"{field}.reliability requires 0 <= successes <= attempts")
+    normalized = {
         "id": require_text(value.get("id"), f"{field}.id"),
         "attackerControlledInputs": require_text_list(
             value.get("attackerControlledInputs", []),
@@ -456,7 +493,32 @@ def normalize_primitive(value: Any, field: str = "primitive") -> dict[str, Any]:
         "measuredCost": normalize_measured_cost(
             value.get("measuredCost"), f"{field}.measuredCost"
         ),
+        "inputType": str(value.get("inputType") or "unspecified"),
+        "outputAuthority": str(value.get("outputAuthority") or "unspecified"),
+        "acquisition": {
+            "method": require_text(acquisition.get("method"), f"{field}.acquisition.method"),
+            "attackerAccessible": acquisition.get("attackerAccessible"),
+            "evidence": require_text_list(
+                acquisition.get("evidence", []),
+                f"{field}.acquisition.evidence",
+                allow_empty=True,
+            ),
+        },
+        "reliability": {
+            "successes": successes,
+            "attempts": attempts,
+            "evidence": require_text_list(
+                reliability.get("evidence", []),
+                f"{field}.reliability.evidence",
+                allow_empty=True,
+            ),
+        },
+        "unresolvedAssumptions": require_text_list(
+            unresolved, f"{field}.unresolvedAssumptions", allow_empty=True
+        ),
+        "strictAuthority": strict_authority,
     }
+    return normalized
 
 
 def capability_match(produced: dict[str, Any], required: dict[str, Any]) -> tuple[bool, str]:
@@ -558,6 +620,25 @@ def connection_assessment(
                 )
     reasons: list[str] = []
     unknown: list[str] = []
+    if producer.get("strictAuthority") and producer.get("unresolvedAssumptions"):
+        unknown.extend(
+            f"producer-assumption:{value}"
+            for value in producer["unresolvedAssumptions"]
+        )
+    acquisition = producer.get("acquisition")
+    if (
+        producer.get("strictAuthority")
+        and isinstance(acquisition, dict)
+        and acquisition.get("attackerAccessible") is not True
+    ):
+        unknown.append("producer-acquisition-not-proved")
+    reliability = producer.get("reliability")
+    if (
+        producer.get("strictAuthority")
+        and isinstance(reliability, dict)
+        and int(reliability.get("attempts", 0)) == 0
+    ):
+        unknown.append("producer-reliability-unmeasured")
     producer_context = (
         producer.get("contextTransition", {}).get("to")
         if producer.get("contextTransition")
@@ -615,6 +696,11 @@ def connection_assessment(
             field: producer_context[field] for field in CONTEXT_FIELDS
         },
         "stateChecks": consumer["constraints"]["requiredState"],
+        "inputType": producer.get("inputType", "unspecified"),
+        "outputAuthority": producer.get("outputAuthority", "unspecified"),
+        "acquisition": producer.get("acquisition"),
+        "reliability": producer.get("reliability"),
+        "unresolvedAssumptions": producer.get("unresolvedAssumptions", []),
     }
 
 
@@ -634,6 +720,7 @@ def boundary_consumer(boundary: dict[str, Any]) -> dict[str, Any]:
         "constraints": boundary["constraints"],
         "objects": boundary["objects"],
         "sourceEvidence": boundary["sourceEvidence"],
+        "terminalClass": boundary["terminalClass"],
     }
 
 
@@ -652,6 +739,17 @@ def execution_check(
 ) -> tuple[str, list[str]]:
     impossible: list[str] = []
     unknown: list[str] = []
+    if consumer.get("strictAuthority"):
+        unknown.extend(
+            f"unresolved-assumption:{value}"
+            for value in consumer.get("unresolvedAssumptions", [])
+        )
+        acquisition = consumer.get("acquisition")
+        if not isinstance(acquisition, dict) or acquisition.get("attackerAccessible") is not True:
+            unknown.append("acquisition:not-proved-attacker-accessible")
+        reliability = consumer.get("reliability")
+        if not isinstance(reliability, dict) or int(reliability.get("attempts", 0)) == 0:
+            unknown.append("reliability:unmeasured")
     attempt = consumer.get("attemptModel")
     if isinstance(attempt, dict):
         if not attempt["attackerCanAttempt"]:
@@ -910,10 +1008,21 @@ def experimental_scope(
 
 
 def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
-    if document.get("schemaVersion") != 1:
-        raise RuntimeError("chain specification requires schemaVersion 1")
+    if document.get("schemaVersion") not in {1, 2}:
+        raise RuntimeError("chain specification requires schemaVersion 1 or 2")
+    strict_authority = bool(
+        document.get("strictAuthorityModel") or document.get("schemaVersion") == 2
+    )
+    executable_oracle = document.get("executableOracle")
+    if executable_oracle is not None and (
+        not isinstance(executable_oracle, dict)
+        or executable_oracle.get("executable") is not True
+    ):
+        raise RuntimeError("executableOracle must be an executable object when supplied")
     primitives = [
-        normalize_primitive(item, f"primitives[{index}]")
+        normalize_primitive(
+            item, f"primitives[{index}]", strict_authority=strict_authority
+        )
         for index, item in enumerate(document.get("primitives", []))
     ]
     boundaries = [
@@ -999,6 +1108,7 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         "boundaries": boundaries,
         "orderingSensitive": sorted(ordering_sensitive),
         "executionLimits": execution_limits,
+        "strictAuthorityModel": strict_authority,
     }
     search_digest = hashlib.sha256(
         json.dumps(
@@ -1406,6 +1516,9 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         for row in primitives
         for item in row["negativeKnowledge"]
     ]
+    if isinstance(executable_oracle, dict):
+        for experiment in experiments:
+            experiment["executableOracle"] = executable_oracle
     return {
         "schemaVersion": 1,
         "producer": "krineon-chain-reasoner",
@@ -1453,7 +1566,15 @@ def write_json(path: Path, value: Any) -> None:
 def schedule_focus(campaign: Path, analysis_path: Path, analysis: dict[str, Any]) -> str | None:
     if not analysis.get("focusEligible") or not analysis.get("missingLinkExperiments"):
         return None
-    experiment = analysis["missingLinkExperiments"][0]
+    candidates = [
+        value
+        for value in analysis["missingLinkExperiments"]
+        if isinstance(value.get("executableOracle"), dict)
+        and value["executableOracle"].get("executable") is True
+    ]
+    if not candidates:
+        return None
+    experiment = candidates[0]
     digest = hashlib.sha256(
         json.dumps(experiment, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:16]
@@ -1490,6 +1611,9 @@ def schedule_focus(campaign: Path, analysis_path: Path, analysis: dict[str, Any]
             packet.read_text(encoding="utf-8")
             + "\n## Typed chain evidence\n\n"
             + f"Analysis: `{analysis_path.relative_to(campaign).as_posix()}`\n\n"
+            + "Executable oracle:\n\n```json\n"
+            + json.dumps(experiment["executableOracle"], indent=2, sort_keys=True)
+            + "\n```\n\n"
             + "The coordinator unlocked bounded focus because retained evidence improved the chain graph. "
             + "Test only the named producer-consumer compatibility and retain a scoped negative if it fails.\n",
             encoding="utf-8",

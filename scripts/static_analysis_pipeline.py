@@ -36,6 +36,32 @@ ALLOWED_FAMILIES = {
     "dependency-integration",
 }
 
+MANDATORY_AVAILABLE_TOOLS = ("trailmark", "joern", "z3", "cppcheck")
+SOURCE_SUFFIXES: dict[str, tuple[str, str | None]] = {
+    ".py": ("python", "python"),
+    ".js": ("javascript", "javascript"),
+    ".jsx": ("javascript", "javascript"),
+    ".mjs": ("javascript", "javascript"),
+    ".cjs": ("javascript", "javascript"),
+    ".ts": ("javascript", "javascript"),
+    ".tsx": ("javascript", "javascript"),
+    ".c": ("c", "c"),
+    ".h": ("c", "c"),
+    ".cc": ("cpp", "c"),
+    ".cpp": ("cpp", "c"),
+    ".cxx": ("cpp", "c"),
+    ".hpp": ("cpp", "c"),
+    ".hh": ("cpp", "c"),
+    ".rs": ("rust", "rust"),
+    ".go": ("go", "golang"),
+    ".java": ("java", "java"),
+    ".swift": ("swift", "swiftsrc"),
+}
+IGNORED_SOURCE_PARTS = {
+    ".git", ".next", "build", "dist", "node_modules", "target", "vendor",
+    "worktrees", "third_party",
+}
+
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
@@ -104,6 +130,49 @@ def command_record(
             "stdout": stdout_path.name,
             "stderr": stderr_path.name,
         }
+
+
+def source_language_inventory(source: Path) -> dict[str, Any]:
+    """Infer analyzer languages without pretending mixed-language trees are uniform."""
+    counts: dict[str, int] = {}
+    candidates = [source] if source.is_file() else source.rglob("*")
+    inspected = 0
+    for path in candidates:
+        if inspected >= 100_000:
+            break
+        if not path.is_file() or any(part in IGNORED_SOURCE_PARTS for part in path.parts):
+            continue
+        inspected += 1
+        suffix = path.suffix.lower()
+        if suffix in SOURCE_SUFFIXES:
+            counts[suffix] = counts.get(suffix, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    primary_suffix = ranked[0][0] if ranked else None
+    trailmark = SOURCE_SUFFIXES[primary_suffix][0] if primary_suffix else None
+    joern = SOURCE_SUFFIXES[primary_suffix][1] if primary_suffix else None
+    cpp_files = sum(
+        count
+        for suffix, count in counts.items()
+        if suffix in {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"}
+    )
+    return {
+        "filesInspected": inspected,
+        "suffixCounts": dict(ranked),
+        "primarySuffix": primary_suffix,
+        "trailmarkLanguage": trailmark,
+        "joernLanguage": joern,
+        "cppcheckCompatible": cpp_files > 0,
+    }
+
+
+def not_applicable_tool(name: str, reason: str, capability: dict[str, Any]) -> dict[str, Any]:
+    """Retain an honest applicability result after exercising an installed tool."""
+    return {
+        "name": name,
+        "status": "not-applicable" if capability["status"] == "completed" else capability["status"],
+        "reason": reason,
+        "capabilityCheck": capability,
+    }
 
 
 def stable_lead_id(tool: str, kind: str, location: str, title: str) -> str:
@@ -320,7 +389,13 @@ def run_pipeline(args: argparse.Namespace) -> int:
         raise RuntimeError(f"not a Krineon campaign: {campaign_root}")
     campaign = read_json(campaign_path)
     source = resolve_source(campaign, args.source)
-    selected = set(args.tool or ("trailmark", "differential", "z3"))
+    # Installed first-principles analyzers are mandatory campaign instrumentation.
+    # --tool can add a differential lane, but it cannot silently disable an
+    # available structural or constraint analyzer.
+    selected = set(MANDATORY_AVAILABLE_TOOLS)
+    selected.update(args.tool or ())
+    if args.differential_spec:
+        selected.add("differential")
     run_id = (
         dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
         + uuid.uuid4().hex[:8]
@@ -331,24 +406,49 @@ def run_pipeline(args: argparse.Namespace) -> int:
     run_record_relative = relative_evidence(campaign_root, run_record_path)
     tools: list[dict[str, Any]] = []
     raw_leads: list[tuple[dict[str, Any], list[str]]] = []
+    language_inventory = source_language_inventory(source)
+    explicit_language = str(args.language).strip() if args.language else None
+    trailmark_language = explicit_language or language_inventory["trailmarkLanguage"]
+    joern_language = explicit_language or language_inventory["joernLanguage"]
 
     if "trailmark" in selected:
         executable = shutil.which("trailmark")
         if not executable:
             tools.append({"name": "trailmark", "status": "unavailable"})
-        elif not args.language:
-            tools.append({"name": "trailmark", "status": "skipped", "reason": "--language is required"})
+        elif not trailmark_language:
+            capability = command_record(
+                "trailmark-capability", [executable, "--version"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "trailmark", "no supported source language was detected", capability
+                )
+            )
         else:
             summary = command_record(
                 "trailmark-analyze",
-                [executable, "analyze", str(source), "--language", args.language, "--summary"],
+                [
+                    executable,
+                    "analyze",
+                    str(source),
+                    "--language",
+                    str(trailmark_language),
+                    "--summary",
+                ],
                 run_dir,
                 args.timeout,
             )
             entries_file = run_dir / "trailmark-entrypoints.json"
             entries = command_record(
                 "trailmark-entrypoints",
-                [executable, "entrypoints", str(source), "--language", args.language, "--json"],
+                [
+                    executable,
+                    "entrypoints",
+                    str(source),
+                    "--language",
+                    str(trailmark_language),
+                    "--json",
+                ],
                 run_dir,
                 args.timeout,
             )
@@ -356,6 +456,66 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 (run_dir / entries["stdout"]).replace(entries_file)
                 entries["stdout"] = entries_file.name
             tools.extend((summary, entries))
+
+    if "joern" in selected:
+        executable = shutil.which("joern-parse")
+        if not executable:
+            tools.append({"name": "joern", "status": "unavailable"})
+        elif not joern_language:
+            capability = command_record(
+                "joern-capability", [executable, "--list-languages"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "joern", "no Joern-supported source language was detected", capability
+                )
+            )
+        else:
+            cpg_path = run_dir / "joern-cpg.bin"
+            tools.append(
+                command_record(
+                    "joern-parse",
+                    [
+                        executable,
+                        str(source),
+                        "--output",
+                        str(cpg_path),
+                        "--language",
+                        str(joern_language),
+                    ],
+                    run_dir,
+                    max(args.timeout, 300),
+                )
+            )
+
+    if "cppcheck" in selected:
+        executable = shutil.which("cppcheck")
+        if not executable:
+            tools.append({"name": "cppcheck", "status": "unavailable"})
+        elif not language_inventory["cppcheckCompatible"]:
+            capability = command_record(
+                "cppcheck-capability", [executable, "--version"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "cppcheck", "the target contains no detected C/C++ source", capability
+                )
+            )
+        else:
+            tools.append(
+                command_record(
+                    "cppcheck",
+                    [
+                        executable,
+                        "--enable=warning,style,performance,portability",
+                        "--xml",
+                        "--xml-version=2",
+                        str(source),
+                    ],
+                    run_dir,
+                    max(args.timeout, 300),
+                )
+            )
 
     if "differential" in selected:
         if not args.differential_spec:
@@ -400,7 +560,20 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if "z3" in selected:
         if not args.z3_spec:
-            tools.append({"name": "z3", "status": "skipped", "reason": "no --z3-spec supplied"})
+            executable = shutil.which("z3")
+            if not executable:
+                tools.append({"name": "z3", "status": "unavailable"})
+            else:
+                capability = command_record(
+                    "z3-capability", [executable, "-version"], run_dir, args.timeout
+                )
+                tools.append(
+                    not_applicable_tool(
+                        "z3",
+                        "no source-bound constraint was supplied; no model or lead was fabricated",
+                        capability,
+                    )
+                )
         for index, spec_path in enumerate(args.z3_spec or (), 1):
             spec = parse_z3_spec(
                 spec_path.expanduser().resolve(), allow_unbound=args.allow_unbound_z3
@@ -469,7 +642,12 @@ def run_pipeline(args: argparse.Namespace) -> int:
         "campaignCommit": campaign.get("commit"),
         "source": str(source),
         "sourceIdentity": source_identity(source),
+        "languageInventory": language_inventory,
         "selectedTools": sorted(selected),
+        "mandatoryAvailableToolPolicy": {
+            "tools": list(MANDATORY_AVAILABLE_TOOLS),
+            "rule": "invoke every installed compatible tool; unavailable and not-applicable outcomes are explicit",
+        },
         "analysisProvenance": {
             "firstPrinciplesOnly": True,
             "gitHistoryUsed": False,
@@ -596,7 +774,10 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--source", type=Path)
     run.add_argument("--language")
     run.add_argument(
-        "--tool", action="append", choices=("trailmark", "differential", "z3")
+        "--tool",
+        action="append",
+        choices=("trailmark", "joern", "differential", "z3", "cppcheck"),
+        help="add an analysis lane; installed core analyzers cannot be disabled",
     )
     run.add_argument(
         "--differential-spec",

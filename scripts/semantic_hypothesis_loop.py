@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import http.client
@@ -411,6 +412,26 @@ def derive_models(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                     "promise": "an unauthenticated representation must not execute the authenticated control's route identity when the baseline is blocked",
                 },
                 "experiment": {
+                    "executableOracle": {
+                        "executable": True,
+                        "runner": "semantic_hypothesis_loop.py run",
+                        "sameBuildRequired": True,
+                        "oneVariable": "request-path representation",
+                        "retainsRawRequestResponse": True,
+                        "automaticInterpreter": "evaluate",
+                        "coordinatorExecution": True,
+                        "cases": [
+                            {"name": "baseline", "authority": "anonymous", "path": route},
+                            {"name": "negative", "authority": "owned-authenticated", "path": route},
+                            {"name": "positive", "authority": "anonymous", "path": "one generated variant"},
+                        ],
+                        "expectedObservations": {
+                            "H1": "the positive reaches the authenticated resource identity while the baseline remains blocked",
+                            "H2": "the anonymous baseline reaches the same resource identity",
+                            "H3": "the positive does not reach the authenticated resource identity",
+                            "H4": "the request representation changes before the mapped checker",
+                        },
+                    },
                     "baseline": {"method": "GET", "path": route, "authenticated": False},
                     "authenticatedControl": {"method": "GET", "path": route, "authenticated": True},
                     "variants": variants,
@@ -473,12 +494,23 @@ def request(base: str, path: str, header: tuple[str, str] | None, timeout: float
     connection_class = http.client.HTTPConnection
     connection = connection_class(parsed.hostname, parsed.port or 80, timeout=timeout)
     headers = {header[0]: header[1]} if header else {}
+    host_header = parsed.hostname or "localhost"
+    if parsed.port and parsed.port != 80:
+        host_header += f":{parsed.port}"
+    request_lines = [f"GET {path} HTTP/1.1", f"Host: {host_header}"]
+    request_lines.extend(f"{name}: {value}" for name, value in headers.items())
+    request_bytes = ("\r\n".join(request_lines) + "\r\n\r\n").encode()
     started = time.monotonic()
-    connection.request("GET", path, headers=headers)
+    connection.putrequest("GET", path, skip_host=True, skip_accept_encoding=True)
+    connection.putheader("Host", host_header)
+    for name, value in headers.items():
+        connection.putheader(name, value)
+    connection.endheaders()
     response = connection.getresponse()
     body = response.read(MAX_BODY + 1)
     elapsed = time.monotonic() - started
-    response_headers = {name.lower(): value for name, value in response.getheaders()}
+    response_header_rows = response.getheaders()
+    response_headers = {name.lower(): value for name, value in response_header_rows}
     connection.close()
     truncated = len(body) > MAX_BODY
     body = body[:MAX_BODY]
@@ -511,6 +543,27 @@ def request(base: str, path: str, header: tuple[str, str] | None, timeout: float
         "routeIdentity": route_identity,
         "blocked": blocked,
         "elapsedSeconds": elapsed,
+        "retainedExchange": {
+            "request": {
+                "wireSha256": hashlib.sha256(request_bytes).hexdigest(),
+                "wireBase64": (
+                    base64.b64encode(request_bytes).decode("ascii") if header is None else None
+                ),
+                "redacted": header is not None,
+                "authenticationHeaderName": header[0] if header else None,
+            },
+            "response": {
+                "statusLine": f"HTTP/{response.version // 10}.{response.version % 10} {response.status} {response.reason}",
+                "headers": [[name, value] for name, value in response_header_rows],
+                "decodedBodyBase64": base64.b64encode(body).decode("ascii"),
+                "decodedBodySha256": hashlib.sha256(body).hexdigest(),
+                "decodedBodyTruncated": truncated,
+                "wireFraming": {
+                    "contentLength": response_headers.get("content-length"),
+                    "transferEncoding": response_headers.get("transfer-encoding"),
+                },
+            },
+        },
     }
 
 

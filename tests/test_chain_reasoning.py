@@ -92,7 +92,90 @@ def boundary(requirement: dict[str, object]) -> dict[str, object]:
     }
 
 
+def strict_primitive(
+    identifier: str,
+    produces: list[dict[str, object]],
+    requires: list[dict[str, object]],
+    *,
+    inputs: bool = False,
+) -> dict[str, object]:
+    value = primitive(identifier, produces, requires, inputs=inputs)
+    value.update(
+        {
+            "inputType": "HTTP request bytes" if inputs else "verified capability",
+            "outputAuthority": produces[0]["type"],
+            "acquisition": {
+                "method": "owned production HTTP replay",
+                "attackerAccessible": True,
+                "evidence": [f"evidence/{identifier}-acquisition.json"],
+            },
+            "reliability": {
+                "successes": 3,
+                "attempts": 3,
+                "evidence": [f"evidence/{identifier}-reliability.json"],
+            },
+            "unresolvedAssumptions": [],
+        }
+    )
+    return value
+
+
 class ChainReasoningTests(unittest.TestCase):
+    def test_strict_authority_model_requires_acquisition_and_reliability(self) -> None:
+        executable = capability("module-selection", "manifest-valid")
+        incomplete = primitive("decoder", [executable], [], inputs=True)
+        incomplete["inputType"] = "HTTP bytes"
+        incomplete["outputAuthority"] = "module-selection"
+        with self.assertRaisesRegex(RuntimeError, "acquisition is required"):
+            analyze_chain(
+                {
+                    "schemaVersion": 2,
+                    "primitives": [incomplete],
+                    "boundaries": [boundary(executable)],
+                }
+            )
+
+    def test_strict_authority_model_blocks_unresolved_assumptions(self) -> None:
+        raw = capability("attacker-bytes", "controlled")
+        executable = capability("module-selection", "manifest-valid")
+        ingress = strict_primitive("ingress", [raw], [], inputs=True)
+        decoder = strict_primitive("decoder", [executable], [raw])
+        decoder["unresolvedAssumptions"] = ["module identity is stable across builds"]
+        result = analyze_chain(
+            {
+                "schemaVersion": 2,
+                "primitives": [ingress, decoder],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertEqual(result["completeBoundaryPaths"], [])
+        self.assertNotIn("decoder", result["reachableFromAttacker"])
+
+    def test_strict_authority_model_connects_only_measured_edges(self) -> None:
+        raw = capability("attacker-bytes", "controlled")
+        executable = capability("module-selection", "manifest-valid")
+        result = analyze_chain(
+            {
+                "schemaVersion": 2,
+                "primitives": [
+                    strict_primitive("ingress", [raw], [], inputs=True),
+                    strict_primitive("decoder", [executable], [raw]),
+                ],
+                "boundaries": [boundary(executable)],
+            }
+        )
+        self.assertIn(
+            ["ingress", "decoder", "boundary:critical-exec"],
+            result["completeBoundaryPaths"],
+        )
+        edge = next(
+            row
+            for row in result["compatibleEdges"]
+            if row["producer"] == "ingress" and row["consumer"] == "decoder"
+        )
+        self.assertEqual(edge["inputType"], "HTTP request bytes")
+        self.assertEqual(edge["reliability"]["successes"], 3)
+
     def test_state_reduction_preserves_incomparable_remaining_execution_budgets(self) -> None:
         root_capability = capability("root-capability")
         reusable = capability("reusable-value")
@@ -569,6 +652,22 @@ class ChainReasoningTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schemaVersion": 1,
+                        "executableOracle": {
+                            "executable": True,
+                            "kind": "command-differential",
+                            "runner": "coordinator-owned-chain-fixture",
+                            "oneVariable": "the missing module-selection capability",
+                            "cases": [
+                                {"name": "baseline", "input": "baseline"},
+                                {"name": "negative", "input": "restored-control"},
+                                {"name": "positive", "input": "candidate"},
+                            ],
+                            "expectedObservations": {
+                                "baseline": "terminal absent",
+                                "negative": "terminal absent",
+                                "positive": "consumer reached",
+                            },
+                        },
                         "primitives": [
                             primitive(
                                 "ingress",

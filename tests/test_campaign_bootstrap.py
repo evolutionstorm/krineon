@@ -86,6 +86,7 @@ class CampaignBootstrapTests(unittest.TestCase):
                 "--checkout",
                 str(source),
                 "--confirm-authorization",
+                "--authorization-record",
                 "--json",
             )
             output = json.loads(completed.stdout)
@@ -115,7 +116,9 @@ class CampaignBootstrapTests(unittest.TestCase):
             self.assertEqual(launch["profile"], "chrome-v8")
             self.assertEqual(len(launch["tasks"]), 17)
             self.assertTrue((campaign / "tools" / "tool-probe.json").is_file())
+            self.assertTrue((campaign / "AUTHORIZATION.md").is_file())
             self.assertTrue((campaign / "orchestration.db").is_file())
+
             with sqlite3.connect(campaign / "orchestration.db") as connection:
                 count = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
             self.assertEqual(count, 17)
@@ -131,6 +134,26 @@ class CampaignBootstrapTests(unittest.TestCase):
             self.assertIn("PROGRAM_GUIDELINES.md", manifest)
             self.assertIn("PROGRAM_SCOPE.md", manifest)
             self.assertIn("onboarding.json", manifest)
+
+    def test_source_bootstrap_does_not_require_program_intake(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaign = root / "campaign"
+            self.run_bootstrap(
+                str(campaign),
+                "--repo",
+                "https://github.com/example/security-target",
+                "--commit",
+                "a" * 40,
+                "--json",
+            )
+            onboarding = json.loads((campaign / "onboarding.json").read_text())
+            campaign_json = json.loads((campaign / "campaign.json").read_text())
+            self.assertIsNone(onboarding["guidelines"])
+            self.assertFalse((campaign / "PROGRAM_GUIDELINES.md").exists())
+            self.assertFalse((campaign / "AUTHORIZATION.md").exists())
+            self.assertFalse(campaign_json["authorization"]["confirmed"])
+            self.assertTrue((campaign / "orchestration.db").is_file())
 
     def test_unconfirmed_intake_prepares_source_work_without_dynamic_authority(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

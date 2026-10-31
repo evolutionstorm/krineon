@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Bootstrap a Krineon campaign from program guidelines and scope text.
+"""Bootstrap a Krineon campaign from source coordinates and optional program intake.
 
-The intake is intentionally conservative. It preserves the supplied program
-text verbatim, records deterministic inferences, and prepares source-analysis
-work. It never treats a public scope page as authorization for live testing.
+When supplied, intake text is preserved verbatim and used for deterministic
+inferences. It is not a prerequisite for source-only analysis and is never
+treated as authorization for live testing.
 """
 
 from __future__ import annotations
@@ -263,8 +263,8 @@ def render_authorization(
 - Exact revision: {commit}
 - Campaign profile: {profile}
 - Program URL: {program_url or 'not recorded'}
-- Program-guidelines SHA-256: {digest}
-{f'- Program-scope SHA-256: {scope_digest}' if scope_digest else '- Program-scope input: included in program guidelines'}
+{f'- Program-guidelines SHA-256: {digest}' if digest else '- Program-guidelines input: not supplied'}
+{f'- Program-scope SHA-256: {scope_digest}' if scope_digest else '- Program-scope input: not supplied separately'}
 - Authorization confirmed: {'YES' if confirmed else 'NO'}
 - Allowed environment: {allowed_environment}
 - Allowed actions: source review and bounded verification in the recorded owned environment
@@ -285,10 +285,9 @@ def render_authorization(
 
 {unresolved_lines}
 
-`PROGRAM_GUIDELINES.md` and, when present, `PROGRAM_SCOPE.md` are the
-authoritative retained inputs. The entries above are deterministic extraction
-candidates, not a replacement for the program rules. Resolve uncertainty in
-favor of the narrower scope.
+When present, `PROGRAM_GUIDELINES.md` and `PROGRAM_SCOPE.md` are authoritative
+retained inputs. This optional summary is not an authorization gate. Resolve
+scope uncertainty before any live or shared-system action.
 """
 
 
@@ -297,8 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("campaign_dir")
     parser.add_argument(
         "--guidelines",
-        required=True,
-        help="UTF-8 program guidelines/scope file, or - to read standard input",
+        help="optional UTF-8 program guidelines/scope file, or - to read standard input",
     )
     parser.add_argument(
         "--scope",
@@ -325,6 +323,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="record researcher confirmation for source/local-owned testing only",
     )
+    parser.add_argument(
+        "--authorization-record",
+        action="store_true",
+        help="write optional AUTHORIZATION.md human-readable summary",
+    )
     parser.add_argument("--allowed-environment", default="local owned fixture")
     parser.add_argument(
         "--max-concurrency", type=parse_max_concurrency, default="auto"
@@ -341,12 +344,16 @@ def main(argv: list[str] | None = None) -> int:
         if campaign_root.exists() and any(campaign_root.iterdir()):
             raise BootstrapError(f"refusing to initialize non-empty directory: {campaign_root}")
 
-        payload = read_input(args.guidelines)
+        if not args.guidelines and not args.repo and not args.checkout:
+            raise BootstrapError(
+                "without --guidelines, provide --repo or --checkout for source analysis"
+            )
+        payload = read_input(args.guidelines) if args.guidelines else b""
         scope_payload = read_input(args.scope) if args.scope else b""
-        text = decode_text(payload)
+        text = decode_text(payload) if payload else ""
         if scope_payload:
             text += "\n" + decode_text(scope_payload)
-        digest = sha256_bytes(payload)
+        digest = sha256_bytes(payload) if payload else ""
         scope_digest = sha256_bytes(scope_payload) if scope_payload else ""
         scope, excluded = extract_sections(text)
         urls = extract_urls(text)
@@ -354,7 +361,12 @@ def main(argv: list[str] | None = None) -> int:
         scoped_repositories = extract_repositories(extract_urls("\n".join(scope)))
         repositories = scoped_repositories or all_repositories
         profile_text = "\n".join(scope) if scope else text
-        inferred_profile, profile_evidence = infer_profile(profile_text, repositories)
+        profile_repositories = unique(
+            [*(repositories or []), *([args.repo] if args.repo else [])]
+        )
+        inferred_profile, profile_evidence = infer_profile(
+            profile_text, profile_repositories
+        )
         profile = inferred_profile if args.profile == "auto" else args.profile
 
         repository = args.repo or (repositories[0] if len(repositories) == 1 else "")
@@ -400,9 +412,11 @@ def main(argv: list[str] | None = None) -> int:
                 args.mode,
                 *(["--checkout", str(checkout)] if checkout else []),
                 *(["--program-url", program_url] if program_url else []),
+                *(["--authorization-record"] if args.authorization_record else []),
             ]
         )
-        (campaign_root / "PROGRAM_GUIDELINES.md").write_bytes(payload)
+        if payload:
+            (campaign_root / "PROGRAM_GUIDELINES.md").write_bytes(payload)
         if scope_payload:
             (campaign_root / "PROGRAM_SCOPE.md").write_bytes(scope_payload)
 
@@ -423,11 +437,11 @@ def main(argv: list[str] | None = None) -> int:
             unresolved.append(
                 "Choose the intended repository from the multiple repository URLs in the rules."
             )
-        if not scope:
+        if payload and not scope:
             unresolved.append(
                 "Review and transcribe the exact in-scope assets from the retained program rules."
             )
-        if not args.confirm_authorization:
+        if payload and not args.confirm_authorization:
             unresolved.append(
                 "Confirm authorization after checking the selected asset against the retained rules."
             )
@@ -447,10 +461,14 @@ def main(argv: list[str] | None = None) -> int:
         campaign["authorization"] = {
             "confirmed": bool(args.confirm_authorization),
             "basis": (
-                f"Researcher confirmed the selected source/local-owned campaign against "
-                f"PROGRAM_GUIDELINES.md (SHA-256 {digest})."
+                (
+                    f"Researcher confirmed the selected source/local-owned campaign against "
+                    f"PROGRAM_GUIDELINES.md (SHA-256 {digest})."
+                    if digest
+                    else "Researcher confirmed the selected source/local-owned campaign."
+                )
                 if args.confirm_authorization
-                else "Awaiting coordinator confirmation against retained program guidelines."
+                else "Source-only analysis; live and shared-system actions are not authorized."
             ),
             "allowedEnvironment": args.allowed_environment,
             "stopConditions": [
@@ -459,31 +477,36 @@ def main(argv: list[str] | None = None) -> int:
             ],
         }
         write_json(campaign_root / "campaign.json", campaign)
-        (campaign_root / "AUTHORIZATION.md").write_text(
-            render_authorization(
-                target=target,
-                repository=repository,
-                commit=commit,
-                profile=profile,
-                program_url=program_url,
-                digest=digest,
-                scope_digest=scope_digest,
-                confirmed=bool(args.confirm_authorization),
-                allowed_environment=args.allowed_environment,
-                scope=scope,
-                excluded=excluded,
-                unresolved=unresolved,
-            ),
-            encoding="utf-8",
-        )
+        if args.authorization_record:
+            (campaign_root / "AUTHORIZATION.md").write_text(
+                render_authorization(
+                    target=target,
+                    repository=repository,
+                    commit=commit,
+                    profile=profile,
+                    program_url=program_url,
+                    digest=digest,
+                    scope_digest=scope_digest,
+                    confirmed=bool(args.confirm_authorization),
+                    allowed_environment=args.allowed_environment,
+                    scope=scope,
+                    excluded=excluded,
+                    unresolved=unresolved,
+                ),
+                encoding="utf-8",
+            )
 
         onboarding = {
             "schemaVersion": 1,
-            "guidelines": {
-                "path": "PROGRAM_GUIDELINES.md",
-                "sha256": digest,
-                "bytes": len(payload),
-            },
+            "guidelines": (
+                {
+                    "path": "PROGRAM_GUIDELINES.md",
+                    "sha256": digest,
+                    "bytes": len(payload),
+                }
+                if payload
+                else None
+            ),
             "scopeInput": (
                 {
                     "path": "PROGRAM_SCOPE.md",
@@ -501,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
                 "outOfScopeCandidates": excluded,
                 "profile": inferred_profile,
                 "profileEvidence": profile_evidence,
-                "requiresHumanReview": True,
+                "requiresHumanReview": bool(payload or scope_payload),
             },
             "resolved": {
                 "target": target,
@@ -512,6 +535,9 @@ def main(argv: list[str] | None = None) -> int:
                 "mode": args.mode,
                 "programUrl": program_url,
                 "authorizationConfirmed": bool(args.confirm_authorization),
+                "authorizationRecord": (
+                    "AUTHORIZATION.md" if args.authorization_record else None
+                ),
             },
             "unresolved": unresolved,
             "safety": {

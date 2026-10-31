@@ -20,6 +20,13 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from .runtime_feedback import decide as decide_runtime_feedback
+    from .runtime_feedback import schedule as schedule_runtime_feedback
+except ImportError:
+    from runtime_feedback import decide as decide_runtime_feedback
+    from runtime_feedback import schedule as schedule_runtime_feedback
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DYNAMIC_HARNESS = PROJECT_ROOT / "scripts" / "dynamic_harness.py"
@@ -1514,6 +1521,26 @@ def cmd_launch(args: argparse.Namespace) -> int:
         record.update({"status": "failed", "endedAt": utc_now(), "error": str(exc)})
         atomic_json(run_dir / "run.json", record)
         raise
+    if args.semantic_ir:
+        semantic_ir_path = Path(args.semantic_ir).expanduser().resolve()
+        try:
+            semantic_ir_path.relative_to(root)
+            semantic_ir = read_json(semantic_ir_path)
+            feedback = decide_runtime_feedback(
+                semantic_ir,
+                coverage=record,
+                crashes=record.get("crashes", []),
+                observations=[],
+            )
+            scheduled_task = None
+            if not args.no_feedback_ingest and (root / "orchestration.db").is_file():
+                scheduled_task = schedule_runtime_feedback(root, feedback)
+            feedback["scheduledTask"] = scheduled_task
+            feedback_path = run_dir / "runtime-feedback.json"
+            atomic_json(feedback_path, feedback)
+            record["runtimeFeedback"] = artifact(feedback_path)
+        except (OSError, ValueError, RuntimeError, KeyError) as error:
+            record["runtimeFeedbackError"] = str(error)
     atomic_json(run_dir / "run.json", record)
     print(f"fuzzer run: {launch_id}")
     print(f"engine: {profile['engine']}; parallel workers: {args.workers}")
@@ -2033,6 +2060,15 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--max-output-bytes", type=int, default=16 * 1024 * 1024)
     launch.add_argument("--env", action="append")
     launch.add_argument("--forward-crashes", action="store_true")
+    launch.add_argument(
+        "--semantic-ir",
+        help="campaign-relative semantic-ir.json used to select the next runtime action",
+    )
+    launch.add_argument(
+        "--no-feedback-ingest",
+        action="store_true",
+        help="retain the feedback decision without adding its next task to the queue",
+    )
     launch.set_defaults(func=cmd_launch)
 
     sync = sub.add_parser("sync", help="merge worker corpora and forward crash artifacts")

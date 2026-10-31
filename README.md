@@ -20,14 +20,17 @@ Install or provide the following components:
 - Git
 - Python 3.10 or later
 - Codex, OpenCode, or OMP (Oh My Pi)
-- The target source code or program scope
-- The program rules and authorization boundary
-- A disposable local environment for dynamic testing
+- The target source code or a repository URL
+- A disposable local environment for dynamic testing, when needed
 
 Krineon works best with Codex and GPT-5.6 Sol at `max` reasoning effort.
-Optional tools such as Tree-sitter, Joern, Trailmark, Z3, AFL++, libFuzzer, and
-Fuzzilli improve coverage. Krineon detects available tools and does not install
-them automatically.
+Program rules and scope intake are optional for source-only campaigns. Supply
+them before any live, shared-system, account, wallet, or testnet action.
+
+Krineon detects tools and does not install them automatically. When Trailmark,
+Joern, Z3, or cppcheck is installed and compatible with the target, the static
+pipeline must run it and retain the result. Tree-sitter, AFL++, libFuzzer, and
+Fuzzilli add coverage when their target adapters apply.
 
 ## Supported hosts
 
@@ -189,12 +192,16 @@ campaign, and then update.
 
 Krineon runs the following campaign:
 
-1. Records the authorization boundary and pins the source, runtime, build, and
-   deployed artifact.
-2. Maps attacker-controlled inputs, trust boundaries, state ownership,
-   representation changes, native parsers, and execution authority.
-3. Derives falsifiable hypotheses for the focused authorization-to-route
-   boundary and runs the cheapest distinguishing experiment on an owned target.
+1. Pins the source, runtime, build, and deployed artifact. It also records a
+   supplied authorization boundary, but source-only analysis does not require
+   an `AUTHORIZATION.md` file.
+2. Builds an evidence-linked semantic IR for attacker-controlled values,
+   function-scoped def-use, aliases and property mutations, control candidates,
+   cross-module calls, request representation changes, authority, ownership,
+   lifetime, source maps, and runtime identity.
+3. Derives competing explanations for the focused authorization-to-route
+   boundary and runs only experiments with coordinator-owned baseline,
+   enforcing-negative, positive, and automatic interpretation contracts.
 4. Models each primitive as a typed capability and marks a connection feasible,
    unknown, or impossible. A chain exists only when one execution satisfies
    context, object generation, state, lifetime, ordering, deployment, and
@@ -204,16 +211,20 @@ Krineon runs the following campaign:
    sequences.
 6. Launches independent research routes and prevents one approach family from
    consuming all worker capacity.
-7. Separates observations, primitives, chain hypotheses, and validated
-   connections so useful evidence never needs an invented impact claim.
+7. Promotes leads through observation, source-supported mechanism, runtime
+   differential, verified primitive, compatible chain edge, and complete
+   terminal. Per-mechanism work limits and evidence expiry keep the active
+   frontier bounded.
 8. Rebuilds a versioned campaign-wide capability graph and assigns its
    highest-value missing-link experiment by boundary relevance, uncertainty,
    shared usefulness, and measured cost.
 9. Tests promising chains against supported release or production-equivalent
    builds in an owned environment.
-10. Requires coordinator-signed experiments, recomputed raw observations, an
+10. Feeds coverage plateaus, invariant observations, and minimized stack
+   clusters back into the next harness, grammar, or replay decision.
+11. Requires coordinator-signed experiments, recomputed raw observations, an
    enforcing negative control, and fresh-process adversarial replay.
-11. Produces a report package only when the complete Critical/RCE impact is
+12. Produces a report package only when the complete Critical/RCE impact is
    demonstrated.
 
 When a route fails, Krineon records the enforcing mechanism and creates a new
@@ -230,10 +241,12 @@ Krineon includes focused support for these targets and techniques:
 - Chrome and V8 release, sanitizer, debug, and owned-page browser replay
 - Signed build provenance with live sanitizer and REPRL capability checks
 - workerd GC, handle, reentry, cancellation, ArrayBuffer, and IoContext oracles
-- Tree-sitter, Joern, Trailmark, and Z3 assisted analysis
+- Mandatory-when-available Trailmark, Joern, Z3, and cppcheck analysis
+- Tree-sitter-assisted structural analysis
 - AFL++, libFuzzer, and Fuzzilli campaigns
 - V8, Istanbul, and source-map-aware JavaScript coverage
 - First-fault crash clustering, minimization, and bounded replay
+- Evidence-linked semantic IR and automatic runtime feedback
 
 Static tools generate hypotheses. Runtime evidence decides whether a candidate
 advances. Executable semantic models cover the Next.js
@@ -283,6 +296,8 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Orchestration and independent replay](references/orchestration.md)
 - [Evidence gates](references/evidence-gates.md)
 - [Semantic hypothesis experiments](references/semantic-experiments.md)
+- [Semantic intermediate representation](references/semantic-ir.md)
+- [Runtime feedback loop](references/runtime-feedback.md)
 - [Execution-boundary and typed chain reasoning](references/chain-reasoning.md)
 - [Held-out multi-stage evaluation](references/multistage-evaluation.md)
 - [Chrome and V8 campaigns](references/chrome-v8.md)

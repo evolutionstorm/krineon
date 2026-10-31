@@ -27,11 +27,21 @@ Each derived model records:
 - an executable authorization-to-resource agreement oracle; and
 - the cheapest one-dimension experiment that separates those explanations.
 
+Every executable model has exactly three case roles: baseline, enforcing
+negative, and positive. It also records the expected observation under each
+competing explanation and the automatic interpreter that maps retained data to
+an outcome. A source-derived proposal without this executable contract remains
+outside the runtime queue.
+
 The derivation produces an unsigned proposal, not a vulnerability verdict. The
 coordinator reviews and signs the exact proposal. The controlled runner accepts
 only that signed proposal, confirmed campaign authorization, a loopback HTTP
 origin, and an authenticated control header supplied through the environment.
 The retained observation hashes the control credential rather than storing it.
+For unauthenticated requests it also retains the exact constructed request
+bytes. Responses retain ordered headers and the decoded body bytes in base64,
+plus framing metadata. Authenticated control request bytes are redacted while
+their exact wire hash remains available.
 
 The analyzer calls a mutation source-derived only when it proves this ordered
 path in one source module: a validation call observes symbol A, a later

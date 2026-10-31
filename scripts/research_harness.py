@@ -764,6 +764,24 @@ CHAIN_MATURITIES = (
     "validated-connection",
 )
 CHAIN_MATURITY_ORDER = {value: index for index, value in enumerate(CHAIN_MATURITIES)}
+LEAD_PROMOTION_LEVELS = (
+    "observation",
+    "source-supported-mechanism",
+    "runtime-differential",
+    "verified-primitive",
+    "compatible-chain-edge",
+    "complete-terminal",
+)
+LEAD_PROMOTION_ORDER = {
+    value: index for index, value in enumerate(LEAD_PROMOTION_LEVELS)
+}
+DEFAULT_LEAD_POLICY = {
+    "maxActiveLeads": 25,
+    "maxActivePerMechanism": 3,
+    "maxExperimentsPerMechanism": 3,
+    "maxRunningPerMechanism": 1,
+    "proseExpirationDays": 7,
+}
 
 
 def validate_analysis_provenance(container: dict[str, Any]) -> dict[str, Any]:
@@ -781,6 +799,92 @@ def validate_analysis_provenance(container: dict[str, Any]) -> dict[str, Any]:
 def canonical_digest(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_executable_oracle(root: Path, raw: Any) -> dict[str, Any] | None:
+    """Accept only experiments that a controlled runner can execute and judge."""
+
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise SystemExit("researchLead.executableOracle must be an object")
+    kind = str(raw.get("kind") or "")
+    if kind not in {"coordinator-replay", "http-differential", "command-differential"}:
+        raise SystemExit(
+            "researchLead.executableOracle.kind must be coordinator-replay, "
+            "http-differential, or command-differential"
+        )
+    one_variable = require_string(
+        raw.get("oneVariable"), "researchLead.executableOracle.oneVariable"
+    )
+    expected = raw.get("expectedObservations")
+    if not isinstance(expected, dict) or set(expected) < {"baseline", "negative", "positive"}:
+        raise SystemExit(
+            "researchLead.executableOracle.expectedObservations requires baseline, negative, and positive"
+        )
+    normalized: dict[str, Any] = {
+        "kind": kind,
+        "oneVariable": one_variable,
+        "expectedObservations": {
+            name: require_string(
+                expected.get(name),
+                f"researchLead.executableOracle.expectedObservations.{name}",
+            )
+            for name in ("baseline", "negative", "positive")
+        },
+    }
+    if kind == "coordinator-replay":
+        try:
+            recipe = safe_campaign_path(root, raw.get("recipe"))
+        except ValueError as error:
+            raise SystemExit(f"researchLead.executableOracle.recipe:{error}") from error
+        if not recipe.is_file():
+            raise SystemExit("researchLead executable replay recipe does not exist")
+        document = read_json(recipe)
+        cases = document.get("cases")
+        names = {
+            str(case.get("name"))
+            for case in cases or []
+            if isinstance(case, dict)
+        }
+        if names != {"baseline", "negative", "positive"}:
+            raise SystemExit(
+                "researchLead executable replay requires baseline, negative, and positive cases"
+            )
+        normalized["recipe"] = recipe.relative_to(root).as_posix()
+        normalized["recipeSha256"] = sha256(recipe)
+    else:
+        cases = raw.get("cases")
+        if not isinstance(cases, list):
+            raise SystemExit("researchLead executable differential requires cases")
+        by_name = {
+            str(case.get("name")): case
+            for case in cases
+            if isinstance(case, dict)
+        }
+        if set(by_name) != {"baseline", "negative", "positive"}:
+            raise SystemExit(
+                "researchLead executable differential requires baseline, negative, and positive cases"
+            )
+        normalized["runner"] = require_string(
+            raw.get("runner"), "researchLead.executableOracle.runner"
+        )
+        normalized["cases"] = [by_name[name] for name in ("baseline", "negative", "positive")]
+    return normalized
+
+
+def lead_promotion_level(lead: dict[str, Any]) -> str:
+    maturity = str(lead.get("chainMaturity") or "observation")
+    grade = str(lead.get("evidenceGrade") or "observation")
+    if maturity == "validated-connection":
+        return "compatible-chain-edge"
+    if grade == "verified-primitive":
+        return "verified-primitive"
+    if grade in {"runtime-invariant", "runtime-observation", "minimized-stack"}:
+        return "runtime-differential"
+    if grade == "source-invariant":
+        return "source-supported-mechanism"
+    return "observation"
 
 
 def validate_lead_evidence_paths(root: Path, lead: dict[str, Any]) -> list[str]:
@@ -867,6 +971,7 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         raw.get("approachFamilies"), "researchLead.approachFamilies"
     )
     evidence = validate_lead_evidence_paths(root, raw)
+    executable_oracle = validate_executable_oracle(root, raw.get("executableOracle"))
     status = str(raw.get("status") or "active")
     if status not in {"active", "disproved"}:
         raise SystemExit("researchLead.status must be active or disproved")
@@ -943,6 +1048,7 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         "chainMaturity": maturity,
         "chainProgressScore": progress_score(chain_progress) if chain_progress else 0,
         "negativeKnowledge": negative_knowledge,
+        "executableOracle": executable_oracle,
     }
     if critical_boundary is not None:
         normalized["criticalBoundary"] = critical_boundary
@@ -1111,6 +1217,26 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         }
         normalized["semanticIdentity"] = f"primitive:{crash_id}:{claim}"
         normalized["evidenceGrade"] = "verified-primitive"
+    normalized["mechanismFingerprint"] = str(
+        raw.get("mechanismFingerprint")
+        or canonical_digest(
+            {
+                "kind": normalized["kind"],
+                "sourceReferences": normalized["sourceReferences"],
+                "boundary": (
+                    normalized.get("invariantBreak", {}).get("boundary")
+                    or normalized.get("criticalBoundary", {}).get("operation")
+                    or "unmapped"
+                ),
+                "approachFamilies": normalized["approachFamilies"],
+            }
+        )[:24]
+    )
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", normalized["mechanismFingerprint"]):
+        raise SystemExit(
+            "researchLead.mechanismFingerprint must be 8-128 stable identifier characters"
+        )
+    normalized["promotionLevel"] = lead_promotion_level(normalized)
     return normalized
 
 
@@ -1432,6 +1558,38 @@ def coordinator_reexecute_result(
         "repetitions": repetitions,
         "caseTimeoutSeconds": case_timeout,
     }
+
+
+def coordinator_replay_is_machine_verified(
+    root: Path,
+    replay: Any,
+    *,
+    expected_task_id: str | None = None,
+) -> bool:
+    """Recompute a coordinator replay from signed, retained raw evidence."""
+
+    if not isinstance(replay, dict):
+        return False
+    try:
+        observation = safe_campaign_path(root, replay.get("controlledObservation"))
+        signature = safe_campaign_path(
+            root, replay.get("controlledObservationSignature")
+        )
+        if (
+            replay.get("controlledObservationSha256") != sha256(observation)
+            or replay.get("controlledObservationSignatureSha256")
+            != sha256(signature)
+        ):
+            return False
+        verification = verify_controlled_observation(root, observation, signature)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    record = verification.get("record")
+    if verification.get("passed") is not True or not isinstance(record, dict):
+        return False
+    if expected_task_id is not None and record.get("taskId") != expected_task_id:
+        return False
+    return True
 
 
 def validate_route_development_result(
@@ -2077,8 +2235,11 @@ An unmeasured lane is an experiment, not evidence that the methodology works.
 Measure it with `scripts/rediscovery_benchmark.py` against target-owned tests or
 invariants on a frozen local corpus before making efficacy claims.
 
-Read `AUTHORIZATION.md` and `KRINEON_CAMPAIGN.json` before taking any dynamic action.
-Stay within the recorded environment and stop conditions.
+Read `KRINEON_CAMPAIGN.json` before taking any dynamic action. If
+`AUTHORIZATION.md` is present, treat it as an optional human-readable summary,
+not as a source-analysis gate. Live, shared-system, testnet, account, wallet,
+or production actions still require explicit structured authorization in the
+campaign record. Stay within the recorded environment and stop conditions.
 Read `KRINEON_REFERENCES/critical-rce.md` before discovery or chain construction.
 Read `KRINEON_REFERENCES/dependencies.md` and `KRINEON_DEPENDENCIES.json` before
 assuming a library boundary ends the chain. Pinned dependency worktrees, when
@@ -2345,10 +2506,11 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 Edit this file and `campaign.json` before any live or shared-system test.
 """
-    (root / "AUTHORIZATION.md").write_text(authorization, encoding="utf-8")
+    if args.authorization_record:
+        (root / "AUTHORIZATION.md").write_text(authorization, encoding="utf-8")
     (root / "logs" / ".gitkeep").touch()
     print(f"initialized campaign: {root}")
-    print("next: edit AUTHORIZATION.md and campaign.json, then run the plan command")
+    print("next: review campaign.json, then run the plan command")
     return 0
 
 
@@ -2409,6 +2571,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "mission": "critical-rce-chain",
             "discoveryPolicy": campaign.get("discoveryPolicy", {}),
             "schedulingPolicy": profile.get("schedulingPolicy", {}),
+            "workerAllocation": {
+                "strategy": "least-completed-active-agent",
+                "maxCompletedLead": 1,
+                "activeWindowSeconds": 300,
+                "identity": "immutable agent identity, not worker alias",
+            },
+            "leadPolicy": DEFAULT_LEAD_POLICY,
             "rediscoveryMeasurement": measurement,
             "generatedAt": utc_now(),
             "maxConcurrency": args.max_concurrency,
@@ -2453,6 +2622,23 @@ def cmd_queue(args: argparse.Namespace) -> int:
             set_metadata(connection, "maxConcurrency", configured_concurrency)
             set_metadata(
                 connection, "schedulingPolicy", plan.get("schedulingPolicy", {})
+            )
+            set_metadata(
+                connection,
+                "workerAllocation",
+                plan.get(
+                    "workerAllocation",
+                    {
+                        "strategy": "least-completed-active-agent",
+                        "maxCompletedLead": 1,
+                        "activeWindowSeconds": 300,
+                    },
+                ),
+            )
+            set_metadata(
+                connection,
+                "leadPolicy",
+                plan.get("leadPolicy", DEFAULT_LEAD_POLICY),
             )
             set_metadata(connection, "defaultLeaseSeconds", int(plan.get("defaultLeaseSeconds", 900)))
             set_metadata(
@@ -2583,9 +2769,9 @@ def cmd_worker_register(args: argparse.Namespace) -> int:
 def cmd_gate_self_test(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     campaign = require_campaign(root)
-    authorization = campaign.get("authorization")
-    if not isinstance(authorization, dict) or authorization.get("confirmed") is not True:
-        raise SystemExit("gate-self-test requires confirmed local authorization")
+    # This test executes only Krineon's generated loopback/local fixture. It
+    # does not touch the campaign target, so optional program intake and target
+    # authorization must not block proving the coordinator evidence gate.
     directory = root / "evidence" / "coordinator-gate"
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "always-negative.py"
@@ -2875,6 +3061,91 @@ def worker_is_eligible_for_round_task(
     return True
 
 
+def worker_allocation_hold(
+    connection: sqlite3.Connection,
+    worker: sqlite3.Row,
+    ready_rows: list[sqlite3.Row],
+) -> dict[str, Any] | None:
+    """Prevent one polling worker or alias from consuming a shared queue.
+
+    The lease API is pull-based, so fairness must be enforced before a task is
+    reserved. Only recently active, idle agents that can actually claim one of
+    the ready tasks are contenders. A dead worker can therefore delay a busy
+    peer for at most activeWindowSeconds, while a live peer receives a real
+    opportunity to claim work.
+    """
+    policy = get_metadata(
+        connection,
+        "workerAllocation",
+        {
+            "strategy": "least-completed-active-agent",
+            "maxCompletedLead": 1,
+            "activeWindowSeconds": 300,
+        },
+    )
+    if not isinstance(policy, dict) or policy.get("strategy") == "unrestricted":
+        return None
+    max_lead = max(0, int(policy.get("maxCompletedLead", 1)))
+    active_window = max(1, int(policy.get("activeWindowSeconds", 300)))
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=active_window)
+    running_agents = {
+        str(row["agent"])
+        for row in connection.execute(
+            "SELECT DISTINCT workers.agent FROM tasks "
+            "JOIN workers ON workers.worker_id=tasks.lease_owner "
+            "WHERE tasks.state IN ('running','verifying')"
+        ).fetchall()
+    }
+    contenders: dict[str, sqlite3.Row] = {}
+    for candidate in connection.execute(
+        "SELECT * FROM workers WHERE status='active' ORDER BY registered_at,worker_id"
+    ).fetchall():
+        agent = str(candidate["agent"])
+        if agent in running_agents or parse_time(str(candidate["updated_at"])) < cutoff:
+            continue
+        can_claim = False
+        for task in ready_rows:
+            if agent in set(json.loads(task["excluded_agents_json"])):
+                continue
+            if candidate["worker_id"] in set(json.loads(task["excluded_workers_json"])):
+                continue
+            if worker_is_eligible_for_round_task(connection, candidate, task):
+                can_claim = True
+                break
+        if can_claim:
+            contenders.setdefault(agent, candidate)
+    current_agent = str(worker["agent"])
+    if current_agent not in contenders or len(contenders) < 2:
+        return None
+    completed = {
+        agent: int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM submissions "
+                "JOIN workers ON workers.worker_id=submissions.worker_id "
+                "WHERE workers.agent=?",
+                (agent,),
+            ).fetchone()["count"]
+        )
+        for agent in contenders
+    }
+    minimum = min(completed.values())
+    lead = completed[current_agent] - minimum
+    if lead == 0 or lead < max_lead:
+        return None
+    preferred = sorted(agent for agent, count in completed.items() if count == minimum)
+    return {
+        "reason": "fairness-turn-reserved",
+        "strategy": policy.get("strategy", "least-completed-active-agent"),
+        "agent": current_agent,
+        "acceptedSubmissions": completed[current_agent],
+        "minimumAcceptedSubmissions": minimum,
+        "completedLead": lead,
+        "maxCompletedLead": max_lead,
+        "preferredAgents": preferred,
+        "activeWindowSeconds": active_window,
+    }
+
+
 def cmd_claim(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     campaign = require_campaign(root)
@@ -2886,6 +3157,10 @@ def cmd_claim(args: argparse.Namespace) -> int:
         ).fetchone()
         if worker is None or worker["status"] != "active":
             raise SystemExit(f"worker is not registered and active: {args.worker_id}")
+        connection.execute(
+            "UPDATE workers SET updated_at=? WHERE worker_id=?",
+            (utc_now(), args.worker_id),
+        )
         recovery = recover_tasks(connection)
         if campaign_budget_exhausted(connection):
             connection.commit()
@@ -2922,17 +3197,56 @@ def cmd_claim(args: argparse.Namespace) -> int:
             return 3
         chosen = None
         eligible: list[sqlite3.Row] = []
+        ready_rows: list[sqlite3.Row] = []
         for row in connection.execute(
             "SELECT * FROM tasks WHERE state='queued' ORDER BY priority DESC,wave,created_at,task_id"
         ).fetchall():
+            if int(row["attempt"]) >= int(row["max_attempts"]):
+                connection.execute(
+                    "UPDATE tasks SET state='failed',last_error=?,updated_at=? WHERE task_id=?",
+                    ("maximum attempts exhausted", utc_now(), row["task_id"]),
+                )
+                record_event(
+                    connection,
+                    "attempt-budget-exhausted",
+                    task_id=row["task_id"],
+                    payload={"attempt": row["attempt"], "maxAttempts": row["max_attempts"]},
+                )
+                continue
+            if dependency_state(connection, row) != "ready":
+                continue
+            ready_rows.append(row)
             excluded = json.loads(row["excluded_workers_json"])
             excluded_agents = json.loads(row["excluded_agents_json"])
             if args.worker_id in excluded or worker["agent"] in excluded_agents:
                 continue
             if not worker_is_eligible_for_round_task(connection, worker, row):
                 continue
-            if dependency_state(connection, row) == "ready":
-                eligible.append(row)
+            eligible.append(row)
+        allocation_hold = worker_allocation_hold(connection, worker, ready_rows)
+        if allocation_hold is not None and eligible:
+            record_event(
+                connection,
+                "worker-allocation-held",
+                worker_id=args.worker_id,
+                payload=allocation_hold,
+            )
+            connection.commit()
+            payload = {
+                "claimed": False,
+                "reason": allocation_hold["reason"],
+                "workerAllocation": allocation_hold,
+                "recovery": recovery,
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            else:
+                print(
+                    "claim held for a less-loaded active agent: "
+                    + ", ".join(allocation_hold["preferredAgents"]),
+                    file=sys.stderr,
+                )
+            return 3
         ranked, redirect, scheduling_mode = alternate_exploration_and_focus(
             connection, eligible
         )
@@ -3099,6 +3413,10 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
             "UPDATE tasks SET lease_expires_at=?,updated_at=? WHERE task_id=?",
             (future_time(lease_seconds), utc_now(), row["task_id"]),
         )
+        connection.execute(
+            "UPDATE workers SET updated_at=? WHERE worker_id=?",
+            (utc_now(), args.worker_id),
+        )
         record_event(
             connection,
             "lease-heartbeat",
@@ -3179,7 +3497,12 @@ def insert_dynamic_task(
 
 
 def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, int, int, str]:
-    state_rank = 1 if str(row["state"]) == "disproved" else 0
+    state_rank = {
+        "active": 0,
+        "suppressed": 1,
+        "stale": 2,
+        "disproved": 3,
+    }.get(str(row["state"]), 4)
     try:
         payload = json.loads(row["payload_json"])
         chain_rank = -int(payload.get("chainProgressScore", 0))
@@ -3193,6 +3516,219 @@ def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, int, int, str]:
     return (state_rank, maturity_rank, chain_rank, grade_rank, str(row["lead_id"]))
 
 
+def lead_policy(connection: sqlite3.Connection) -> dict[str, int]:
+    value = get_metadata(connection, "leadPolicy", DEFAULT_LEAD_POLICY)
+    if not isinstance(value, dict):
+        value = DEFAULT_LEAD_POLICY
+    return {
+        name: max(1, int(value.get(name, default)))
+        for name, default in DEFAULT_LEAD_POLICY.items()
+    }
+
+
+def lead_payloads(connection: sqlite3.Connection) -> list[tuple[sqlite3.Row, dict[str, Any]]]:
+    rows: list[tuple[sqlite3.Row, dict[str, Any]]] = []
+    for row in connection.execute("SELECT * FROM research_leads").fetchall():
+        try:
+            payload = json.loads(row["payload_json"])
+        except json.JSONDecodeError:
+            payload = {}
+        rows.append((row, payload if isinstance(payload, dict) else {}))
+    return rows
+
+
+def mechanism_counts(
+    connection: sqlite3.Connection, mechanism: str
+) -> dict[str, int]:
+    active = 0
+    experiments = 0
+    running = 0
+    for row, payload in lead_payloads(connection):
+        if payload.get("mechanismFingerprint") != mechanism:
+            continue
+        if row["state"] == "active":
+            active += 1
+        experiments += len(payload.get("scheduledExperimentDigests", []))
+        lead_id = str(row["lead_id"])
+        running += int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM tasks WHERE lead_id=? "
+                "AND state IN ('queued','running','verifying')",
+                (lead_id,),
+            ).fetchone()["count"]
+        )
+    return {"active": active, "experiments": experiments, "running": running}
+
+
+def suppress_weaker_lead_for_slot(
+    connection: sqlite3.Connection,
+    *,
+    promotion: str,
+    mechanism: str | None = None,
+) -> str | None:
+    candidates: list[tuple[int, int, str, sqlite3.Row, dict[str, Any]]] = []
+    for row, payload in lead_payloads(connection):
+        if row["state"] != "active":
+            continue
+        if mechanism is not None and payload.get("mechanismFingerprint") != mechanism:
+            continue
+        candidate_promotion = str(payload.get("promotionLevel") or "observation")
+        if LEAD_PROMOTION_ORDER.get(candidate_promotion, 0) >= LEAD_PROMOTION_ORDER.get(
+            promotion, 0
+        ):
+            continue
+        candidates.append(
+            (
+                LEAD_PROMOTION_ORDER.get(candidate_promotion, 0),
+                -LEAD_GRADE_ORDER.get(str(row["evidence_grade"]), 99),
+                str(row["updated_at"]),
+                row,
+                payload,
+            )
+        )
+    if not candidates:
+        return None
+    _, _, _, row, payload = min(candidates, key=lambda value: value[:3])
+    payload["schedulingDecision"] = {
+        "state": "suppressed",
+        "reason": f"replaced in the active frontier by a stronger {promotion} lead",
+    }
+    connection.execute(
+        "UPDATE research_leads SET state='suppressed',payload_json=?,updated_at=? WHERE lead_id=?",
+        (json.dumps(payload, sort_keys=True), utc_now(), row["lead_id"]),
+    )
+    return str(row["lead_id"])
+
+
+def reserve_active_lead_slot(
+    connection: sqlite3.Connection,
+    *,
+    mechanism: str,
+    promotion: str,
+    policy: dict[str, int],
+) -> tuple[bool, list[str]]:
+    replaced: list[str] = []
+    counts = mechanism_counts(connection, mechanism)
+    if counts["active"] >= policy["maxActivePerMechanism"]:
+        victim = suppress_weaker_lead_for_slot(
+            connection, promotion=promotion, mechanism=mechanism
+        )
+        if victim is None:
+            return False, replaced
+        replaced.append(victim)
+    active_total = int(
+        connection.execute(
+            "SELECT COUNT(*) AS count FROM research_leads WHERE state='active'"
+        ).fetchone()["count"]
+    )
+    if active_total >= policy["maxActiveLeads"]:
+        victim = suppress_weaker_lead_for_slot(connection, promotion=promotion)
+        if victim is None:
+            return False, replaced
+        replaced.append(victim)
+    return True, replaced
+
+
+def reconcile_research_leads(connection: sqlite3.Connection) -> None:
+    """Expire low-evidence leads after bounded experiments and inactivity."""
+
+    policy = lead_policy(connection)
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+        days=policy["proseExpirationDays"]
+    )
+    for row, payload in lead_payloads(connection):
+        if row["state"] != "active":
+            continue
+        promotion = str(payload.get("promotionLevel") or "observation")
+        if LEAD_PROMOTION_ORDER.get(promotion, 0) >= LEAD_PROMOTION_ORDER["runtime-differential"]:
+            continue
+        attempts = len(payload.get("scheduledExperimentDigests", []))
+        try:
+            updated = parse_time(str(row["updated_at"]))
+        except (TypeError, ValueError):
+            updated = cutoff
+        if updated <= cutoff and (
+            attempts >= policy["maxExperimentsPerMechanism"]
+            or promotion in {"observation", "source-supported-mechanism"}
+        ):
+            payload["schedulingDecision"] = {
+                "state": "stale",
+                "reason": (
+                    "prose/source evidence expired without measurable promotion"
+                    if attempts < policy["maxExperimentsPerMechanism"]
+                    else "bounded experiment budget exhausted without evidence promotion"
+                ),
+            }
+            connection.execute(
+                "UPDATE research_leads SET state='stale',payload_json=?,updated_at=? "
+                "WHERE lead_id=? AND state='active'",
+                (json.dumps(payload, sort_keys=True), utc_now(), row["lead_id"]),
+            )
+
+
+def lead_information_gain(
+    prior: sqlite3.Row | None,
+    prior_payload: dict[str, Any],
+    lead: dict[str, Any],
+) -> dict[str, Any]:
+    if prior is None:
+        return {"score": 1, "reasons": ["new semantic mechanism observation"]}
+    reasons: list[str] = []
+    prior_promotion = str(prior_payload.get("promotionLevel") or "observation")
+    current_promotion = str(lead.get("promotionLevel") or "observation")
+    if LEAD_PROMOTION_ORDER.get(current_promotion, 0) > LEAD_PROMOTION_ORDER.get(
+        prior_promotion, 0
+    ):
+        reasons.append(f"promotion {prior_promotion} -> {current_promotion}")
+    new_evidence = set(lead.get("evidence", [])) - set(prior_payload.get("evidence", []))
+    if new_evidence:
+        reasons.append(f"{len(new_evidence)} new retained evidence artifacts")
+    new_sources = set(lead.get("sourceReferences", [])) - set(
+        prior_payload.get("sourceReferences", [])
+    )
+    if new_sources:
+        reasons.append(f"{len(new_sources)} new source references")
+    prior_uncertainty = set(
+        (prior_payload.get("chainProgress") or {}).get("uncertaintiesResolved", [])
+    )
+    current_uncertainty = set(
+        (lead.get("chainProgress") or {}).get("uncertaintiesResolved", [])
+    )
+    resolved = current_uncertainty - prior_uncertainty
+    if resolved:
+        reasons.append(f"{len(resolved)} uncertainties resolved")
+    if lead.get("status") == "disproved" and prior["state"] != "disproved":
+        reasons.append("mechanism falsified with scoped negative knowledge")
+    if lead.get("executableOracle") and not prior_payload.get("executableOracle"):
+        reasons.append("machine-executable oracle added")
+    return {"score": len(reasons), "reasons": reasons}
+
+
+def lead_value_per_cost(
+    lead: dict[str, Any], information_gain: dict[str, Any]
+) -> dict[str, Any]:
+    capability = lead.get("capabilityModel")
+    measured = capability.get("measuredCost") if isinstance(capability, dict) else None
+    resolved = len(
+        (lead.get("chainProgress") or {}).get("uncertaintiesResolved", [])
+    )
+    information = int(information_gain.get("score", 0)) + resolved
+    if not isinstance(measured, dict) or float(measured.get("wallSeconds") or 0) <= 0:
+        return {
+            "status": "unmeasured",
+            "informationUnits": information,
+            "unitsPerHour": None,
+        }
+    wall_seconds = float(measured["wallSeconds"])
+    return {
+        "status": "measured",
+        "informationUnits": information,
+        "wallSeconds": wall_seconds,
+        "executions": int(measured.get("executions") or 0),
+        "unitsPerHour": information / (wall_seconds / 3600),
+    }
+
+
 def ingest_research_leads(
     root: Path,
     connection: sqlite3.Connection,
@@ -3201,19 +3737,49 @@ def ingest_research_leads(
     worker_id: str,
     leads: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    reconcile_research_leads(connection)
+    policy = lead_policy(connection)
     retained: list[dict[str, Any]] = []
     for lead in leads:
         identity = str(lead["semanticIdentity"])
+        mechanism = str(lead["mechanismFingerprint"])
         deterministic_id = "L" + hashlib.sha256(identity.encode()).hexdigest()[:15]
         now = utc_now()
         prior = connection.execute(
             "SELECT * FROM research_leads WHERE semantic_identity=?", (identity,)
         ).fetchone()
+        prior_payload = json.loads(prior["payload_json"]) if prior is not None else {}
+        information_gain = lead_information_gain(prior, prior_payload, lead)
+        value_per_cost = lead_value_per_cost(lead, information_gain)
         if prior is None:
             payload = dict(lead)
             payload["originTasks"] = [str(task["task_id"])]
             payload["originWorkers"] = [worker_id]
             payload["scheduledExperimentDigests"] = []
+            payload["promotionHistory"] = [
+                {
+                    "level": lead["promotionLevel"],
+                    "at": now,
+                    "taskId": str(task["task_id"]),
+                }
+            ]
+            payload["lastInformationGain"] = information_gain
+            state = str(lead["status"])
+            if state == "active":
+                admitted, replaced = reserve_active_lead_slot(
+                    connection,
+                    mechanism=mechanism,
+                    promotion=lead["promotionLevel"],
+                    policy=policy,
+                )
+                if not admitted:
+                    state = "suppressed"
+                    payload["schedulingDecision"] = {
+                        "state": "suppressed",
+                        "reason": "active frontier limit reached by equal or stronger mechanisms",
+                    }
+                elif replaced:
+                    payload["frontierReplacements"] = replaced
             connection.execute(
                 "INSERT INTO research_leads(lead_id,semantic_identity,kind,evidence_grade,state,"
                 "title,payload_json,first_task_id,first_worker_id,created_at,updated_at) "
@@ -3223,7 +3789,7 @@ def ingest_research_leads(
                     identity,
                     lead["kind"],
                     lead["evidenceGrade"],
-                    lead["status"],
+                    state,
                     lead["title"],
                     json.dumps(payload, sort_keys=True),
                     str(task["task_id"]),
@@ -3236,7 +3802,7 @@ def ingest_research_leads(
             created = True
         else:
             lead_id = str(prior["lead_id"])
-            payload = json.loads(prior["payload_json"])
+            payload = prior_payload
             payload["originTasks"] = sorted(
                 set(payload.get("originTasks", [])) | {str(task["task_id"])}
             )
@@ -3272,12 +3838,31 @@ def ingest_research_leads(
                     ):
                         if field in lead:
                             payload[field] = lead[field]
+            prior_promotion = str(payload.get("promotionLevel") or "observation")
+            if LEAD_PROMOTION_ORDER.get(lead["promotionLevel"], 0) > LEAD_PROMOTION_ORDER.get(
+                prior_promotion, 0
+            ):
+                payload.setdefault("promotionHistory", []).append(
+                    {
+                        "level": lead["promotionLevel"],
+                        "at": now,
+                        "taskId": str(task["task_id"]),
+                    }
+                )
+                payload["promotionLevel"] = lead["promotionLevel"]
+            if lead.get("executableOracle") is not None:
+                payload["executableOracle"] = lead["executableOracle"]
+            payload["mechanismFingerprint"] = mechanism
+            payload["lastInformationGain"] = information_gain
+            next_state = str(lead["status"])
+            if prior["state"] in {"suppressed", "stale"} and information_gain["score"] == 0:
+                next_state = str(prior["state"])
             connection.execute(
                 "UPDATE research_leads SET evidence_grade=?,state=?,title=?,payload_json=?,"
                 "updated_at=? WHERE lead_id=?",
                 (
                     grade,
-                    lead["status"],
+                    next_state,
                     lead["title"],
                     json.dumps(payload, sort_keys=True),
                     now,
@@ -3297,6 +3882,7 @@ def ingest_research_leads(
                 "lead": lead_id,
                 "experiment": lead["nextExperiment"],
                 "grade": lead["evidenceGrade"],
+                "oracle": lead.get("executableOracle"),
             }
         )
         row = connection.execute(
@@ -3304,7 +3890,21 @@ def ingest_research_leads(
         ).fetchone()
         payload = json.loads(row["payload_json"])
         scheduled = list(payload.get("scheduledExperimentDigests", []))
-        if row["state"] != "disproved" and experiment_digest not in scheduled:
+        counts = mechanism_counts(connection, mechanism)
+        schedule_reason = "eligible"
+        if row["state"] != "active":
+            schedule_reason = f"lead state is {row['state']}"
+        elif lead.get("executableOracle") is None:
+            schedule_reason = "no machine-executable oracle"
+        elif information_gain["score"] <= 0:
+            schedule_reason = "submission added no measurable information"
+        elif experiment_digest in scheduled:
+            schedule_reason = "equivalent experiment already scheduled"
+        elif counts["experiments"] >= policy["maxExperimentsPerMechanism"]:
+            schedule_reason = "per-mechanism experiment budget exhausted"
+        elif counts["running"] >= policy["maxRunningPerMechanism"]:
+            schedule_reason = "per-mechanism work-in-progress limit reached"
+        if schedule_reason == "eligible":
             suffix = len(scheduled) + 1
             scheduled_task = f"lead-{lead_id.lower()}-{suffix}"
             packet = root / "tasks" / f"dynamic-{scheduled_task}.md"
@@ -3357,6 +3957,11 @@ history, security commits, advisories, or other revisions to locate a bug.
                     1600
                     - LEAD_GRADE_ORDER.get(str(lead["evidenceGrade"]), 99)
                     + min(250, 10 * int(lead.get("chainProgressScore", 0)))
+                    + (
+                        min(100, int(value_per_cost["unitsPerHour"]))
+                        if value_per_cost["status"] == "measured"
+                        else 0
+                    )
                 ),
                 dependencies=[],
                 excluded_workers=[],
@@ -3375,10 +3980,17 @@ history, security commits, advisories, or other revisions to locate a bug.
             )
             scheduled.append(experiment_digest)
             payload["scheduledExperimentDigests"] = scheduled
-            connection.execute(
-                "UPDATE research_leads SET payload_json=?,updated_at=? WHERE lead_id=?",
-                (json.dumps(payload, sort_keys=True), now, lead_id),
-            )
+        payload["schedulingDecision"] = {
+            "state": "scheduled" if scheduled_task else "retained-only",
+            "reason": schedule_reason,
+            "informationGain": information_gain,
+            "uncertaintyRemovedPerCost": value_per_cost,
+            "mechanismBudget": counts,
+        }
+        connection.execute(
+            "UPDATE research_leads SET payload_json=?,updated_at=? WHERE lead_id=?",
+            (json.dumps(payload, sort_keys=True), now, lead_id),
+        )
         record_event(
             connection,
             "research-lead-ingested",
@@ -3391,6 +4003,9 @@ history, security commits, advisories, or other revisions to locate a bug.
                 "evidenceGrade": lead["evidenceGrade"],
                 "created": created,
                 "scheduledTask": scheduled_task,
+                "promotionLevel": lead["promotionLevel"],
+                "mechanismFingerprint": mechanism,
+                "schedulingReason": schedule_reason,
             },
         )
         retained.append(
@@ -3408,6 +4023,8 @@ def cmd_lead_status(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
     connection = connect_orchestration(root)
     try:
+        with connection:
+            reconcile_research_leads(connection)
         rows = sorted(
             connection.execute("SELECT * FROM research_leads").fetchall(),
             key=lead_rank_key,
@@ -3426,6 +4043,9 @@ def cmd_lead_status(args: argparse.Namespace) -> int:
                     "state": row["state"],
                     "title": row["title"],
                     "semanticIdentity": row["semantic_identity"],
+                    "mechanismFingerprint": payload.get("mechanismFingerprint"),
+                    "promotionLevel": payload.get("promotionLevel", "observation"),
+                    "schedulingDecision": payload.get("schedulingDecision"),
                     "nextExperiment": payload.get("nextExperiment"),
                     "originTasks": payload.get("originTasks", []),
                 }
@@ -3438,6 +4058,8 @@ def cmd_lead_status(args: argparse.Namespace) -> int:
                 "unique minimized stack cluster",
                 "source-confirmed invariant break",
                 "stable semantic identity breaks equal-grade ties",
+                "mechanism work-in-progress and experiment budgets limit queue growth",
+                "only machine-executable oracles enter the runtime queue",
             ],
             "impactClaimed": False,
             "leads": leads,
@@ -3948,6 +4570,14 @@ def experiment_frontier_identity(experiment: dict[str, Any]) -> str:
     return "EF-" + canonical_digest(identity)[:20]
 
 
+def frontier_has_executable_oracle(root: Path, experiment: dict[str, Any]) -> bool:
+    try:
+        oracle = validate_executable_oracle(root, experiment.get("executableOracle"))
+    except SystemExit:
+        return False
+    return oracle is not None
+
+
 def scoped_negative_matches_experiment(
     experiment: dict[str, Any], negative: dict[str, Any]
 ) -> bool:
@@ -3985,8 +4615,10 @@ def scoped_negative_matches_experiment(
     return canonical_scope(experiment_scope) == canonical_scope(negative_scope)
 
 
-def reconcile_experiment_frontier(connection: sqlite3.Connection) -> None:
-    """Turn orphaned running experiments into explicit inconclusive outcomes."""
+def reconcile_experiment_frontier(
+    root: Path, connection: sqlite3.Connection
+) -> None:
+    """Repair orphaned runs and confirmations without verified coordinator replay."""
 
     now = utc_now()
     for row in connection.execute(
@@ -4019,6 +4651,38 @@ def reconcile_experiment_frontier(connection: sqlite3.Connection) -> None:
                     row["frontier_id"],
                 ),
             )
+    for row in connection.execute(
+        "SELECT frontier_id,task_id,outcome_json FROM experiment_frontier "
+        "WHERE state='confirmed'"
+    ).fetchall():
+        try:
+            outcome = json.loads(row["outcome_json"] or "{}")
+        except json.JSONDecodeError:
+            outcome = {}
+        replay = outcome.get("coordinatorReplay") if isinstance(outcome, dict) else None
+        if coordinator_replay_is_machine_verified(
+            root, replay, expected_task_id=str(row["task_id"] or "")
+        ):
+            continue
+        repaired = {
+            "reason": "legacy confirmation lacked a machine-verified coordinator replay",
+            "priorOutcome": outcome,
+            "coordinatorReplayVerified": False,
+        }
+        connection.execute(
+            "UPDATE experiment_frontier SET state='inconclusive',outcome_json=?,"
+            "updated_at=? WHERE frontier_id=? AND state='confirmed'",
+            (json.dumps(repaired, sort_keys=True), now, row["frontier_id"]),
+        )
+        record_event(
+            connection,
+            "experiment-frontier-confirmation-revoked",
+            task_id=str(row["task_id"] or "") or None,
+            payload={
+                "frontierId": row["frontier_id"],
+                "reason": repaired["reason"],
+            },
+        )
 
 
 def schedule_experiment_frontier(
@@ -4031,7 +4695,7 @@ def schedule_experiment_frontier(
 ) -> str | None:
     """Synchronize the durable frontier and schedule its best eligible member."""
 
-    reconcile_experiment_frontier(connection)
+    reconcile_experiment_frontier(root, connection)
     now = utc_now()
     current_ids: set[str] = set()
     negatives = [
@@ -4146,10 +4810,17 @@ def schedule_experiment_frontier(
     ).fetchone()
     if active is not None or not analysis.get("focusEligible"):
         return None
-    chosen = connection.execute(
-        "SELECT * FROM experiment_frontier WHERE state='pending' "
-        "ORDER BY score DESC,created_at,frontier_id LIMIT 1"
-    ).fetchone()
+    chosen = next(
+        (
+            row
+            for row in connection.execute(
+                "SELECT * FROM experiment_frontier WHERE state='pending' "
+                "ORDER BY score DESC,created_at,frontier_id"
+            ).fetchall()
+            if frontier_has_executable_oracle(root, json.loads(row["payload_json"]))
+        ),
+        None,
+    )
     if chosen is None:
         return None
     experiment = json.loads(chosen["payload_json"])
@@ -4189,6 +4860,16 @@ it does not suppress a different mechanism.
 ## Falsifier
 
 {experiment['falsifier']}
+
+## Executable oracle
+
+```json
+{json.dumps(experiment['executableOracle'], indent=2, sort_keys=True)}
+```
+
+The coordinator, not the proposing worker, owns execution and automatic
+interpretation of this oracle. The worker may improve the recipe, but cannot
+confirm the experiment from prose or self-reported output.
 
 Retain a concrete observation. Do not promote it to a finding unless the filing
 evidence gate independently passes.
@@ -4232,12 +4913,14 @@ evidence gate independently passes.
 
 
 def complete_experiment_frontier(
+    root: Path,
     connection: sqlite3.Connection,
     *,
     task: sqlite3.Row,
     result: dict[str, Any],
     task_outcome: str,
     validated_leads: list[dict[str, Any]],
+    coordinator_replay: dict[str, Any] | None,
 ) -> None:
     row = connection.execute(
         "SELECT * FROM experiment_frontier WHERE task_id=? AND state='running'",
@@ -4276,6 +4959,17 @@ def complete_experiment_frontier(
         elif "chain-precondition-falsified" in milestones:
             state = "refuted"
             outcome = {"derivedFromMilestones": sorted(milestones)}
+    if state == "confirmed":
+        if not coordinator_replay_is_machine_verified(
+            root,
+            coordinator_replay,
+            expected_task_id=str(task["task_id"]),
+        ):
+            raise SystemExit(
+                "confirmed experiment requires a machine-verified coordinator replay"
+            )
+        outcome["coordinatorReplay"] = coordinator_replay
+        outcome["coordinatorReplayVerified"] = True
     connection.execute(
         "UPDATE experiment_frontier SET state=?,outcome_json=?,updated_at=? "
         "WHERE frontier_id=? AND state='running'",
@@ -5342,12 +6036,18 @@ def cmd_submit(args: argparse.Namespace) -> int:
             "lease_expires_at=NULL,last_error=?,updated_at=? WHERE task_id=?",
             (next_state, utc_now(), digest, last_error, utc_now(), args.task_id),
         )
+        connection.execute(
+            "UPDATE workers SET updated_at=? WHERE worker_id=?",
+            (utc_now(), args.worker_id),
+        )
         complete_experiment_frontier(
+            root,
             connection,
             task=task,
             result=result,
             task_outcome=args.outcome,
             validated_leads=validated_leads,
+            coordinator_replay=coordinator_replay,
         )
         campaign_graph_update = None
         if validated_leads or task["task_kind"] == "focused-chain-investigation":
@@ -5648,6 +6348,18 @@ def orchestration_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
     task_rows = connection.execute("SELECT * FROM tasks ORDER BY wave,task_id").fetchall()
     tasks = [dict(row) for row in task_rows]
     workers = [dict(row) for row in connection.execute("SELECT * FROM workers ORDER BY worker_id")]
+    accepted_by_agent = {
+        str(row["agent"]): int(row["count"])
+        for row in connection.execute(
+            "SELECT workers.agent,COUNT(*) AS count FROM submissions "
+            "JOIN workers ON workers.worker_id=submissions.worker_id "
+            "GROUP BY workers.agent"
+        ).fetchall()
+    }
+    for worker in workers:
+        worker["acceptedSubmissionsForAgent"] = accepted_by_agent.get(
+            str(worker["agent"]), 0
+        )
     counts: dict[str, int] = {}
     for task in tasks:
         counts[task["state"]] = counts.get(task["state"], 0) + 1
@@ -5732,6 +6444,7 @@ def orchestration_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
             "recommendedClaims": recommended_claims,
             "scaleOutOpportunity": unmatched_ready > 0 and can_expand,
             "hardCapReached": configured != "auto" and running >= int(configured),
+            "workerAllocation": get_metadata(connection, "workerAllocation", {}),
         },
         "workers": workers,
         "tasks": tasks,
@@ -6038,28 +6751,7 @@ def controlled_experiment_is_machine_verified(
     if not isinstance(experiments, list) or not experiments:
         return False
     for experiment in experiments:
-        if not isinstance(experiment, dict):
-            continue
-        try:
-            observation = safe_campaign_path(
-                root, experiment.get("controlledObservation")
-            )
-            signature = safe_campaign_path(
-                root, experiment.get("controlledObservationSignature")
-            )
-        except ValueError:
-            continue
-        try:
-            if (
-                experiment.get("controlledObservationSha256") != sha256(observation)
-                or experiment.get("controlledObservationSignatureSha256")
-                != sha256(signature)
-            ):
-                continue
-            result = verify_controlled_observation(root, observation, signature)
-        except (OSError, ValueError):
-            continue
-        if result.get("passed") is True:
+        if coordinator_replay_is_machine_verified(root, experiment):
             return True
     return False
 
@@ -6645,6 +7337,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init.add_argument("--mode", choices=("source", "local-lab", "testnet", "authorized-live"), default="source")
     init.add_argument("--program-url")
+    init.add_argument(
+        "--authorization-record",
+        action="store_true",
+        help="write optional AUTHORIZATION.md human-readable summary",
+    )
     init.set_defaults(func=cmd_init)
 
     dependency_add = sub.add_parser(

@@ -18,9 +18,9 @@ advance the queue. Read
 
 Resolve `scripts/`, `references/`, `assets/`, and `profiles/` from the physical
 skill directory, never from the target checkout or an assumed current working
-directory. Give workers absolute skill, campaign, authorization, claimed
-workspace, evidence, and result-template paths. Runtime permissions do not
-broaden campaign authorization.
+directory. Give workers absolute skill, campaign, claimed workspace, evidence,
+and result-template paths. Include the optional authorization summary only when
+it exists. Runtime permissions do not broaden campaign authorization.
 
 On Codex, invoke `$krineon`, keep the root agent as coordinator, and read the
 [Codex runtime adapter](references/codex.md) before launching workers. Use
@@ -35,8 +35,8 @@ agent as coordinator. Use the `task` tool for bounded, non-overlapping workers:
 `explore` for read-only analysis and `general` for workers that write artifacts
 or run authorized local experiments. Launch independent tasks in parallel
 within safe capacity. Every task has fresh context, so provide absolute skill,
-campaign, authorization, and workspace paths plus the claim instruction, exact
-revision, deliverables, evidence contract, and stop conditions. Assign a
+campaign, and workspace paths plus the claim instruction, exact revision,
+deliverables, evidence contract, and stop conditions. Assign a
 distinct registered identity such as `opencode:worker-a` to each fresh task and
 record its returned `task_id` as the runtime handle. Resuming a task preserves
 its identity; independent replay requires a fresh task and worker identity.
@@ -49,12 +49,13 @@ tools exposed by the active runtime.
 
 ## Intake and authority
 
-When the user supplies program rules and scope, preserve them verbatim and use
-them as campaign intake. Resolve an unambiguous public source repository and
-exact revision when possible. Ask only when a choice changes the asset,
-authority, credentials, meaningful cost, or safety boundary. Never infer
-permission for live systems, testnets, accounts, wallets, or shared data from
-source-code scope. Read [program intake](references/program-intake.md) and
+Program rules, scope intake, and `AUTHORIZATION.md` are optional for source-only
+campaigns. When the user supplies program rules and scope, preserve them
+verbatim and use them as campaign intake. Resolve an unambiguous public source
+repository and exact revision when possible. Ask only when a choice changes
+the asset, authority, credentials, meaningful cost, or safety boundary. Never
+infer permission for live systems, testnets, accounts, wallets, or shared data
+from source-code scope. Read [program intake](references/program-intake.md) and
 [safety](references/safety.md).
 
 Before dynamic work, record:
@@ -92,11 +93,13 @@ lockfiles, manifests, bundles, build graphs, or runtime linkage and pin only
 high-leverage sources there. Audit both the dependency and the caller boundary.
 Read [dependencies](references/dependencies.md).
 
-Static analysis is a hypothesis generator. Tree-sitter, Joern, Trailmark, and
-Z3 output does not become a candidate by itself. Prefer differential witnesses:
-two real pinned consumers, one hashed input, a recorded disagreement, and an
-equal control. Bind solver constraints to an exact source fragment and execute
-the result through both consumers. Read
+Static analysis is a hypothesis generator. Run Trailmark, Joern, Z3, and
+cppcheck whenever each tool is installed and compatible with the pinned source;
+retain explicit unavailable or not-applicable outcomes. Tree-sitter, Joern,
+Trailmark, Z3, and cppcheck output does not become a candidate by itself.
+Prefer differential witnesses: two real pinned consumers, one hashed input, a
+recorded disagreement, and an equal control. Bind solver constraints to an
+exact source fragment and execute the result through both consumers. Read
 [tool-assisted analysis](references/tool-assisted-analysis.md).
 
 Semantic discovery currently has one deliberately narrow pilot: Next.js
@@ -106,7 +109,15 @@ consumes them, and ownership of each intermediate representation. It then
 generates the cheapest experiment that separates agreement, normalization
 bypass, public alias, and unprotected-baseline explanations. Do not claim this
 depth for other ecosystems until an equally concrete boundary adapter exists.
-Read [semantic experiments](references/semantic-experiments.md).
+Read [the semantic IR](references/semantic-ir.md) and
+[semantic experiments](references/semantic-experiments.md).
+
+Require every runtime hypothesis to state competing explanations, one changed
+variable, baseline, enforcing-negative, and positive cases, expected outcomes
+for each explanation, raw exchange or trace evidence, and an automatic
+interpreter. Retain a hypothesis without that contract, but do not put it in
+the runtime queue. Unknown transformations create value-trace experiments;
+they never justify speculative findings.
 
 Every route must also name its eventual Critical authority boundary, the next
 intermediate capability, and the pinned-source reason that capability might
@@ -116,7 +127,11 @@ unknown, or impossible and require one execution to satisfy all capabilities,
 principal/process/namespace/runtime compatibility, object identity and
 generation, state, lifetime, ordering, deployment, and acquisition constraints.
 Maintain the versioned campaign-wide graph and schedule its highest-ranked
-missing-link experiment. Read
+missing-link experiment only when it has a machine-executable oracle. Use
+strict authority schema v2 for complete-chain reasoning: every edge names its
+input type, output authority, acquisition proof, measured reliability,
+unresolved assumptions, principal, process, runtime, object generation, state
+history, deployment, and terminal class. Read
 [execution-boundary and chain reasoning](references/chain-reasoning.md).
 
 ## Campaign orchestration
@@ -185,9 +200,13 @@ capabilities, new consumers, resolved acquisition prerequisites, compatible
 edges, preconditions, and uncertainty removed.
 
 Let workers retain an observation before they can map it to a Critical boundary.
-Keep observation, primitive, chain hypothesis, and validated connection as
-separate maturity levels. Never require an agent to invent an impact narrative
-to preserve useful evidence.
+Promote through observation, source-supported mechanism, runtime differential,
+verified primitive, compatible chain edge, and complete terminal. Require
+measurable new evidence at every transition. Enforce per-mechanism work and
+experiment limits, expire prose/source leads that do not improve, suppress
+semantic duplicates, and keep the active frontier bounded. A stronger lead may
+replace a weaker active lead without deleting its history. Never require an
+agent to invent an impact narrative to preserve useful evidence.
 
 ## Target-specific execution
 
@@ -225,6 +244,11 @@ minimize before queueing, and re-execute retained artifacts. Do not score
 controllability from a bug-class label. Prove chosen bytes, allocation identity
 and generation, stable reachability, or exact state influence as applicable.
 Measure race and allocator reliability as `N/M` across fresh processes.
+After every fuzzing or semantic run, feed real plateau, stack, invariant, and
+source-mapped consumer evidence through the
+[runtime feedback loop](references/runtime-feedback.md). The next action must
+be a measured continuation, minimization/replay, oracle verification, or a
+justified harness/grammar change. Task count is not feedback.
 
 ## False-positive and evidence gate
 
@@ -251,7 +275,10 @@ agent agreement, or a Boolean in JSON is not proof. Independent review must
 name a hypothesis failure mode and an observer failure mode, then bind an
 alternate oracle to a recomputed reviewer attestation. Keep first-fault
 classification, controllability, web reachability, renderer compromise, and
-sandbox escape as separate evidence levels. Read
+sandbox escape as separate evidence levels. An experiment may enter `confirmed`
+only when its frontier outcome contains a
+machine-verified coordinator replay. Demote older confirmations without that
+evidence to `inconclusive`. Read
 [false-positive control](references/false-positive-control.md),
 [evidence gates](references/evidence-gates.md), and
 [reality evidence](references/reality-evidence.md).
