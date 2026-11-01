@@ -31,192 +31,6 @@ Program rules and scope intake are optional for source-only campaigns. A
 `web-app` campaign requires a versioned application contract and remains
 offline until authorization is explicitly confirmed.
 
-## Start a web application campaign
-
-Give Codex the program rules, an explicitly authorized application URL or web
-contract, and secret references for owned identities. Do not paste credential
-values into the prompt or campaign files. Start with this prompt:
-
-```text
-$krineon Create a web-app campaign from PROGRAM_RULES.md and the explicitly
-authorized URL and owned identity references I supplied. Keep authorization
-unconfirmed until the exact origins, paths, methods, rules date, environment
-owner, expiration, effects, cleanup, and budgets are recorded. Produce an
-offline plan first. Use signed workflows and the controlled broker for any
-approved traffic. Do not test denial of service, perform infrastructure
-reconnaissance, evade protections, or access third-party data.
-```
-
-## Test a web application
-
-Use this workflow only for an application, accounts, tenants, and data that you
-own or are explicitly authorized to test. Begin with two owned identities when
-the application supports authorization or tenant-isolation testing. Create
-disposable records for each identity and record the expected owner and allowed
-actions before testing a cross-identity case.
-
-The command-line workflow is fail-closed:
-
-```bash
-# Offline intake. This sends no target requests.
-python3 scripts/campaign_bootstrap.py campaigns/web-demo \
-  --profile web-app \
-  --url https://app.example.test \
-  --guidelines PROGRAM_RULES.md \
-  --requests WEB_REQUESTS.md
-
-# Store an owned credential by reference. This argument is the environment
-# variable name, not the credential value.
-python3 scripts/web_secret_store.py /private/path/krineon-secrets \
-  --forbidden-root campaigns/web-demo \
-  --put-reference secret://owned-user \
-  --kind bearer \
-  --env KRINEON_OWNED_USER_TOKEN
-
-# Generate, complete, and apply the offline authorization review.
-python3 scripts/web_contract.py prepare-review \
-  campaigns/web-demo/web-campaign.json \
-  --output campaigns/web-demo/web/authorization-review.json
-python3 scripts/web_contract.py authorize campaigns/web-demo \
-  campaigns/web-demo/web-campaign.json \
-  campaigns/web-demo/web/authorization-review.json
-```
-
-Before authorization, inspect `web-campaign.json` and the redacted inputs under
-`web/inputs/`. Record the exact origins, path prefixes, methods, identities,
-tenants, effects, request limits, cleanup reserve, and stop conditions. The
-secret store also supports a no-echo prompt or a regular, non-symlink secret
-file with mode `0600`. The authorization is signed and bound to the exact
-contract and retained rules hashes. Any later contract edit invalidates it.
-
-Create one falsifiable experiment. Start from the workflow template, then
-replace every placeholder. Include at least two competing explanations, change
-one variable, bind every step to an owned resource, add executable controls and
-oracles, and define cleanup for every write:
-
-```bash
-cp assets/web-workflow.template.json \
-  campaigns/web-demo/web/approved-workflow.json
-
-# Edit approved-workflow.json before continuing.
-python3 scripts/web_workflow.py validate campaigns/web-demo \
-  campaigns/web-demo/web-campaign.json \
-  campaigns/web-demo/web/approved-workflow.json
-python3 scripts/web_workflow.py approve campaigns/web-demo \
-  campaigns/web-demo/web-campaign.json \
-  campaigns/web-demo/web/approved-workflow.json
-```
-
-Run HTTP-only workflows through the controlled broker. It rechecks the signed
-workflow, injects credentials at dispatch, enforces the shared budget, and
-retains public and restricted evidence separately:
-
-```bash
-python3 scripts/web_execution_broker.py campaigns/web-demo \
-  campaigns/web-demo/web-campaign.json \
-  campaigns/web-demo/web/approved-workflow.json \
-  --secret-store /private/path/krineon-secrets \
-  --output campaigns/web-demo/evidence/web/http-run-01
-```
-
-Use real Chromium for browser-only behavior. Select one browser step from the
-same signed workflow and use a fresh profile managed by the runner:
-
-```bash
-python3 scripts/web_cdp_runner.py campaigns/web-demo \
-  campaigns/web-demo/web-campaign.json \
-  campaigns/web-demo/web/approved-workflow.json \
-  --step browser-step-id \
-  --chromium /path/to/chrome-or-chromium \
-  --secret-store /private/path/krineon-secrets \
-  --output campaigns/web-demo/evidence/web/browser-run-01
-```
-
-Review the positive case, legitimate baseline, and enforcing negative control.
-Treat missing telemetry, authentication ambiguity, bot challenges, deployment
-drift, or cleanup failure as inconclusive. Do not promote a status-code-only
-anomaly. A valid result must show the prohibited server-visible effect through
-an authoritative readback.
-
-Finally, rebuild the disposable fixtures and replay the minimized workflow
-with a fresh reviewer identity and fresh credential bindings. Multi-step
-business-logic findings must pass `web_sequence_evidence.py` with disjoint
-machine evidence before promotion. HTTP and Chromium execution remain separate
-explicit commands. Nuclei is an optional credential-free broker-replay adapter,
-not part of default discovery. See the complete
-[web application workflow](references/web-app.md).
-
-Krineon can retain Markdown HTTP requests, HAR 1.2 files, Burp XML exports,
-individual raw requests saved from Burp Repeater or Proxy, deployment notes,
-and optional source as inputs. HTTP sequences and
-typed invariant oracles are operational. The application-aware HTTP/1.1 broker,
-byte-exact raw HTTP/1.1 transport, separate HTTP/2 adapter, and real
-Chromium/CDP scenario harness share one atomic, revocable campaign budget.
-Chromium child processes remain restricted to approved environments with
-proved egress confinement. Nuclei never receives a target URL or credential:
-the broker acquires an approved response, removes credentials, and exposes a
-bounded loopback replay to a pinned, sandboxed Nuclei binary. Optional ffuf
-support compiles small source-derived candidate lists; the broker, not ffuf,
-dispatches them. Neither tool is required by business-logic research. See
-[web application campaigns](references/web-app.md).
-
-The web profile uses `scripts/web_hypothesis_loop.py` and
-`scripts/web_oracles.py` to keep observed mechanisms, typed experiments,
-three-valued outcomes, and exact scoped negatives in Krineon's shared durable
-frontier.
-
-Web chains use typed capabilities instead of free-form labels. Each capability
-binds the actor and session, tenant, owned resource and owner, operation and
-scope, lifetime and invalidation, provider and consumer process/origin/cache,
-deployment epoch, prerequisites, measured effect, and evidence confidence.
-Explicit context transitions are required; a matching capability name cannot
-transfer authority across accounts, deployments, origins, or workflow states.
-
-Business-logic campaigns additionally use `scripts/web_business_logic.py`,
-`scripts/web_sequence_planner.py`, `scripts/web_composition_search.py`,
-`scripts/web_sequence_executor.py`, `scripts/web_sequence_evidence.py`, and
-`scripts/web_state_oracles.py`. They
-compile explicit application rules into owned-fixture, multi-actor workflows;
-search backward from one forbidden terminal instead of permuting captured
-requests; execute only coordinator-signed operation contracts; and decide from
-authoritative server or browser-network readback. Nuclei and single-request
-identifier substitution provide leads but do not replace workflow discovery. See [web application
-campaigns](references/web-app.md#business-logic-and-authorization-sequences).
-
-Cache and representation-boundary campaigns use
-`scripts/web_cache_research.py`, `scripts/web_deserialization_research.py`, and
-`scripts/web_boundary_adapters.py`. These tools admit bounded experiments and
-evaluate retained evidence. They do not provide a generic exploit mode or
-perform target traffic. Cache claims require independent victim reuse and
-proved shared-cache provenance. Deserialization claims require an observed
-ingress, attacker acquisition, enforcing controls, and an owned nonpersistent
-security effect. See [cache and deserialization research](references/web-app.md#cache-and-deserialization-research).
-
-Before promotion, `scripts/web_evidence.py` validates the external deployment
-epoch and `scripts/web_finding_gate.py` binds that evidence to the authorized
-recipe, owned fixtures, semantic controls, independently observed effect,
-cleanup, fresh replay, and reviewed artifact tiers. Black-box evidence can
-prove an external authority violation without claiming an internal source root
-cause. A changed stable deployment baseline expires the experiment. Krineon
-keeps raw credentials in restricted private evidence, rejects leaks from the
-reviewer package, and never publishes or submits a finding automatically.
-
-The trusted importer preserves ordered headers, query order, request bodies,
-and separate exact and semantic representations. It treats Markdown prose and
-capture annotations as inert context. HAR and Burp captures require a reviewed
-contract identity when they contain credentials. Literal bearer tokens,
-cookies, and API keys move into a private secret store outside the campaign.
-The importer writes separate redacted HAR, XML, or raw-request evidence, drops captured
-responses, and never overwrites the researcher's original file. Workers see
-only inert redacted request bundles. OpenAPI intake remains deferred and fails
-closed instead of copying potentially credential-bearing input.
-
-For evaluation, the coordinator can commit to an oracle set held outside the
-campaign before any test runs. Krineon then scores only signed broker
-observations against those hidden expected outcomes. The result reports exact
-matches, rejected evidence, precision, and recall; it does not let workers
-rewrite the answers after observing the target.
-
 Krineon detects tools and does not install them automatically. When Trailmark,
 Joern, Z3, or cppcheck is installed and compatible with the target, the static
 pipeline must run it and retain the result. Tree-sitter, AFL++, libFuzzer, and
@@ -359,6 +173,75 @@ and bounded tests in an owned local environment. Do not test live systems.
 
 For a headless OMP campaign, configure `--wait-async` and an appropriate
 `--max-time` value so the session retains active workers.
+
+## Test a web application
+
+Use Krineon only on applications and accounts that you own or are explicitly
+authorized to test.
+
+### Before you begin
+
+Prepare the following information:
+
+- The program rules and exact in-scope URL.
+- Any documented request limits and prohibited actions.
+- Two owned test accounts when testing authorization or tenant isolation.
+- Disposable test records owned by those accounts.
+- Optional redacted HTTP requests, HAR files, or Burp exports.
+
+Do not paste passwords, cookies, API keys, or bearer tokens into the prompt.
+Krineon stores credentials through private references and keeps them out of
+agent-visible evidence.
+
+### Start the campaign
+
+Open the authorized target in Codex, OpenCode, or OMP as described above.
+Attach the program rules and optional request files, then use this prompt:
+
+```text
+Use Krineon to test this authorized web application. Create an offline plan
+first and make no requests until I review the exact scope, accounts, actions,
+limits, cleanup, and stop conditions. After approval, establish a legitimate
+baseline and test one security hypothesis at a time. Use only my owned accounts
+and disposable data. Require a negative control, authoritative readback,
+cleanup, and independent replay before reporting a finding.
+```
+
+### Review and approve the plan
+
+Check the generated plan before allowing traffic. Confirm that it contains:
+
+- Only the intended origins, paths, and HTTP methods.
+- The correct account, role, tenant, and resource ownership for each identity.
+- Small request, time, concurrency, and data limits.
+- Cleanup steps for every state-changing action.
+- Stop conditions for third-party data, authentication ambiguity, bot
+  challenges, unexpected effects, or exhausted limits.
+
+If any item is missing or incorrect, ask Krineon to update the plan. Approve
+the campaign only after the plan matches the program rules.
+
+### Run and verify the test
+
+Krineon chooses controlled HTTP replay or real Chrome based on the behavior
+being tested. It changes one relevant variable while keeping the target build,
+account state, and test data stable.
+
+A valid result must include all of the following:
+
+1. A legitimate baseline that demonstrates the expected workflow.
+2. An enforcing negative control that distinguishes the suspected mechanism.
+3. A prohibited server-visible effect verified through authoritative readback.
+4. Successful cleanup of every disposable change.
+5. A fresh replay by a different reviewer identity with new credential
+   bindings and rebuilt fixtures.
+
+Treat missing telemetry, authentication uncertainty, challenge pages,
+deployment changes, or cleanup failures as inconclusive. A status code,
+scanner match, screenshot, or unusual response is not a finding by itself.
+
+See [Web application campaigns](references/web-app.md) for the complete
+contract, evidence, browser, business-logic, cache, and replay specifications.
 
 ## Update Krineon
 
