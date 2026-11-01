@@ -10,11 +10,6 @@ changelogs, advisories, Git history, or patched-version comparisons to discover
 bugs. It retains partial primitives as research leads, but it promotes a
 finding only after a production-equivalent proof and independent replay.
 
-Krineon's current semantic-discovery pilot focuses on one boundary: whether
-Next.js authorization and production route execution resolve the same request
-to the same resource. Support for building or exercising other targets does not
-mean Krineon can yet derive equally strong oracles for them.
-
 ## Requirements
 
 Install or provide the following components:
