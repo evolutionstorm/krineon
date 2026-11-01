@@ -138,6 +138,30 @@ Only `completed` satisfies a dependency. `recover` atomically requeues expired
 leases while attempts remain, marks timeouts, and propagates dependency failure.
 The campaign deadline, concurrency mode or explicit safety ceiling, per-task
 timeout, lease duration, and attempt budget come from the reviewed launch plan.
+
+## Durable web resource leases
+
+Task leases protect scheduler ownership. Resource leases protect application
+state. A stateful web task declares each conflicting resource by type, stable
+ID, access mode, and cleanup requirement. Supported classes include
+identity/session refresh, owned objects, workflow instances, cache-key
+namespaces, browser profiles, and receiver/callback correlation. Shared reads
+may run together. An exclusive lease conflicts with every other lease for the
+same resource, and resources are acquired in deterministic order.
+
+Use `assets/resource-checkpoint.template.json` to retain authoritative state
+before and after security-relevant effects. The checkpoint covers the complete
+conflicting set and records whether resumption is safe. Heartbeats renew task
+and resource leases together. If a worker disappears, a timeout or campaign
+deadline occurs, or cleanup cannot be verified, the scheduler blocks the
+mutable namespace and retains the last private checkpoint. It does not
+automatically replay a partially completed workflow.
+
+Only an active coordinator can clear the block, and only with authoritative
+recovery evidence stored inside the campaign. Status output omits lease tokens
+and checkpoint contents. Network request, byte, browser-event, and evidence
+budgets remain campaign-wide and independent of worker count; acquiring another
+resource lease does not create more network authority.
 With `maxConcurrency: "auto"`, every distinct active runtime-agent identity
 contributes one slot. Registering more genuine agents expands capacity without
 reserving headcount for any lane; aliases do not add capacity because one agent

@@ -76,6 +76,47 @@ class RuntimeFeedbackTests(unittest.TestCase):
         self.assertEqual(result["action"]["kind"], "instrument-unreached-consumer")
         self.assertFalse(result["action"]["machineEvidence"])
 
+    def test_web_inconclusive_auth_does_not_promote_or_use_crash_priority(self) -> None:
+        ir = {"profile": "web-app", "web": {}, "experimentCandidates": []}
+        result = decide(
+            ir,
+            crashes=[
+                {
+                    "stack": {"clusterId": "must-not-control-web-priority"},
+                    "minimizedSha256": "a" * 64,
+                    "replayConfirmed": True,
+                }
+            ],
+            observations=[
+                {
+                    "outcome": "inconclusive",
+                    "reason": "authentication-expiry-or-state",
+                    "contractId": "web-1",
+                }
+            ],
+        )
+        self.assertEqual(result["action"]["kind"], "refresh-owned-auth-baseline")
+        self.assertFalse(result["promotionAuthorized"])
+
+    def test_web_sequence_oracle_result_drives_consistency_follow_up(self) -> None:
+        ir = {"profile": "web-app", "web": {}, "experimentCandidates": []}
+        result = decide(
+            ir,
+            observations=[
+                {
+                    "kind": "krineon-web-sequence-execution",
+                    "oracleResult": {
+                        "outcome": "inconclusive",
+                        "reason": "consistency-window-unresolved",
+                        "oracleId": "revocation-state",
+                    },
+                }
+            ],
+        )
+        self.assertEqual(
+            result["action"]["kind"], "wait-approved-consistency-window"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

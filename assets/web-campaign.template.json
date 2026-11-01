@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 2,
+  "profile": "web-app",
+  "targetKind": "web-application",
+  "accessMode": "graybox",
+  "environment": "authorized-staging",
+  "environmentOwner": "replace-with-owner",
+  "discoveryTrack": "first-principles",
+  "impactObjective": "high-critical",
+  "origins": [
+    {
+      "id": "app",
+      "url": "https://app.example.test",
+      "purpose": "application-testing",
+      "allowedPathPrefixes": [
+        "/"
+      ],
+      "excludedPaths": [],
+      "allowedMethods": [
+        "GET",
+        "HEAD"
+      ],
+      "maxRequestsPerSecond": 1,
+      "maxConcurrentRequests": 1
+    }
+  ],
+  "authorization": {
+    "confirmed": false,
+    "rulesFile": "PROGRAM_RULES.md",
+    "confirmedBy": "",
+    "confirmedAt": null,
+    "validUntil": null,
+    "ownedFixtureNamespace": "replace-with-campaign-namespace",
+    "denyEffects": [
+      "dos",
+      "resource-exhaustion",
+      "third-party-data",
+      "real-fund-movement",
+      "persistence",
+      "uncontrolled-command-execution",
+      "port-scanning",
+      "host-discovery",
+      "bot-evasion"
+    ],
+    "unknownEffectPolicy": "block-until-reviewed",
+    "allowCacheMutation": false,
+    "allowDeserializationExperiments": false,
+    "allowBoundedConcurrency": false,
+    "allowExternalCallbacks": false,
+    "approvedCallbackOriginIds": [],
+    "allowRedirects": false,
+    "allowUploads": false,
+    "allowWebSockets": false,
+    "allowBrowserNavigation": false,
+    "allowStateChangingOperations": false,
+    "allowTerminalExecution": false,
+    "allowNuclei": false,
+    "allowCredentialRefresh": false,
+    "allowOAuthRefresh": false,
+    "allowCsrfHandling": false,
+    "allowRequestSigning": false,
+    "allowHttpDesynchronization": false,
+    "boundedRaceApproval": {
+      "approved": false,
+      "disposableFixture": "",
+      "maxParticipants": 2,
+      "availabilityObjective": false
+    },
+    "botProtectionApproval": {
+      "enabled": false,
+      "kind": "",
+      "approvedBy": "",
+      "evidence": "",
+      "baselineRevalidated": false,
+      "environmentDifferences": []
+    },
+    "stopConditions": [
+      "scope ambiguity",
+      "third-party data",
+      "unexpected external side effect",
+      "budget exhaustion",
+      "authorization expiry"
+    ]
+  },
+  "identities": [],
+  "requestInputs": {
+    "markdownFiles": [],
+    "requestBundles": [],
+    "harFiles": [],
+    "burpExports": [],
+    "apiSpecifications": [],
+    "sourceRoots": [],
+    "deploymentDetails": []
+  },
+  "effectClasses": {
+    "read-only": {
+      "permitted": true
+    },
+    "disposable-write": {
+      "permitted": false,
+      "requiresCleanup": true
+    },
+    "sensitive": {
+      "permitted": false
+    },
+    "external-side-effect": {
+      "permitted": false
+    },
+    "unknown": {
+      "permitted": false
+    }
+  },
+  "actionPolicies": [
+    {
+      "id": "default-read",
+      "originId": "app",
+      "pathPrefix": "/",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "effectClasses": [
+        "read-only"
+      ],
+      "maxRequestBodyBytes": 65536,
+      "maxResponseBodyBytes": 1048576
+    }
+  ],
+  "budget": {
+    "totalRequests": 200,
+    "cleanupReservedRequests": 20,
+    "totalRequestBytes": 10485760,
+    "totalResponseBytes": 52428800,
+    "maxRequestsPerSecond": 1,
+    "maxConcurrentRequests": 1,
+    "maxRequestBodyBytes": 65536,
+    "maxResponseBodyBytes": 1048576,
+    "maxDecompressedBytes": 2097152,
+    "maxRedirects": 3,
+    "maxWebsocketFrameBytes": 1048576,
+    "maxBrowserEvents": 10000,
+    "totalStorageBytes": 104857600,
+    "maxActions": 200,
+    "maxWallSeconds": 1800,
+    "automaticRetries": 0
+  },
+  "networkContainment": {
+    "remoteBrowserTraffic": "blocked-until-os-egress-enforcement",
+    "remoteNucleiTraffic": "blocked-until-os-egress-enforcement",
+    "runnerNamespaceRequired": true,
+    "ownedInternalLabCidrs": [],
+    "allowedDestinationCidrs": [],
+    "deniedDestinationCidrs": [],
+    "evidence": null
+  },
+  "nuclei": {
+    "enabled": false,
+    "optional": true,
+    "directTargetTraffic": false,
+    "brokerReplayOnly": true,
+    "profilePath": "assets/nuclei-profile.template.json",
+    "reviewedManifestPath": "assets/nuclei-reviewed-templates.manifest.json",
+    "admittedTemplates": [],
+    "maxTemplates": 0
+  },
+  "knownIssueBaseline": {
+    "enabled": false,
+    "sources": []
+  },
+  "program": {
+    "url": "",
+    "rulesDate": "",
+    "researcherHeaders": {}
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-ffuf-profile",
+  "id": "replace-with-ffuf-profile-id",
+  "prerequisiteVersion": "replace-with-deployment-version",
+  "identityRef": "replace-with-owned-identity",
+  "originRef": "replace-with-approved-origin",
+  "browserFingerprintImpersonation": false,
+  "botEvasion": false,
+  "recursion": false,
+  "calibration": {
+    "automatic": false,
+    "approved": false,
+    "maxProbes": 0
+  },
+  "limits": {
+    "maxCandidates": 16,
+    "maxCombinations": 32,
+    "maxRedirects": 0,
+    "maxRetries": 0,
+    "maxRequests": 32
+  },
+  "candidates": [
+    {
+      "id": "observed-sibling-operation",
+      "path": "/api/owned-resource/export",
+      "source": "sibling-operation",
+      "rationale": "The owned normal workflow exposes create and read siblings under the same resource.",
+      "evidence": [
+        "evidence/endpoint-catalog.json"
+      ]
+    }
+  ]
+}

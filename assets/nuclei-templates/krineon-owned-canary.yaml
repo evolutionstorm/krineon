@@ -1,0 +1,24 @@
+id: krineon-owned-canary
+
+info:
+  name: Krineon owned fixture canary
+  author: krineon
+  severity: info
+  description: Matches one synthetic canary in an owned broker replay fixture.
+  tags: krineon,generic-invariant,owned-fixture
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/fixture/canary"
+    redirects: false
+    max-redirects: 0
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - KRINEON_OWNED_CANARY

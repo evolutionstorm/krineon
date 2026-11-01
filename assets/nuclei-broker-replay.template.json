@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-nuclei-broker-replay",
+  "targetTrafficAcquiredBy": "krineon-web-broker",
+  "identityScopedCredentialInjection": true,
+  "credentialsIncludedInReplay": false,
+  "containment": {
+    "loopbackOnly": true,
+    "alternateEngineEgressBlocked": true,
+    "updatesAndUploadsBlocked": true,
+    "engineSha256": "replace-with-pinned-engine-sha256",
+    "evidence": [
+      {
+        "path": "nuclei-sandbox-proof.json",
+        "sha256": "replace-with-sha256"
+      }
+    ],
+    "launcher": {
+      "path": "replace-with-coordinator-controlled-sandbox-launcher",
+      "sha256": "replace-with-launcher-sha256",
+      "interface": "argv-prefix-double-dash",
+      "arguments": []
+    }
+  },
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/fixture/canary",
+      "sourceOriginId": "owned-loopback-fixture",
+      "ownedFixtureNamespace": "krineon-nuclei-policy-tests",
+      "status": 200,
+      "headers": {
+        "Content-Type": "text/plain"
+      },
+      "bodyBase64": "S1JJTkVPTl9PV05FRF9DQU5BUlk=",
+      "brokerObservationSigned": true,
+      "brokerObservationSha256": "replace-with-signed-broker-observation-sha256",
+      "identityBindingVersion": "replace-with-owned-identity-binding-version",
+      "budgetReceipt": {
+        "chargedBy": "krineon-web-broker",
+        "reservationId": "replace-with-broker-budget-reservation-id",
+        "requestCount": 1,
+        "responseBytes": 20,
+        "signed": true
+      }
+    }
+  ]
+}

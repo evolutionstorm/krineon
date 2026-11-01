@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-resource-checkpoint",
+  "taskId": "replace-with-task-id",
+  "sequenceId": "replace-with-workflow-or-experiment-id",
+  "phase": "before-effect",
+  "resources": [
+    {
+      "type": "owned-object",
+      "id": "replace-with-owned-resource-id",
+      "authoritativeState": "replace-with-observed-server-state",
+      "evidence": "evidence/resource-checkpoints/replace-with-record.json",
+      "safeToResume": false
+    }
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "prerequisiteVersion": "replace-with-derived-prerequisite-version",
+  "id": "replace-with-forbidden-goal-id",
+  "title": "Actor B must not consume actor A's private capability after revocation",
+  "compositionFamily": "grant-then-revocation",
+  "normalPlanId": "replace-with-confirmed-normal-plan-id",
+  "legitimateReplay": {
+    "status": "confirmed",
+    "observationEpoch": "replace-with-owned-fixture-epoch",
+    "beforeStateEvidence": [
+      "evidence/normal-before.json"
+    ],
+    "afterStateEvidence": [
+      "evidence/normal-after.json"
+    ],
+    "policyEvidence": [
+      "owner-specified rule or source-supported policy"
+    ]
+  },
+  "forbiddenTerminal": {
+    "consumerOperationId": "replace-with-terminal-consumer-operation-id",
+    "observerOperationId": "replace-with-independent-observer-operation-id",
+    "prohibitedEffect": "Actor B reads actor A's private export after revocation",
+    "policyBasis": "replace-with-owner-specified-or-source-supported-policy",
+    "attackerActorRef": "actor-b",
+    "observerActorRef": "actor-a-observer",
+    "resourceId": "owned-resource-a",
+    "tenant": "tenant-a",
+    "owner": "actor-a",
+    "version": "v1",
+    "generation": "g1",
+    "action": "read-private-export",
+    "observationEpoch": "replace-with-owned-fixture-epoch"
+  },
+  "startingAuthority": {
+    "actorRefs": [
+      "actor-b"
+    ],
+    "observerActorRefs": [
+      "actor-a-observer"
+    ],
+    "resources": [
+      {
+        "id": "owned-resource-a",
+        "tenant": "tenant-a",
+        "owner": "actor-a",
+        "version": "v1",
+        "generation": "g1",
+        "relationship": "revoked",
+        "observationEpoch": "replace-with-owned-fixture-epoch",
+        "owned": true
+      }
+    ],
+    "serverValueRefs": [],
+    "capabilityRefs": [],
+    "invalidatedValueRefs": [],
+    "consumptionCounts": {},
+    "permissionVersions": {
+      "actor-b": "permissions-v2-revoked"
+    },
+    "sessionRefreshVersions": {
+      "actor-b": "session-refresh-v1"
+    }
+  },
+  "candidateOperationIds": [
+    "replace-with-terminal-consumer-operation-id"
+  ],
+  "operationSemantics": {
+    "replace-with-terminal-consumer-operation-id": {
+      "attackerCanAttempt": true,
+      "referencePolicy": "forbidden",
+      "observationEpoch": "replace-with-owned-fixture-epoch",
+      "evidence": [
+        "observed route and actor can submit this operation"
+      ],
+      "resourceTransitions": [],
+      "permissionTransitions": []
+    }
+  },
+  "historyChange": {
+    "kind": "omitted-prerequisite",
+    "operationId": "replace-with-terminal-consumer-operation-id",
+    "reference": "current-grant-required"
+  },
+  "controlHistories": [
+    {
+      "id": "restore-current-grant",
+      "purpose": "restore-disputed-binding",
+      "disputedBinding": "current-grant-required",
+      "operationIds": [
+        "replace-with-legitimate-baseline-operation-id",
+        "replace-with-grant-restoration-operation-id",
+        "replace-with-terminal-consumer-operation-id",
+        "replace-with-independent-observer-operation-id"
+      ],
+      "expectedObservation": "The current grant permits the same consumer and resource"
+    }
+  ],
+  "competingExplanations": [
+    {
+      "id": "H1",
+      "statement": "The consumer fails to enforce current grant state",
+      "expectedObservations": [
+        "attacker-terminal-readback matches the protected owner state"
+      ]
+    },
+    {
+      "id": "H2",
+      "statement": "The response is an error or authorized sharing artifact",
+      "expectedObservations": [
+        "the independent readback or binding control differs"
+      ]
+    }
+  ],
+  "primitiveContributions": [],
+  "stateOracle": {
+    "schemaVersion": 1,
+    "id": "replace-with-independent-terminal-oracle",
+    "family": "state-invalidation",
+    "claim": "Revoked actor B cannot read actor A's private export",
+    "ruleBasis": "replace-with-policy-evidence",
+    "ruleBasisConfidence": "owner-specified",
+    "prerequisiteVersion": "replace-with-derived-prerequisite-version",
+    "consistencyWindowSeconds": 0,
+    "requiredObservations": [
+      "normal-owner-read",
+      "invalid-resource-control",
+      "attacker-terminal-readback"
+    ],
+    "terminalObservations": [
+      "attacker-terminal-readback"
+    ],
+    "assertions": [
+      {
+        "id": "owner-control",
+        "role": "baseline-control",
+        "operator": "equals",
+        "left": {
+          "observation": "normal-owner-read",
+          "field": "state.status"
+        },
+        "right": {
+          "literal": 200
+        },
+        "expected": true
+      },
+      {
+        "id": "invalid-control",
+        "role": "enforcing-negative",
+        "operator": "equals",
+        "left": {
+          "observation": "invalid-resource-control",
+          "field": "state.status"
+        },
+        "right": {
+          "literal": 404
+        },
+        "expected": true
+      },
+      {
+        "id": "revoked-access-isolated",
+        "role": "positive-invariant",
+        "operator": "not-equals",
+        "left": {
+          "observation": "attacker-terminal-readback",
+          "field": "state.bodySha256"
+        },
+        "right": {
+          "observation": "normal-owner-read",
+          "field": "state.bodySha256"
+        },
+        "expected": true
+      }
+    ]
+  },
+  "counterfactualExceptions": {
+    "unsatisfiedRequirementRefs": [
+      "current-grant-required"
+    ],
+    "invalidatedValueRefs": [],
+    "replayedValueRefs": []
+  },
+  "approvedLimits": {
+    "maxPathLength": 8,
+    "maxExecutionsPerOperation": 2,
+    "maxRequests": 16,
+    "maxPolling": 4,
+    "maxWallSeconds": 60,
+    "maxStateChangingEffects": 4,
+    "maxFrontierStates": 500,
+    "allowConcurrency": false
+  },
+  "reviewedBudgetExtension": null,
+  "priorOutcomes": [],
+  "independentReplayRequirements": {
+    "rebuildDisposableFixtures": true,
+    "freshCredentialBindings": true,
+    "replayEntireMinimalSequence": true,
+    "rejectCopiedTerminalResponse": true,
+    "rejectPrepopulatedState": true,
+    "rejectStaleApproval": true,
+    "rejectPrivateEvaluatorResource": true,
+    "minimumIndependentReviewers": 1,
+    "legitimateOtherActorActions": [
+      "The owned resource owner establishes the legitimate control state"
+    ],
+    "victimInteraction": "State the exact owned-actor interaction or none"
+  }
+}

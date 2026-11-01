@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-web-deserialization-experiment",
+  "id": "replace-with-deserialization-experiment-id",
+  "title": "One representation-to-authority boundary",
+  "prerequisiteVersion": "replace-with-deployment-version",
+  "ingress": {
+    "kind": "typed-json",
+    "confidence": "observed",
+    "workflowRef": "web/owned-deserialization-ingress.json",
+    "consumer": "replace-with-observed-consumer",
+    "evidence": [
+      "evidence/owned-legitimate-ingress.json"
+    ]
+  },
+  "baseline": {
+    "owned": true,
+    "actorRef": "owned-actor-a",
+    "representationRef": "evidence/owned-baseline.json",
+    "sha256": "replace-with-canonical-json-sha256",
+    "objectType": "replace-with-expected-object-type"
+  },
+  "boundary": {
+    "expectedRepresentation": "replace-with-expected-schema-or-format",
+    "integrityBoundary": "none",
+    "objectType": "replace-with-expected-object-type",
+    "identityBinding": "owned-actor-a and owned-resource-a",
+    "consumer": "replace-with-real-consumer"
+  },
+  "attackerAcquisition": [
+    {
+      "item": "type name or state carrier required by the candidate",
+      "source": "ordinary owned-account response or public client artifact",
+      "evidence": "evidence/attacker-acquisition.json",
+      "requiresPrivateVictimArtifact": false
+    }
+  ],
+  "mutationBudget": {
+    "maxCases": 8,
+    "maxSerializedBytes": 65536,
+    "maxDepth": 8
+  },
+  "mutations": [
+    {
+      "id": "small-type-change",
+      "operation": "replace-type",
+      "pointer": "/ownedField",
+      "value": {
+        "candidate": "bounded-structured-value"
+      }
+    }
+  ],
+  "signaturePolicy": {
+    "mode": "not-applicable",
+    "ownedAuthority": false,
+    "evidence": [],
+    "invalidSignatureControlId": null
+  },
+  "effectPolicy": {
+    "allowedCanaryEffects": [
+      "owned-dispatch-selection-observation"
+    ],
+    "forbiddenEffects": [
+      "command-execution",
+      "crash",
+      "denial-of-service",
+      "external-callback",
+      "file-write",
+      "generic-gadget-chain",
+      "shell"
+    ],
+    "ownedResourceOnly": true,
+    "persistent": false
+  },
+  "controls": {
+    "legitimateBaselineCaseId": "legitimate-baseline",
+    "benignTypeControlId": "benign-type-control",
+    "invalidSignatureControlId": null,
+    "independentReplayRef": "evidence/independent-replay.json"
+  },
+  "configurationPreconditions": [
+    "supported production-equivalent parser and consumer configuration"
+  ]
+}

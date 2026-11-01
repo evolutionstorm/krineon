@@ -183,6 +183,67 @@ class CampaignBootstrapTests(unittest.TestCase):
             )
             self.assertTrue((campaign / "orchestration.db").is_file())
 
+    def test_proposed_web_cli_aliases_are_offline_and_import_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rules = root / "PROGRAM_RULES.md"
+            rules.write_text("Owned test application only.\n", encoding="utf-8")
+            requests = root / "WEB_REQUESTS.md"
+            requests.write_text(
+                """```yaml krineon-web
+schemaVersion: 1
+baseUrl: https://app.example.test
+origin: app
+purpose: application-testing
+defaultWorkflow: public-baseline
+identities: {}
+requests:
+  public-home:
+    identity: anonymous
+    workflow: public-baseline
+    origin: app
+    purpose: application-testing
+    effect: read-only
+    ownedResource: public-home
+    resourceKind: public-page
+    expectedOwner: public
+    expectedRule: the public baseline returns only public content
+    dependsOn: []
+    protocol: http/1.1
+```
+
+## Request: public-home
+
+```http
+GET / HTTP/1.1
+Host: app.example.test
+Accept: text/html
+
+```
+""",
+                encoding="utf-8",
+            )
+            campaign = root / "campaigns" / "web-demo"
+            completed = self.run_bootstrap(
+                str(campaign),
+                "--profile",
+                "web-app",
+                "--url",
+                "https://app.example.test",
+                "--guidelines",
+                str(rules),
+                "--requests",
+                str(requests),
+                "--json",
+            )
+            result = json.loads(completed.stdout)
+            self.assertFalse(result["authorizationConfirmed"])
+            contract = json.loads((campaign / "web-campaign.json").read_text())
+            self.assertFalse(contract["authorization"]["confirmed"])
+            self.assertTrue((campaign / "web" / "offline-plan.json").is_file())
+            self.assertTrue((campaign / "web" / "inputs" / "request-1.bundle.json").is_file())
+            self.assertTrue((campaign / "web" / "inputs" / "request-1.redacted.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

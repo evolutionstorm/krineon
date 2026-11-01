@@ -1,0 +1,354 @@
+{
+  "schemaVersion": 1,
+  "name": "web-app",
+  "description": "Authorized application-security research with bounded HTTP and browser execution, typed identity and resource observations, multi-step workflow discovery, and independent replay.",
+  "schedulingPolicy": {
+    "allocation": "dynamic-evidence-driven",
+    "capacity": "runtime-advertised",
+    "fixedWorkersPerLane": false,
+    "allowRuntimeExpansion": true,
+    "preferFourOrMoreWorkersWhenAvailable": true,
+    "scaleOutGate": "coordinator-reexecution-liar-test",
+    "approachFamilyBalancing": "active-load-then-coverage-before-priority",
+    "allowPromiseBasedDominance": false,
+    "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link",
+    "internalObjective": "rank independently observed invariant disagreements, verified authorization or state primitives, and compatible multi-step chain edges",
+    "filingObjective": "independently replayed application-specific High, Critical, or RCE impact",
+    "partialEvidenceAdvancesQueue": true
+  },
+  "lanes": [
+    {
+      "wave": 0,
+      "id": "web-contract-coordinator",
+      "title": "Web authorization and execution-contract coordinator",
+      "objective": "Validate the versioned web campaign contract, exact origins and paths, owned identities and tenants, effect classes, shared budgets, cleanup reserve, expiry, and stop conditions. Refuse all target traffic until authorization.confirmed is true. Record the discovery track and do not consult known-vulnerability templates in first-principles mode.",
+      "deliverables": [
+        "validated web-campaign.json with no plaintext credentials",
+        "offline plan when authorization is unconfirmed",
+        "shared broker budget and effect-policy record",
+        "passing no-DoS and zero-traffic authorization controls"
+      ],
+      "priority": 1000,
+      "dependsOn": []
+    },
+    {
+      "wave": 1,
+      "id": "web-identity-resource-inventory",
+      "title": "Identity, tenant, resource, and authority inventory",
+      "objective": "After the required JavaScript/API extraction and endpoint catalog stage, use scripts/web_surface_map.py and scripts/web_workflow_model.py over supplied requests, browser observations, the measured endpoint catalog, API descriptions, source, and bounded read-only discovery to connect owned identities, roles, tenants, resources, lifecycle states, representation boundaries, and privileged actions. Label evidence confidence and track actor x resource x action x state coverage. Do not infer authorization from UI visibility, HTTP method, URL, credential, capture, or route name.",
+      "deliverables": [
+        "typed identity and tenant inventory",
+        "verified identity state and auth-inconclusive records",
+        "resource ownership and authority map",
+        "expected authorization invariants",
+        "coverage ledger and next unresolved security question",
+        "unknown effects blocked for coordinator review"
+      ],
+      "priority": 130,
+      "dependsOn": ["web-contract-coordinator"]
+    },
+    {
+      "wave": 1,
+      "id": "web-api-browser-discovery",
+      "title": "Bounded API and browser-surface discovery",
+      "objective": "Use admitted HTTP requests and a real sandbox-enabled Chromium process over CDP to inventory links, forms, scripts, modules, dynamic chunks, workers, service workers, route manifests, fetches, API origins, redirects, and client-visible state. Retain only artifacts loaded from admitted origins by content hash and deployment epoch. Run scripts/web_js_api_extract.py and scripts/web_endpoint_catalog.py as a required discovery stage, with literal, AST-resolved, runtime-observed, and independently-replayed confidence kept distinct. Count every browser subrequest against the shared budget. Block remote browser execution unless runner egress confinement is independently enforced.",
+      "deliverables": [
+        "redacted dual-representation request bundles",
+        "CDP browser and sandbox evidence",
+        "redacted request and response observations",
+        "content-addressed client artifact manifest",
+        "measured API endpoint catalog with static/runtime correlation",
+        "role-specific surface differences and coverage gaps",
+        "next cheapest legitimate workflow action",
+        "blocked-origin and budget accounting"
+      ],
+      "priority": 120,
+      "dependsOn": ["web-contract-coordinator"]
+    },
+    {
+      "wave": 1,
+      "id": "web-authorization-oracles",
+      "title": "Executable authorization and isolation oracles",
+      "objective": "Derive typed oracles for cross-user, cross-role, cross-tenant, object-ownership, checker-consumer, and session-binding invariants. Every oracle must distinguish confirmed disagreement, observed preservation, and inconclusive telemetry. Status differences and scanner matches are not vulnerabilities.",
+      "deliverables": [
+        "versioned web oracle specifications",
+        "runtime observation contracts",
+        "baseline and enforcing-negative controls",
+        "automatic three-way interpretations"
+      ],
+      "priority": 125,
+      "dependsOn": [
+        "web-contract-coordinator",
+        "web-identity-resource-inventory",
+        "web-api-browser-discovery"
+      ]
+    },
+    {
+      "wave": 1,
+      "id": "web-workflow-state-modeling",
+      "title": "Multi-step workflow and business-rule modeling",
+      "objective": "Model login, issuance, invitation, ownership transfer, approval, redemption, cancellation, cache priming, victim reads, credential revocation, and cleanup as history-preserving workflows. Search for individually legitimate operations that compose into an unauthorized final effect.",
+      "deliverables": [
+        "typed workflow and state-transition inventory",
+        "cross-role and cross-tenant sequence hypotheses",
+        "expected pre-state and post-state assertions",
+        "bounded cleanup steps with reserved budget"
+      ],
+      "priority": 122,
+      "dependsOn": [
+        "web-contract-coordinator",
+        "web-identity-resource-inventory",
+        "web-api-browser-discovery"
+      ]
+    },
+    {
+      "wave": 1,
+      "id": "web-cache-serialization-tools",
+      "title": "Cache, serialization, callback, and tool-boundary audit",
+      "objective": "Compare cache keys and partitions, request and response representations, parser boundaries, redirects, callback ownership, deserialization targets, and operator-backed tool authority. Cache experiments, callbacks, concurrency, uploads, and terminal execution remain separately disabled unless the contract explicitly permits each class. Ignore availability-only cache effects.",
+      "deliverables": [
+        "cache and representation invariant map",
+        "semantic-preserving differential inputs",
+        "callback and tool authority graph",
+        "non-availability impact hypotheses"
+      ],
+      "priority": 115,
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+    },
+    {
+      "wave": 2,
+      "id": "web-cheapest-discriminators",
+      "title": "Competing explanations and cheapest experiments",
+      "objective": "Use scripts/web_hypothesis_loop.py and scripts/web_oracles.py to turn observed or optionally source-enriched mechanisms into the cheapest experiment that separates competing explanations. Isolate one variable when possible; for a genuinely multi-step interaction, enumerate the causal conditions and counterfactual histories. Require a typed executable oracle, stable prerequisite version, exact negative scope, registered replay adapter, coordinator-approved sequence, shared-budget reservation, and cleanup before dispatch. Keep candidates without an executable oracle in the shared planning frontier.",
+      "deliverables": [
+        "ranked falsifiable experiments",
+        "competing explanation matrix",
+        "coordinator-approved broker recipes",
+        "explicit refusal records for unsafe experiments"
+        ,"restart-safe durable frontier with scoped negative knowledge"
+      ],
+      "priority": 110,
+      "dependsOn": [
+        "web-identity-resource-inventory",
+        "web-api-browser-discovery",
+        "web-authorization-oracles",
+        "web-workflow-state-modeling",
+        "web-cache-serialization-tools"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-business-logic-oracles",
+      "title": "Business rules, fixtures, and authorization oracles",
+      "objective": "Use scripts/web_business_logic.py and scripts/web_state_oracles.py to compile owner-specified, source-supported, or observed normal-workflow rules into three-valued authorization and business-state oracles. Require owned fixture factories, independent authoritative readback, reversible cleanup, verified actors, and explicit consistency windows. Treat unusual behavior, endpoint reachability, DOM state, Nuclei output, and single-request identifier substitution as leads rather than policy violations.",
+      "deliverables": [
+        "explicit domain-rule and fixture contracts",
+        "authoritative three-valued state oracles",
+        "actor-resource-action-state coverage ledger",
+        "planning-only records where the business rule is ambiguous"
+      ],
+      "priority": 114,
+      "dependsOn": [
+        "web-identity-resource-inventory",
+        "web-workflow-state-modeling"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-business-sequence-planning",
+      "title": "Executable multi-actor workflow graph planning",
+      "objective": "Use scripts/web_sequence_planner.py to join approved HTTP or CDP actions through concrete produced and consumed values, verified identities, exact owned resources, generations, authority bindings, invalidations, asynchronous boundaries, and replay-confirmed dependencies. Preserve all actors and resources in one explicit execution state. Markdown order is only a hint; local planner state cannot satisfy a server prerequisite.",
+      "deliverables": [
+        "bounded normal and counterfactual workflow histories",
+        "typed produced-value and invalidation graph",
+        "authenticated and effective-actor bindings",
+        "safe history-preserving minimization candidates"
+      ],
+      "priority": 112,
+      "dependsOn": [
+        "web-business-logic-oracles",
+        "web-cheapest-discriminators"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-forbidden-composition-search",
+      "title": "Goal-directed forbidden workflow composition",
+      "objective": "Use scripts/web_composition_search.py with one confirmed legitimate workflow, one precise forbidden terminal, concrete starting attacker authority, and an independent state oracle. Work backward from the terminal and forward only through observed attacker-attemptable operations. Join partial paths only when actor, tenant, resource, version, generation, permission, token-consumption, ordering, and observation-epoch bindings agree. Use a bounded resumable semantic frontier, not arbitrary request permutations.",
+      "deliverables": [
+        "explicit forbidden terminal and confirmed legitimate replay",
+        "backward-relevant operation frontier with scoped outcomes",
+        "bounded executable history with independent terminal oracle",
+        "versioned causal sequence specification with authority versions, value lifecycles, binding controls, and replay policy",
+        "causal minimization candidates and reviewed continuation checkpoint"
+      ],
+      "priority": 111,
+      "dependsOn": [
+        "web-business-sequence-planning"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-controlled-execution",
+      "title": "Controlled HTTP, browser, replay, and scanner execution",
+      "objective": "Dispatch only coordinator-approved HTTP, CDP, and replay operations through the controlled broker. Nuclei is optional and can analyze only a credential-free loopback replay of a broker-acquired, budget-charged response after full template admission and sandbox proof. ffuf is optional and can only compile bounded source-derived candidates whose requests the broker dispatches. Enforce exact origins, path ranges, methods, effect classes, redaction, cancellation, response limits, rate and concurrency limits, wall time, and one shared request and byte ledger. Refuse DoS and unknown effects at planning and dispatch.",
+      "deliverables": [
+        "broker-signed redacted observations",
+        "private evidence with restricted permissions",
+        "complete budget ledger including retries and browser subrequests",
+        "cleanup and cancellation record",
+        "optional scanner engine, template, containment, request-accounting, and semantic-replay provenance"
+      ],
+      "priority": 105,
+      "dependsOn": ["web-cheapest-discriminators"]
+    },
+    {
+      "wave": 2,
+      "id": "web-business-sequence-execution",
+      "title": "Coordinator-controlled business workflow execution",
+      "objective": "Use scripts/web_sequence_executor.py to execute only operation contracts that exactly match a coordinator-signed workflow. Dispatch through fixed HTTP or Chrome CDP adapters, preserve authenticated and effective identities, require server-visible prerequisites, enforce value transfer and invalidation, retain authoritative readbacks, and evaluate the signed business-state oracle. A separately approved fixed paired broker permits exactly two synchronized operations against one disposable fixture; refuse generic concurrency, unknown runners, unowned resources, irreversible cleanup, and generic endpoint mutation.",
+      "deliverables": [
+        "broker-signed multi-actor sequence evidence",
+        "authoritative before and after state readbacks",
+        "per-step transition timeline with reference expectation and implementation observation",
+        "confirmed, preserved, or inconclusive state-oracle result",
+        "cleanup, consistency-window, and budget record"
+      ],
+      "priority": 103,
+      "dependsOn": [
+        "web-forbidden-composition-search",
+        "web-controlled-execution"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-cache-semantic-research",
+      "title": "Cache poisoning and deception semantic research",
+      "objective": "Use scripts/web_cache_research.py to classify the observed cache layer, vary one cache-key hypothesis at a time, and evaluate an isolated attacker-prime to independent-victim sequence. Require exact owned isolation or owner approval, shared-cache provenance beyond response headers, an enforcing control, bounded TTL, and cleanup of only the owned entry. Reject browser-only reuse, service-worker state, reflection, content negotiation, generic shells, public content, redirects, and stale deployments as cache poisoning or deception proof.",
+      "deliverables": [
+        "versioned cache experiment and one disputed key dimension",
+        "method, identity, cookie, partition, Age, Via, Vary, ETag, time, and provenance observations",
+        "independent victim and enforcing-control semantic oracle",
+        "owned-entry expiration or cleanup evidence"
+      ],
+      "priority": 102,
+      "dependsOn": [
+        "web-cache-serialization-tools",
+        "web-controlled-execution"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-deserialization-semantic-research",
+      "title": "Deserialization representation and authority research",
+      "objective": "Use scripts/web_deserialization_research.py to inventory a real observed or source-supported ingress, retain an owned legitimate baseline, generate small well-formed structure variations, and distinguish parsing, object construction, unsafe type or authority selection, and a bounded owned security effect. Never evaluate target-controlled objects inside Krineon or enable gadget chains, shell commands, file writes, external callbacks, parser crashes, or resource exhaustion as default discovery techniques.",
+      "deliverables": [
+        "ingress, integrity, object-type, identity-binding, and consumer contract",
+        "bounded structure-aware cases and attacker-acquisition evidence",
+        "signed-object and benign-type controls",
+        "separate evidence levels and independent replay result"
+      ],
+      "priority": 101,
+      "dependsOn": [
+        "web-cache-serialization-tools",
+        "web-controlled-execution"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-bounded-boundary-adapters",
+      "title": "Bounded target-specific web boundary adapters",
+      "objective": "Use scripts/web_boundary_adapters.py only after measuring a legitimate baseline. Admit one target-specific parser, injection, CSRF, CORS, upload, owned-receiver SSRF, session, GraphQL, WebSocket, persistence, or explicitly authorized isolated transport experiment. Require an invariant, competing explanations, restricted effects, disposable fixtures, an independent oracle, and cleanup. Do not treat the family list as a generic exploit mode.",
+      "deliverables": [
+        "admitted family-specific experiment contract",
+        "baseline and negative-control evidence",
+        "fixed effect, request, frame, file, connection, or byte bounds",
+        "refusal record for unsafe or under-specified adapters"
+      ],
+      "priority": 99,
+      "dependsOn": [
+        "web-cheapest-discriminators",
+        "web-controlled-execution"
+      ]
+    },
+    {
+      "wave": 2,
+      "id": "web-chain-composition",
+      "title": "Application primitive and workflow-chain composition",
+      "objective": "Compose verified authorization, workflow, cache, parser, callback, and tool primitives only when one execution satisfies identity, tenant, resource, state, timing, and deployment constraints. An application-authored broken authorization check or unsafe sink may be the root cause. Preserve useful primitives without inventing a Critical narrative.",
+      "deliverables": [
+        "typed compatible chain graph",
+        "per-edge identity and state compatibility proof",
+        "missing-link experiments",
+        "discarded chains with exact contradictions"
+      ],
+      "priority": 100,
+      "dependsOn": [
+        "web-controlled-execution",
+        "web-business-sequence-execution",
+        "web-cache-semantic-research",
+        "web-deserialization-semantic-research",
+        "web-bounded-boundary-adapters"
+      ]
+    },
+    {
+      "wave": 3,
+      "id": "web-independent-replay",
+      "title": "Independent web invariant replay and adversarial review",
+      "objective": "Have a fresh worker rebuild every disposable fixture and replay the complete minimal causal specification with fresh credential bindings. Use scripts/web_sequence_evidence.py to reject copied terminal responses, pre-populated state, reused fixture generations, stale approvals, private evaluator resources, changed application-permission versions, incomplete histories, and overlapping machine evidence. Document all legitimate actions by other owned actors and every victim-interaction requirement.",
+      "deliverables": [
+        "fresh-session independent replays",
+        "fresh fixture-factory and credential-binding evidence",
+        "machine-accepted full-sequence replay record",
+        "adversarial observer challenge",
+        "machine-verified oracle results",
+        "complete cleanup and no-third-party-data confirmation"
+      ],
+      "priority": 95,
+      "dependsOn": ["web-chain-composition"]
+    },
+    {
+      "wave": 3,
+      "id": "web-blinded-evaluation",
+      "title": "Blinded oracle and observation evaluation",
+      "objective": "Commit to an evaluator-held oracle set before runtime observations exist, keep that oracle material outside worker-controlled campaign storage, and score only coordinator-signed broker observations. Measure exact outcome agreement, precision, recall, missing cases, and rejected evidence without revealing the held-out answers to research workers.",
+      "deliverables": [
+        "signed pre-execution held-out commitment",
+        "manifest of coordinator-signed broker observations",
+        "precision and recall score with rejected-run accounting",
+        "signed evaluation result"
+      ],
+      "priority": 94,
+      "dependsOn": ["web-independent-replay"]
+    },
+    {
+      "wave": 3,
+      "id": "web-evidence-finding-gate",
+      "title": "Deployment evidence and finding promotion gate",
+      "objective": "Use scripts/web_evidence.py and scripts/web_finding_gate.py to bind the exact external deployment epoch, authorization recipe, attacker starting authority, observed ingress, owned identities and resources, business rule, semantic controls, independently observed terminal effect, cleanup, fresh replay, and reviewed artifact tiers. A response version is not a source pin. Black-box evidence may establish an external security violation while leaving the internal root cause unknown. Expire experiments when the stable deployment baseline drifts, reject credential leakage and third-party data, and never submit automatically.",
+      "deliverables": [
+        "validated deployment evidence bound to one finding and experiment",
+        "same-epoch independent replay and observer challenge",
+        "private encrypted evidence and redacted synthetic reviewer package",
+        "machine finding-gate verdict or exact rejection reason",
+        "verified cleanup and no autonomous publication confirmation"
+      ],
+      "priority": 93,
+      "dependsOn": ["web-independent-replay"]
+    },
+    {
+      "wave": 3,
+      "id": "web-root-synthesis",
+      "title": "Web campaign synthesis and next-round direction",
+      "objective": "Synthesize confirmed invariants, refuted mechanisms, active primitives, and compatible chains. Promote only independently reproduced security impact. Redirect remaining budget toward underexplored semantic families and stop on expiry, unsafe scope, exhausted budget, or explicit user direction.",
+      "deliverables": [
+        "ranked confirmed and refuted mechanisms",
+        "reportable finding packages or retained knowledge",
+        "scoped negative knowledge",
+        "evidence-based next-round plan"
+      ],
+      "priority": 90,
+      "dependsOn": ["web-blinded-evaluation", "web-evidence-finding-gate"]
+    }
+  ]
+}

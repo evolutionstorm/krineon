@@ -9,7 +9,9 @@ treated as authorization for live testing.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -23,6 +25,9 @@ from urllib.parse import urlsplit, urlunsplit
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESEARCH_HARNESS = PROJECT_ROOT / "scripts" / "research_harness.py"
 TOOL_PROBE = PROJECT_ROOT / "scripts" / "tool_probe.py"
+WEB_CONTRACT_TOOL = PROJECT_ROOT / "scripts" / "web_contract.py"
+WEB_REQUEST_IMPORT = PROJECT_ROOT / "scripts" / "web_request_import.py"
+WEB_TEMPLATE = PROJECT_ROOT / "assets" / "web-campaign.template.json"
 
 URL_RE = re.compile(r"https?://[^\s<>\[\]{}\"'`]+", re.IGNORECASE)
 SCOPE_HEADING_RE = re.compile(
@@ -303,6 +308,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional separate UTF-8 scope file; preserved independently",
     )
     parser.add_argument("--target")
+    parser.add_argument(
+        "--app-url",
+        "--url",
+        dest="app_url",
+        action="append",
+        default=[],
+        help="explicitly authorized application URL; repeat for multiple exact origins",
+    )
+    parser.add_argument("--web-contract", help="versioned web campaign JSON")
+    parser.add_argument(
+        "--requests-markdown",
+        "--requests",
+        dest="requests_markdown",
+        action="append",
+        default=[],
+        help="Markdown file containing annotated authenticated HTTP requests",
+    )
+    parser.add_argument(
+        "--secret-store",
+        help="private credential store outside the campaign for trusted request import",
+    )
+    parser.add_argument("--api-spec", action="append", default=[])
+    parser.add_argument("--har", action="append", default=[])
+    parser.add_argument("--burp-export", action="append", default=[])
+    parser.add_argument(
+        "--burp-request",
+        action="append",
+        default=[],
+        help="raw HTTP request saved from Burp Repeater or Proxy",
+    )
+    parser.add_argument(
+        "--capture-identity",
+        default="anonymous",
+        help="contract identity applied to imported HAR and Burp requests",
+    )
+    parser.add_argument(
+        "--capture-effect",
+        choices=("read-only", "disposable-write", "sensitive", "external-side-effect", "unknown"),
+        default="read-only",
+        help="reviewed effect class applied to imported HAR and Burp requests",
+    )
+    parser.add_argument(
+        "--capture-workflow",
+        default="imported-capture",
+        help="workflow ID applied to imported HAR and Burp requests",
+    )
+    parser.add_argument("--deployment-details", action="append", default=[])
+    parser.add_argument("--source-root", action="append", default=[])
+    parser.add_argument("--environment-owner")
+    parser.add_argument("--confirmed-by")
+    parser.add_argument("--authorization-valid-until")
+    parser.add_argument("--program-rules-date")
     parser.add_argument("--repo", help="source repository; inferred from guidelines when unique")
     parser.add_argument("--checkout", help="existing local Git checkout")
     parser.add_argument(
@@ -310,9 +367,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--program-url")
     parser.add_argument(
-        "--profile", choices=("auto", "critical-rce", "chrome-v8"), default="auto"
+        "--profile",
+        choices=("auto", "critical-rce", "chrome-v8", "web-app"),
+        default="auto",
     )
-    parser.add_argument("--mode", choices=("source", "local-lab"), default="source")
+    parser.add_argument(
+        "--mode",
+        choices=("source", "local-lab", "authorized-live"),
+        default="source",
+    )
     parser.add_argument(
         "--clone",
         action="store_true",
@@ -344,9 +407,15 @@ def main(argv: list[str] | None = None) -> int:
         if campaign_root.exists() and any(campaign_root.iterdir()):
             raise BootstrapError(f"refusing to initialize non-empty directory: {campaign_root}")
 
-        if not args.guidelines and not args.repo and not args.checkout:
+        if (
+            not args.guidelines
+            and not args.repo
+            and not args.checkout
+            and not args.app_url
+            and not args.web_contract
+        ):
             raise BootstrapError(
-                "without --guidelines, provide --repo or --checkout for source analysis"
+                "provide guidelines, source coordinates, an application URL, or a web contract"
             )
         payload = read_input(args.guidelines) if args.guidelines else b""
         scope_payload = read_input(args.scope) if args.scope else b""
@@ -367,7 +436,20 @@ def main(argv: list[str] | None = None) -> int:
         inferred_profile, profile_evidence = infer_profile(
             profile_text, profile_repositories
         )
-        profile = inferred_profile if args.profile == "auto" else args.profile
+        if args.profile == "auto" and (args.app_url or args.web_contract):
+            profile = "web-app"
+            profile_evidence = ["explicit web application URL or contract supplied"]
+        else:
+            profile = inferred_profile if args.profile == "auto" else args.profile
+        if profile == "web-app" and not (args.app_url or args.web_contract):
+            raise BootstrapError("web-app profile requires --app-url or --web-contract")
+        if profile != "web-app" and (args.app_url or args.web_contract):
+            raise BootstrapError("web application inputs require the web-app profile")
+        if profile == "web-app" and args.api_spec:
+            raise BootstrapError(
+                "the OpenAPI trusted import adapter is not implemented; refusing to copy "
+                "potentially credential-bearing input into the campaign"
+            )
 
         repository = args.repo or (repositories[0] if len(repositories) == 1 else "")
         checkout = Path(args.checkout).expanduser().resolve() if args.checkout else None
@@ -378,10 +460,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.clone and not repository:
             raise BootstrapError("--clone requires --repo or one uniquely inferred repository")
 
-        target = args.target or (derive_target(repository) if repository else "program-target")
+        app_host = ""
+        if args.app_url:
+            app_host = urlsplit(args.app_url[0]).hostname or ""
+        target = args.target or (
+            app_host
+            if profile == "web-app" and app_host
+            else derive_target(repository)
+            if repository
+            else "web-application"
+            if profile == "web-app"
+            else "program-target"
+        )
         commit = args.commit or (git_output(checkout, "rev-parse", "HEAD") if checkout else None)
-        commit = commit or "pending-pin"
-        repository = repository or "pending-source-repository"
+        commit = commit or (
+            "deployed-artifact-pending"
+            if profile == "web-app"
+            else "pending-pin"
+        )
+        repository = repository or (
+            "web-application-no-source"
+            if profile == "web-app"
+            else "pending-source-repository"
+        )
         program_url = args.program_url or next(
             (
                 value
@@ -415,6 +516,289 @@ def main(argv: list[str] | None = None) -> int:
                 *(["--authorization-record"] if args.authorization_record else []),
             ]
         )
+        if profile == "web-app":
+            destination = campaign_root / "web-campaign.json"
+            if args.web_contract:
+                source_contract = Path(args.web_contract).expanduser().resolve()
+                run_checked(
+                    [
+                        sys.executable,
+                        str(WEB_CONTRACT_TOOL),
+                        "validate",
+                        str(source_contract),
+                    ]
+                )
+                destination.write_bytes(source_contract.read_bytes())
+            else:
+                web = read_json(WEB_TEMPLATE)
+                origins: list[dict[str, Any]] = []
+                action_policies: list[dict[str, Any]] = []
+                for index, value in enumerate(args.app_url):
+                    parsed = urlsplit(value)
+                    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                        raise BootstrapError(f"invalid application URL: {value}")
+                    default_port = 443 if parsed.scheme == "https" else 80
+                    try:
+                        port = parsed.port
+                    except ValueError as exc:
+                        raise BootstrapError(f"invalid application URL port: {value}") from exc
+                    authority = parsed.hostname
+                    if ":" in authority and not authority.startswith("["):
+                        authority = f"[{authority}]"
+                    if port is not None and port != default_port:
+                        authority += f":{port}"
+                    origin_url = f"{parsed.scheme}://{authority}"
+                    prefix = parsed.path or "/"
+                    origin_id = "app" if index == 0 else f"origin-{index + 1}"
+                    origins.append(
+                        {
+                            "id": origin_id,
+                            "url": origin_url,
+                            "purpose": "application-testing",
+                            "allowedPathPrefixes": [prefix],
+                            "excludedPaths": [],
+                            "allowedMethods": ["GET", "HEAD"],
+                            "maxRequestsPerSecond": 1,
+                            "maxConcurrentRequests": 1,
+                        }
+                    )
+                    action_policies.append(
+                        {
+                            "id": "default-read" if index == 0 else f"read-{index + 1}",
+                            "originId": origin_id,
+                            "pathPrefix": prefix,
+                            "methods": ["GET", "HEAD"],
+                            "effectClasses": ["read-only"],
+                            "maxRequestBodyBytes": 65536,
+                            "maxResponseBodyBytes": 1048576,
+                        }
+                    )
+                web["origins"] = origins
+                web["actionPolicies"] = action_policies
+                internal_networks: set[str] = set()
+                for value in args.app_url:
+                    host = urlsplit(value).hostname
+                    if host == "localhost":
+                        internal_networks.update({"127.0.0.0/8", "::1/128"})
+                        continue
+                    try:
+                        address = ipaddress.ip_address(str(host))
+                    except ValueError:
+                        continue
+                    if address.is_loopback:
+                        internal_networks.add("127.0.0.0/8" if address.version == 4 else "::1/128")
+                    elif address.is_private or address.is_link_local:
+                        internal_networks.add(str(ipaddress.ip_network(f"{address}/{address.max_prefixlen}")))
+                web["networkContainment"]["ownedInternalLabCidrs"] = sorted(internal_networks)
+                web["environmentOwner"] = args.environment_owner or "unresolved-owner"
+                web["program"]["url"] = program_url
+                web["program"]["rulesDate"] = args.program_rules_date or ""
+                web["authorization"]["rulesFile"] = (
+                    "PROGRAM_GUIDELINES.md" if payload else ""
+                )
+                web["authorization"]["confirmed"] = bool(args.confirm_authorization)
+                if args.confirm_authorization:
+                    if not args.authorization_valid_until or not args.confirmed_by:
+                        raise BootstrapError(
+                            "confirmed web authorization requires --confirmed-by and "
+                            "--authorization-valid-until"
+                        )
+                    if not payload or not args.program_rules_date:
+                        raise BootstrapError(
+                            "confirmed web authorization requires --guidelines and "
+                            "--program-rules-date"
+                        )
+                    web["authorization"]["confirmedBy"] = args.confirmed_by
+                    web["authorization"]["confirmedAt"] = (
+                        dt.datetime.now(dt.timezone.utc)
+                        .replace(microsecond=0)
+                        .isoformat()
+                    )
+                    web["authorization"]["validUntil"] = args.authorization_valid_until
+                    web["authorization"]["ownedFixtureNamespace"] = (
+                        f"krineon-{hashlib.sha256(str(campaign_root).encode()).hexdigest()[:12]}"
+                    )
+                write_json(destination, web)
+            validated_web = read_json(destination)
+            request_inputs = validated_web.get("requestInputs")
+            if not isinstance(request_inputs, dict):
+                raise BootstrapError("web contract requestInputs must be an object")
+            input_groups = {
+                "deploymentDetails": (args.deployment_details, "deployment", None),
+            }
+            markdown_paths = [
+                str(value) for value in request_inputs.get("markdownFiles", [])
+            ]
+            request_bundles = [
+                str(value) for value in request_inputs.get("requestBundles", [])
+            ]
+            markdown_imports: list[tuple[Path, Path, Path]] = []
+            for input_file in args.requests_markdown:
+                source = Path(input_file).expanduser().resolve()
+                if not source.is_file():
+                    raise BootstrapError(f"web input does not exist: {source}")
+                index = len(markdown_paths) + 1
+                redacted = campaign_root / "web" / "inputs" / f"request-{index}.redacted.md"
+                bundle = campaign_root / "web" / "inputs" / f"request-{index}.bundle.json"
+                markdown_paths.append(str(redacted.relative_to(campaign_root)))
+                request_bundles.append(str(bundle.relative_to(campaign_root)))
+                markdown_imports.append((source, redacted, bundle))
+            capture_imports: list[tuple[str, Path, Path, Path]] = []
+            for kind, supplied, field, suffix in (
+                ("har", args.har, "harFiles", ".redacted.har"),
+                ("burp", args.burp_export, "burpExports", ".redacted.xml"),
+                ("burp", args.burp_request, "burpExports", ".redacted.request"),
+            ):
+                retained_paths = [str(value) for value in request_inputs.get(field, [])]
+                for input_file in supplied:
+                    source = Path(input_file).expanduser().resolve()
+                    if not source.is_file():
+                        raise BootstrapError(f"web input does not exist: {source}")
+                    index = len(retained_paths) + 1
+                    redacted = (
+                        campaign_root
+                        / "web"
+                        / "inputs"
+                        / f"{kind}-{index}{suffix}"
+                    )
+                    bundle = (
+                        campaign_root
+                        / "web"
+                        / "inputs"
+                        / f"{kind}-{index}.bundle.json"
+                    )
+                    retained_paths.append(str(redacted.relative_to(campaign_root)))
+                    request_bundles.append(str(bundle.relative_to(campaign_root)))
+                    capture_imports.append((kind, source, redacted, bundle))
+                request_inputs[field] = retained_paths
+            request_inputs["markdownFiles"] = markdown_paths
+            request_inputs["requestBundles"] = request_bundles
+            for field, (values, label, forced_suffix) in input_groups.items():
+                retained_paths = [str(value) for value in request_inputs.get(field, [])]
+                for input_file in values:
+                    source = Path(input_file).expanduser().resolve()
+                    if not source.is_file():
+                        raise BootstrapError(f"web input does not exist: {source}")
+                    suffix = forced_suffix or source.suffix or ".txt"
+                    retained = (
+                        campaign_root
+                        / "web"
+                        / "inputs"
+                        / f"{label}-{len(retained_paths) + 1}{suffix}"
+                    )
+                    retained.parent.mkdir(parents=True, exist_ok=True)
+                    retained.write_bytes(source.read_bytes())
+                    retained.chmod(0o600)
+                    retained_paths.append(str(retained.relative_to(campaign_root)))
+                request_inputs[field] = retained_paths
+            source_roots = [str(value) for value in request_inputs.get("sourceRoots", [])]
+            source_roots.extend(
+                str(Path(value).expanduser().resolve()) for value in args.source_root
+            )
+            request_inputs["sourceRoots"] = unique(source_roots)
+            validated_web["requestInputs"] = request_inputs
+            write_json(destination, validated_web)
+            run_checked(
+                [
+                    sys.executable,
+                    str(WEB_CONTRACT_TOOL),
+                    "validate",
+                    str(destination),
+                ]
+            )
+            for source, redacted, bundle in markdown_imports:
+                run_checked(
+                    [
+                        sys.executable,
+                        str(WEB_REQUEST_IMPORT),
+                        "markdown",
+                        str(destination),
+                        str(source),
+                        "--output",
+                        str(bundle),
+                        "--redacted-copy",
+                        str(redacted),
+                        *(
+                            [
+                                "--secret-store",
+                                str(Path(args.secret_store).expanduser().resolve()),
+                            ]
+                            if args.secret_store
+                            else []
+                        ),
+                        *(
+                            ["--worktree-root", str(checkout)]
+                            if checkout is not None
+                            else []
+                        ),
+                        *[
+                            item
+                            for value in args.source_root
+                            for item in (
+                                "--worktree-root",
+                                str(Path(value).expanduser().resolve()),
+                            )
+                        ],
+                    ]
+                )
+            for kind, source, redacted, bundle in capture_imports:
+                run_checked(
+                    [
+                        sys.executable,
+                        str(WEB_REQUEST_IMPORT),
+                        kind,
+                        str(destination),
+                        str(source),
+                        "--output",
+                        str(bundle),
+                        "--redacted-copy",
+                        str(redacted),
+                        "--identity",
+                        args.capture_identity,
+                        "--effect",
+                        args.capture_effect,
+                        "--workflow",
+                        args.capture_workflow,
+                        *(
+                            [
+                                "--secret-store",
+                                str(Path(args.secret_store).expanduser().resolve()),
+                            ]
+                            if args.secret_store
+                            else []
+                        ),
+                        *(
+                            ["--worktree-root", str(checkout)]
+                            if checkout is not None
+                            else []
+                        ),
+                        *[
+                            item
+                            for value in args.source_root
+                            for item in (
+                                "--worktree-root",
+                                str(Path(value).expanduser().resolve()),
+                            )
+                        ],
+                    ]
+                )
+            run_checked(
+                [
+                    sys.executable,
+                    str(WEB_CONTRACT_TOOL),
+                    "plan",
+                    str(destination),
+                    "--output",
+                    str(campaign_root / "web" / "offline-plan.json"),
+                ]
+            )
+            web_confirmed = bool(
+                isinstance(validated_web.get("authorization"), dict)
+                and validated_web["authorization"].get("confirmed") is True
+            )
+        authorization_confirmed = (
+            web_confirmed if profile == "web-app" else bool(args.confirm_authorization)
+        )
         if payload:
             (campaign_root / "PROGRAM_GUIDELINES.md").write_bytes(payload)
         if scope_payload:
@@ -441,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
             unresolved.append(
                 "Review and transcribe the exact in-scope assets from the retained program rules."
             )
-        if payload and not args.confirm_authorization:
+        if payload and not authorization_confirmed:
             unresolved.append(
                 "Confirm authorization after checking the selected asset against the retained rules."
             )
@@ -459,7 +843,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
         campaign["authorization"] = {
-            "confirmed": bool(args.confirm_authorization),
+            "confirmed": authorization_confirmed,
             "basis": (
                 (
                     f"Researcher confirmed the selected source/local-owned campaign against "
@@ -467,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
                     if digest
                     else "Researcher confirmed the selected source/local-owned campaign."
                 )
-                if args.confirm_authorization
+                if authorization_confirmed
                 else "Source-only analysis; live and shared-system actions are not authorized."
             ),
             "allowedEnvironment": args.allowed_environment,
@@ -476,6 +860,9 @@ def main(argv: list[str] | None = None) -> int:
                 "stop on third-party data exposure, service degradation, or scope ambiguity",
             ],
         }
+        if profile == "web-app":
+            campaign["webContract"] = "web-campaign.json"
+            campaign["mission"] = "web-application-invariant-chain"
         write_json(campaign_root / "campaign.json", campaign)
         if args.authorization_record:
             (campaign_root / "AUTHORIZATION.md").write_text(
@@ -487,7 +874,7 @@ def main(argv: list[str] | None = None) -> int:
                     program_url=program_url,
                     digest=digest,
                     scope_digest=scope_digest,
-                    confirmed=bool(args.confirm_authorization),
+                    confirmed=authorization_confirmed,
                     allowed_environment=args.allowed_environment,
                     scope=scope,
                     excluded=excluded,
@@ -534,7 +921,7 @@ def main(argv: list[str] | None = None) -> int:
                 "profile": profile,
                 "mode": args.mode,
                 "programUrl": program_url,
-                "authorizationConfirmed": bool(args.confirm_authorization),
+                "authorizationConfirmed": authorization_confirmed,
                 "authorizationRecord": (
                     "AUTHORIZATION.md" if args.authorization_record else None
                 ),
@@ -573,29 +960,46 @@ def main(argv: list[str] | None = None) -> int:
                 [sys.executable, str(RESEARCH_HARNESS), "queue", str(campaign_root)]
             )
 
+        if profile == "web-app":
+            next_steps = [
+                (
+                    "python3 scripts/web_contract.py prepare-review "
+                    f"{campaign_root / 'web-campaign.json'} --output "
+                    f"{campaign_root / 'web' / 'authorization-review.json'}"
+                ),
+                "Complete every field in web/authorization-review.json after exact review.",
+                (
+                    "python3 scripts/web_contract.py authorize "
+                    f"{campaign_root} {campaign_root / 'web-campaign.json'} "
+                    f"{campaign_root / 'web' / 'authorization-review.json'}"
+                ),
+                "Create, validate, and coordinator-sign one bounded workflow before execution.",
+            ]
+        else:
+            next_steps = [
+                (
+                    "python3 scripts/research_harness.py worker-register "
+                    f"{campaign_root} coordinator --agent AGENT_ID --role coordinator"
+                ),
+                f"python3 scripts/research_harness.py claim {campaign_root} coordinator --json",
+            ]
         output = {
             "campaign": str(campaign_root),
             "profile": profile,
             "target": target,
             "repository": repository,
             "commit": commit,
-            "authorizationConfirmed": bool(args.confirm_authorization),
+            "authorizationConfirmed": authorization_confirmed,
             "queued": not args.no_queue,
             "unresolved": unresolved,
-            "next": [
-                (
-                    "python3 scripts/research_harness.py worker-register "
-                    f"{campaign_root} coordinator --agent AGENT_ID --role coordinator"
-                ),
-                f"python3 scripts/research_harness.py claim {campaign_root} coordinator --json",
-            ],
+            "next": next_steps,
         }
         if args.json:
             print(json.dumps(output, indent=2))
         else:
             print(f"campaign ready: {campaign_root}")
             print(f"profile: {profile}; queued: {str(not args.no_queue).lower()}")
-            print(f"authorization confirmed: {str(bool(args.confirm_authorization)).lower()}")
+            print(f"authorization confirmed: {str(authorization_confirmed).lower()}")
             if unresolved:
                 print("unresolved intake items:")
                 for item in unresolved:

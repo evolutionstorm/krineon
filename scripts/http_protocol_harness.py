@@ -24,6 +24,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+try:
+    from .web_budget import SharedWebBudget
+    from .web_contract import WebCampaignContract, WebContractError
+    from .web_policy import WebPolicyEngine, validate_step_envelope
+except ImportError:
+    from web_budget import SharedWebBudget
+    from web_contract import WebCampaignContract, WebContractError
+    from web_policy import WebPolicyEngine, validate_step_envelope
+
 
 VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 SAFE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
@@ -189,6 +198,11 @@ def request_bytes(
     if b"host" not in lower_names:
         default_port = 443 if bool(target.get("tls")) else 80
         authority = str(target["host"])
+        try:
+            if ipaddress.ip_address(authority).version == 6:
+                authority = f"[{authority}]"
+        except ValueError:
+            pass
         if int(target["port"]) != default_port:
             authority += f":{target['port']}"
         headers.append((b"Host", authority.encode("latin-1")))
@@ -236,6 +250,154 @@ def open_socket(target: dict[str, Any], timeout: float) -> tuple[socket.socket, 
         connection = wrapped
     connection.settimeout(timeout)
     return connection, certificate_hash
+
+
+def request_line_and_host(wire: bytes) -> tuple[str, str, str]:
+    head = wire.split(b"\r\n\r\n", 1)[0]
+    lines = head.split(b"\r\n")
+    parts = lines[0].decode("latin-1").split(" ")
+    if len(parts) != 3 or parts[2] != "HTTP/1.1":
+        raise RuntimeError("brokered raw transport requires one HTTP/1.1 request")
+    hosts = [
+        line.split(b":", 1)[1].strip().decode("latin-1")
+        for line in lines[1:]
+        if line.split(b":", 1)[0].strip().lower() == b"host"
+    ]
+    if len(hosts) != 1:
+        raise RuntimeError("brokered raw transport requires exactly one Host header")
+    return parts[0], parts[1], hosts[0]
+
+
+class BrokeredProtocolTransport:
+    """Policy and budget wrapper that preserves exact HTTP/1.1 bytes."""
+
+    def __init__(
+        self,
+        contract: WebCampaignContract,
+        ledger: SharedWebBudget,
+    ):
+        self.contract = contract
+        self.ledger = ledger
+        self.policy = WebPolicyEngine(contract)
+
+    def exchange(
+        self,
+        *,
+        operation_id: str,
+        target: dict[str, Any],
+        wire: bytes,
+        definition: dict[str, Any],
+    ) -> tuple[bytes, list[dict[str, int]], str | None, dict[str, Any]]:
+        origin_id = str(target.get("originId") or "")
+        limits = validate_step_envelope(definition)
+        if len(wire) > int(limits["maxInputBytes"]):
+            raise RuntimeError("raw request exceeds its approved input cap")
+        method, raw_path, host = request_line_and_host(wire)
+        scheme = "https" if bool(target.get("tls")) else "http"
+        port = int(target["port"])
+        authority = str(target["host"])
+        try:
+            if ipaddress.ip_address(authority).version == 6:
+                authority = f"[{authority}]"
+        except ValueError:
+            pass
+        if port != (443 if scheme == "https" else 80):
+            authority += f":{port}"
+        if host.lower() != authority.lower():
+            raise RuntimeError("wire Host header does not match the reviewed origin")
+        effect = str(definition.get("effectClass") or "unknown")
+        operation_class = str(definition.get("operationClass") or "ordinary-http")
+        intent = str(definition.get("intent") or "protocol-differential")
+        decision = self.policy.admit(
+            origin_id=origin_id,
+            url=f"{scheme}://{authority}{raw_path}",
+            method=method,
+            effect_class=effect,
+            operation_class=operation_class,
+            intent=intent,
+        )
+        maximum = min(
+            int(definition.get("maxResponseBytes", 16 * 1024 * 1024)),
+            int(self.contract.raw["budget"]["maxResponseBodyBytes"]),
+        )
+        self.ledger.reserve(
+            operation_id=operation_id,
+            request_bytes=len(wire),
+            estimated_response_bytes=maximum,
+            cleanup=False,
+            adapter="raw-http1",
+            origin_id=origin_id,
+            lease_seconds=max(1, min(int(limits["timeoutSeconds"]), int(float(definition.get("timeout", 10)))) + 5),
+        )
+        timeout = float(definition.get("connectTimeout", 5))
+        connection: socket.socket | None = None
+        cancellation_stop = threading.Event()
+        cancellation_thread: threading.Thread | None = None
+        certificate_hash = None
+        try:
+            last_error: OSError | None = None
+            for address in decision.addresses:
+                try:
+                    connection = socket.create_connection((address, decision.port), timeout)
+                    self.policy.verify_connected(decision, str(connection.getpeername()[0]))
+                    break
+                except OSError as exc:
+                    last_error = exc
+                    if connection is not None:
+                        connection.close()
+                        connection = None
+            if connection is None:
+                raise RuntimeError(f"no authorized address was reachable: {last_error}")
+            if bool(target.get("tls")):
+                if target.get("insecureSkipVerify") is True:
+                    raise RuntimeError("brokered transport never disables TLS verification")
+                context = ssl.create_default_context()
+                connection = context.wrap_socket(connection, server_hostname=decision.sni)
+                certificate = connection.getpeercert(binary_form=True)
+                certificate_hash = sha256_bytes(certificate) if certificate else None
+            connection.settimeout(float(definition.get("timeout", 10)))
+            def cancel_transport() -> None:
+                while not cancellation_stop.wait(0.05):
+                    if self.ledger.is_cancelled(operation_id):
+                        if connection is not None:
+                            try:
+                                connection.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                            connection.close()
+                        return
+
+            cancellation_thread = threading.Thread(
+                target=cancel_transport,
+                name=f"krineon-raw-http-cancel-{operation_id}",
+                daemon=True,
+            )
+            cancellation_thread.start()
+            connection.sendall(wire)
+            raw, chunks = receive_bytes(
+                connection,
+                timeout=float(definition.get("timeout", 10)),
+                max_bytes=maximum,
+                idle_timeout=float(definition.get("idleTimeout", 0.5)),
+            )
+            self.ledger.reconcile_response(operation_id, len(raw), storage_bytes=len(raw))
+            return raw, chunks, certificate_hash, {
+                "transport": "byte-exact-http/1.1",
+                "connectedAddress": str(connection.getpeername()[0]),
+                "rawPath": decision.raw_path,
+                "normalizedPath": decision.normalized_path,
+                "sni": decision.sni,
+                "hostAuthority": decision.host_header,
+            }
+        except Exception as exc:
+            self.ledger.abort(operation_id, f"{type(exc).__name__}: {exc}")
+            raise
+        finally:
+            cancellation_stop.set()
+            if connection is not None:
+                connection.close()
+            if cancellation_thread is not None:
+                cancellation_thread.join(timeout=1)
 
 
 def receive_bytes(
@@ -387,7 +549,14 @@ def retained_responses(responses: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class SequenceRunner:
-    def __init__(self, root: Path, spec_path: Path, spec: dict[str, Any], output: Path):
+    def __init__(
+        self,
+        root: Path,
+        spec_path: Path,
+        spec: dict[str, Any],
+        output: Path,
+        transport: BrokeredProtocolTransport | None = None,
+    ):
         self.root = root
         self.spec_path = spec_path
         self.spec_root = spec_path.parent
@@ -397,6 +566,7 @@ class SequenceRunner:
         self.sessions = spec.get("sessions", {})
         self.variables = {str(key): str(value) for key, value in spec.get("variables", {}).items()}
         self.lock = threading.Lock()
+        self.transport = transport
 
     def variables_for(self, session_name: str) -> dict[str, str]:
         values = dict(self.variables)
@@ -431,6 +601,10 @@ class SequenceRunner:
         current_request = expand(definition.get("request", {}), variables)
         current_target_name = target_name
         redirect_limit = int(definition.get("maxRedirects", 0))
+        if self.transport is not None and redirect_limit > int(
+            self.transport.contract.raw["budget"]["maxRedirects"]
+        ):
+            raise RuntimeError("redirect count exceeds the campaign cap")
         started = time.time_ns()
         exchanges: list[dict[str, Any]] = []
         for hop in range(redirect_limit + 1):
@@ -438,17 +612,29 @@ class SequenceRunner:
             with self.lock:
                 session_snapshot = json.loads(json.dumps(self.sessions[session_name]))
             wire = request_bytes(current_request, current_target, session_snapshot, variables, self.spec_root)
-            connection, certificate_hash = open_socket(current_target, float(definition.get("connectTimeout", 5)))
-            try:
-                connection.sendall(wire)
-                raw, chunks = receive_bytes(
-                    connection,
-                    timeout=float(definition.get("timeout", 10)),
-                    max_bytes=int(definition.get("maxResponseBytes", 16 * 1024 * 1024)),
-                    idle_timeout=float(definition.get("idleTimeout", 0.5)),
+            transport_record = {"transport": "legacy-direct-http/1.1"}
+            if self.transport is not None:
+                operation_id = "op-" + hashlib.sha256(
+                    f"{step_id}\0{ordinal}\0{hop}\0{time.time_ns()}".encode()
+                ).hexdigest()[:40]
+                raw, chunks, certificate_hash, transport_record = self.transport.exchange(
+                    operation_id=operation_id,
+                    target=current_target,
+                    wire=wire,
+                    definition=definition,
                 )
-            finally:
-                connection.close()
+            else:
+                connection, certificate_hash = open_socket(current_target, float(definition.get("connectTimeout", 5)))
+                try:
+                    connection.sendall(wire)
+                    raw, chunks = receive_bytes(
+                        connection,
+                        timeout=float(definition.get("timeout", 10)),
+                        max_bytes=int(definition.get("maxResponseBytes", 16 * 1024 * 1024)),
+                        idle_timeout=float(definition.get("idleTimeout", 0.5)),
+                    )
+                finally:
+                    connection.close()
             responses = parse_responses(raw)
             with self.lock:
                 update_cookies(self.sessions[session_name], responses)
@@ -459,6 +645,7 @@ class SequenceRunner:
                 "chunks": chunks,
                 "responses": responses,
                 "certificate": certificate_hash,
+                "transport": transport_record,
             })
             if hop >= redirect_limit or not responses or responses[-1]["status"] not in {301, 302, 303, 307, 308}:
                 break
@@ -493,6 +680,7 @@ class SequenceRunner:
                 "request": {"path": request_path.relative_to(self.output).as_posix(), "sha256": sha256_bytes(exchange["wire"]), "size": len(exchange["wire"])},
                 "response": {"path": response_path.relative_to(self.output).as_posix(), "sha256": sha256_bytes(exchange["raw"]), "size": len(exchange["raw"]), "chunks": exchange["chunks"], "messages": retained_responses(exchange["responses"])},
                 "peerCertificateSha256": exchange["certificate"],
+                "transport": exchange["transport"],
             })
         responses = exchanges[-1]["responses"] if exchanges else []
         assertions = assertion_results(definition.get("assertions"), responses)
@@ -544,6 +732,10 @@ class SequenceRunner:
                     self.sessions[session_name].setdefault("variables", {})[str(definition["name"])] = value
 
     def execute_websocket(self, step_id: str, definition: dict[str, Any]) -> dict[str, Any]:
+        if self.transport is not None:
+            raise RuntimeError(
+                "brokered WebSocket execution requires the separately reviewed WebSocket adapter"
+            )
         target_name = str(definition["target"])
         session_name = str(definition.get("session") or "anonymous")
         target = self.targets[target_name]
@@ -752,6 +944,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("spec", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--var", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument(
+        "--web-contract",
+        help="bind the byte-exact HTTP/1.1 transport to a web campaign contract",
+    )
+    parser.add_argument("--ledger", help="shared SQLite web budget")
     args = parser.parse_args(argv)
     try:
         root = args.campaign.expanduser().resolve()
@@ -792,7 +989,21 @@ def main(argv: list[str] | None = None) -> int:
         if output.exists() and any(output.iterdir()):
             raise RuntimeError("output directory must be empty")
         output.mkdir(parents=True, exist_ok=True)
-        runner = SequenceRunner(root, spec_path, spec, output)
+        transport = None
+        if args.web_contract:
+            contract = WebCampaignContract.load(args.web_contract)
+            contract.require_live_authorization()
+            if not args.ledger:
+                raise RuntimeError("--web-contract requires --ledger")
+            for name, target in spec["targets"].items():
+                origin_id = str(target.get("originId") or "")
+                if origin_id not in contract.origins:
+                    raise RuntimeError(f"target {name} requires a valid originId")
+            transport = BrokeredProtocolTransport(
+                contract,
+                SharedWebBudget(contract, args.ledger),
+            )
+        runner = SequenceRunner(root, spec_path, spec, output, transport=transport)
         retained_steps = [runner.run_step(step) for step in steps]
         trace, transition_coverage = state_trace(state_model, retained_steps)
         session_summary = {
@@ -813,6 +1024,7 @@ def main(argv: list[str] | None = None) -> int:
             "spec": {"path": str(spec_path), "sha256": sha256_file(spec_path)},
             "harness": {"path": str(Path(__file__).resolve()), "sha256": sha256_file(Path(__file__).resolve())},
             "targets": spec["targets"],
+            "transport": "brokered-byte-exact-http/1.1" if transport else "legacy-direct-http/1.1",
             "steps": retained_steps,
             "stateTrace": trace,
             "transitionCoverage": transition_coverage,

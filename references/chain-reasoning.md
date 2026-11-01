@@ -39,11 +39,30 @@ capability or state invalidation. Use `key=value`, `key!=value`, or `not:key`
 when lifetime, deployment, or acquisition conditions must express a concrete
 contradiction.
 
-Use chain schema version 2 for strict authority reasoning. Each primitive must
-also record its input type, output authority, attacker acquisition method and
-evidence, measured `successes/attempts`, and unresolved assumptions. An
+Use chain schema version 2 for legacy strict authority reasoning and version 3
+for typed web authority. Each primitive records its input type, output
+authority, attacker acquisition method and evidence, measured
+`successes/attempts`, and unresolved assumptions. An
 unmeasured acquisition or unresolved assumption makes the edge `unknown`; it
 cannot complete a path.
+
+Schema version 3 binds every produced and required capability to:
+
+- actor/session, tenant, resource identity, and resource owner;
+- operation, permitted scope, parameter constraints, lifetime, and invalidation;
+- provider and consumer process, origin, and cache layer;
+- observation epoch, deployment configuration, and acquisition prerequisites;
+- measured effect, evidence confidence, and hypothetical or observed status.
+
+Capability names such as `read-owned-private-record`,
+`cross-tenant-record-read`, `privileged-field-control`,
+`shared-cache-response-influence`, `untrusted-object-construction`, and
+`browser-origin-code-execution` are examples, not a closed ontology. Matching
+names do not transfer authority. Scalar bindings must agree exactly and a
+producer must satisfy every required constraint. An explicit context transition
+must name and evidence any change of actor, tenant, process, origin, cache, or
+epoch. Runs from incompatible deployments, accounts, fixtures, or workflow
+histories cannot compose.
 
 `scripts/chain_reasoning.py` classifies each proposed connection as `feasible`,
 `unknown`, or `impossible`. It explores accumulated execution states instead of

@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 
@@ -307,6 +307,13 @@ class CDPClient:
     blocked_external: list[str] = field(default_factory=list)
     crashed: bool = False
     events_dropped: int = 0
+    request_admission: Callable[[str, str], bool] | None = None
+    request_header_injector: (
+        Callable[[str, str, dict[str, str]], dict[str, str]] | None
+    ) = None
+    allow_redirects: bool = True
+    auto_attach_policy: bool = False
+    event_observer: Callable[[dict[str, Any]], None] | None = None
 
     def append_capped(self, values: list[Any], value: Any) -> None:
         if len(values) < self.event_limit:
@@ -342,6 +349,9 @@ class CDPClient:
         raise ChromiumReplayError(f"CDP command timed out: {method}")
 
     def handle_event(self, message: dict[str, Any], *, session_id: str | None) -> None:
+        message_session = message.get("sessionId")
+        if isinstance(message_session, str) and message_session:
+            session_id = message_session
         method = str(message.get("method") or "")
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if len(self.events) < self.event_limit:
@@ -353,13 +363,43 @@ class CDPClient:
             request = params.get("request") if isinstance(params.get("request"), dict) else {}
             url = str(request.get("url") or "")
             parsed = urlparse(url)
-            allowed = url.startswith(self.allowed_origin + "/") or parsed.scheme in {
-                "about",
-                "data",
-                "blob",
-            }
+            if params.get("redirectedRequestId") and not self.allow_redirects:
+                allowed = False
+            elif self.request_admission is not None:
+                allowed = self.request_admission(
+                    url, str(request.get("method") or "GET").upper()
+                )
+            else:
+                allowed = url.startswith(self.allowed_origin + "/") or parsed.scheme in {
+                    "about",
+                    "data",
+                    "blob",
+                }
             if allowed:
-                self._send("Fetch.continueRequest", {"requestId": request_id}, session_id)
+                continuation: dict[str, Any] = {"requestId": request_id}
+                if self.request_header_injector is not None and parsed.scheme in {
+                    "http",
+                    "https",
+                }:
+                    original_headers = request.get("headers")
+                    original_headers = (
+                        {
+                            str(name): str(value)
+                            for name, value in original_headers.items()
+                        }
+                        if isinstance(original_headers, dict)
+                        else {}
+                    )
+                    injected = self.request_header_injector(
+                        url,
+                        str(request.get("method") or "GET").upper(),
+                        original_headers,
+                    )
+                    continuation["headers"] = [
+                        {"name": name, "value": value}
+                        for name, value in injected.items()
+                    ]
+                self._send("Fetch.continueRequest", continuation, session_id)
             else:
                 self.append_capped(self.blocked_external, url)
                 self._send(
@@ -375,6 +415,17 @@ class CDPClient:
             self.append_capped(self.network_failures, params)
         elif method in {"Inspector.targetCrashed", "Target.targetCrashed"}:
             self.crashed = True
+        elif method == "Target.attachedToTarget" and self.auto_attach_policy:
+            attached_session = str(params.get("sessionId") or "")
+            if attached_session:
+                self._send(
+                    "Fetch.enable",
+                    {"patterns": [{"urlPattern": "*"}]},
+                    attached_session,
+                )
+                self._send("Runtime.runIfWaitingForDebugger", None, attached_session)
+        if self.event_observer is not None:
+            self.event_observer(message)
 
     def wait_for(
         self,

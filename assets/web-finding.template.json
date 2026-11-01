@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-web-finding",
+  "id": "WF-REPLACE",
+  "experimentId": "WE-REPLACE",
+  "title": "Replace with the externally demonstrated authority violation",
+  "profile": "web-app",
+  "autonomousSubmissionAllowed": false,
+  "approvalBinding": {
+    "findingId": "WF-REPLACE",
+    "experimentId": "WE-REPLACE",
+    "observationEpoch": "epoch-replace",
+    "recipeSha256": "replace-with-sha256",
+    "authorizationContractSha256": "replace-with-sha256",
+    "identityBindings": [
+      {
+        "id": "owned-attacker",
+        "bindingVersion": "owned-attacker-v1"
+      },
+      {
+        "id": "owned-victim",
+        "bindingVersion": "owned-victim-v1"
+      }
+    ],
+    "resourceIds": [
+      "owned-record-b"
+    ],
+    "oracleEvidenceSha256": "replace-with-sha256"
+  },
+  "attackerStartingPoint": {
+    "identity": "owned-attacker",
+    "tenant": "owned-tenant-a",
+    "privilege": "ordinary-user",
+    "prerequisites": [
+      "owned account"
+    ]
+  },
+  "ingress": {
+    "url": "https://authorized.example.test/exact/path",
+    "method": "GET",
+    "observed": true,
+    "inScope": true,
+    "evidenceSha256": "replace-with-sha256"
+  },
+  "violatedRule": {
+    "claim": "Owned actor A must not read owned tenant B's private record",
+    "basis": "owner-supplied policy or independently verified normal workflow"
+  },
+  "ownedResourceIds": [
+    "owned-record-b"
+  ],
+  "semanticControls": {
+    "positive": [
+      {
+        "claim": "Owner B can read record B",
+        "evidenceSha256": "replace-with-sha256"
+      }
+    ],
+    "negative": [
+      {
+        "claim": "Actor A cannot read an unrelated protected control",
+        "evidenceSha256": "replace-with-sha256"
+      }
+    ],
+    "counterfactual": [
+      {
+        "claim": "Restoring the correct tenant binding removes the effect",
+        "evidenceSha256": "replace-with-sha256"
+      }
+    ]
+  },
+  "effect": {
+    "impactClass": "cross-tenant-authority",
+    "claim": "Actor A read the synthetic private record owned by tenant B",
+    "boundaryCrossed": "tenant-a to tenant-b private record",
+    "terminalClass": "cross-tenant-authorization",
+    "independentlyVerified": true,
+    "oracleEvidenceSha256": "replace-with-sha256"
+  },
+  "supportedClaim": {
+    "complete": true,
+    "statement": "Replace with the minimal supported external claim",
+    "conditions": [
+      "replace with exact deployment and workflow conditions"
+    ],
+    "unknowns": [
+      "internal implementation root cause is unknown in black-box testing"
+    ],
+    "internalRootCauseStatus": "unknown",
+    "sourceLocations": []
+  },
+  "severityAssessment": {
+    "startingPrivileges": "ordinary owned user",
+    "prerequisites": "replace with measured prerequisites",
+    "boundaryCrossed": "cross-tenant confidentiality",
+    "consequence": "synthetic private record disclosure",
+    "programRating": "program-defined"
+  },
+  "independentReplay": {
+    "freshSecretBindings": true,
+    "freshFixtureGenerations": true,
+    "isolatedBrowserSession": true,
+    "staleCookieJarReused": false,
+    "workflowPreconditionsPreserved": true,
+    "cachePreconditionsPreserved": true,
+    "originatorInterpretationAcceptedWithoutChallenge": false,
+    "prerequisiteVersion": "replace-with-prerequisite-version",
+    "observationEpoch": "epoch-replace",
+    "observerChallengeOutcome": "survived",
+    "evidenceSha256": "replace-with-sha256"
+  },
+  "cleanup": {
+    "status": "verified",
+    "evidence": "replace-with-cleanup-evidence"
+  },
+  "artifacts": {
+    "private": [
+      {
+        "path": "private/raw-evidence.json",
+        "sha256": "replace-with-sha256",
+        "classification": "private",
+        "restricted": true,
+        "encrypted": true
+      }
+    ],
+    "reviewer": [
+      {
+        "path": "reviewer/reproduction.json",
+        "sha256": "replace-with-sha256",
+        "classification": "reviewer",
+        "sanitized": true,
+        "syntheticDataOnly": true
+      }
+    ],
+    "reviewerSanitization": {
+      "coveredSurfaces": [
+        "request-headers",
+        "request-bodies",
+        "response-headers",
+        "response-bodies",
+        "urls",
+        "html-dom",
+        "screenshots",
+        "downloads",
+        "browser-storage",
+        "har-cdp-logs",
+        "nuclei-output",
+        "exception-traces",
+        "generated-commands"
+      ],
+      "unexpectedThirdPartyData": false,
+      "leakScanPassed": true,
+      "leakScanEvidenceSha256": "replace-with-sha256"
+    }
+  }
+}

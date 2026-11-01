@@ -78,6 +78,31 @@ class SemanticIRTests(unittest.TestCase):
         self.assertEqual(path["resourceAgreement"]["status"], "agreed")
         self.assertEqual(path["continuity"]["status"], "preserved")
 
+    def test_web_runtime_fact_is_epoch_bound_without_fake_source_location(self) -> None:
+        ir = build_semantic_ir(
+            {
+                "framework": "web-app",
+                "facts": [
+                    {
+                        "id": "web-op-1",
+                        "kind": "browser-operation",
+                        "confidence": "observed",
+                        "actorId": "owned-user-a",
+                        "resourceId": "owned-resource-a",
+                        "operation": "navigate",
+                        "observationEpoch": "deploy-7",
+                        "ownedIdentity": "owned-user-a",
+                        "observationReference": "cdp:event:21",
+                    }
+                ],
+                "relations": [],
+            }
+        )
+        self.assertEqual(ir["profile"], "web-app")
+        fact = ir["web"]["httpBrowserOperations"][0]
+        self.assertEqual(fact["observationReference"], "cdp:event:21")
+        self.assertNotIn("source", fact)
+
 
 if __name__ == "__main__":
     unittest.main()

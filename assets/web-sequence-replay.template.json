@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "originatorIdentity": "replace-with-originating-worker-identity",
+  "reviewerIdentity": "replace-with-fresh-reviewer-identity",
+  "copiedTerminalResponse": false,
+  "prepopulatedServerState": false,
+  "staleApprovalUsed": false,
+  "privateEvaluatorResourceUsed": false,
+  "fixtureRebuildEvidence": [
+    {
+      "path": "evidence/replay/fixture-factory.json",
+      "sha256": "replace-with-sha256"
+    }
+  ],
+  "freshCredentialBindingEvidence": [
+    {
+      "path": "evidence/replay/credential-bindings.json",
+      "sha256": "replace-with-sha256"
+    }
+  ],
+  "legitimateOtherActorActions": [],
+  "victimInteraction": "State every required owned-actor interaction or none"
+}

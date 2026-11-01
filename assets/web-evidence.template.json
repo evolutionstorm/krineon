@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-web-evidence",
+  "findingId": "WF-REPLACE",
+  "experimentId": "WE-REPLACE",
+  "target": {
+    "scopedUrls": [
+      "https://authorized.example.test/exact/path"
+    ],
+    "observedFrom": "2026-01-01T00:00:00Z",
+    "observedUntil": "2026-01-01T00:10:00Z",
+    "tlsObservations": [
+      {
+        "host": "authorized.example.test",
+        "protocol": "TLSv1.3",
+        "certificateSha256": "replace-with-sha256"
+      }
+    ],
+    "deploymentMarkers": [
+      {
+        "name": "response-version-header",
+        "value": "replace-with-observed-value",
+        "confidence": "response-claim"
+      }
+    ],
+    "configurationAssumptions": [],
+    "clientVersions": {
+      "transport": "replace-with-client-and-protocol-version",
+      "browser": "replace-with-browser-version-or-not-used"
+    }
+  },
+  "observationEpoch": {
+    "id": "epoch-replace",
+    "start": "2026-01-01T00:00:00Z",
+    "end": "2026-01-01T00:10:00Z",
+    "prerequisiteVersion": "replace-with-prerequisite-version",
+    "baseline": {
+      "sha256": "replace-with-sha256",
+      "stableComponents": [
+        "status, selected nonvolatile headers, and normalized body structure"
+      ],
+      "excludedVolatileFields": [
+        "timestamps, request ids, and owned user-specific values"
+      ]
+    },
+    "expired": false
+  },
+  "identities": [
+    {
+      "id": "owned-attacker",
+      "tenant": "owned-tenant-a",
+      "owned": true,
+      "secretRef": "secret://owned-attacker",
+      "bindingVersion": "owned-attacker-v1"
+    },
+    {
+      "id": "owned-victim",
+      "tenant": "owned-tenant-b",
+      "owned": true,
+      "secretRef": "secret://owned-victim",
+      "bindingVersion": "owned-victim-v1"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "owned-record-b",
+      "namespace": "researcher-owned-fixtures",
+      "owned": true,
+      "creationEvidenceSha256": "replace-with-sha256",
+      "cleanupStatus": "verified"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "cross-tenant-read",
+      "requestSha256": "replace-with-sha256",
+      "scenarioSha256": "replace-with-sha256",
+      "prerequisiteVersion": "replace-with-prerequisite-version",
+      "actors": [
+        "owned-attacker",
+        "owned-victim"
+      ],
+      "resources": [
+        "owned-record-b"
+      ]
+    }
+  ],
+  "provenance": {
+    "mode": "blackbox",
+    "sourceRevision": null,
+    "sourceEvidence": [],
+    "responseVersionIsSourcePin": false
+  },
+  "artifactTiers": {
+    "private": {
+      "encrypted": true,
+      "restricted": true,
+      "retention": "campaign policy",
+      "access": "named campaign operators",
+      "export": "prohibited without review",
+      "deletion": "verified after policy expiry"
+    },
+    "reviewer": {
+      "redacted": true,
+      "syntheticDataOnly": true,
+      "retention": "report lifecycle",
+      "access": "reviewer package",
+      "export": "manual reviewed export only",
+      "deletion": "verified after report lifecycle"
+    }
+  },
+  "unexpectedThirdPartyData": false,
+  "autonomousPublicationAllowed": false
+}

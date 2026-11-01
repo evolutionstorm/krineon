@@ -26,6 +26,12 @@ BOUNDARY_OPERATIONS = {
     "arbitrary-server-module-loading",
     "privileged-filesystem-network-authority",
     "cryptographic-signing-other-identity",
+    "confidentiality-disclosure",
+    "integrity-authority-violation",
+    "unauthorized-transaction-entitlement",
+    "browser-origin-code-execution",
+    "server-code-execution",
+    "shared-cache-cross-principal-delivery",
 }
 
 PROGRESS_MILESTONES = {
@@ -38,7 +44,39 @@ PROGRESS_MILESTONES = {
     "chain-precondition-falsified",
 }
 
-CONTEXT_FIELDS = ("principal", "process", "namespace", "runtime")
+LEGACY_CONTEXT_FIELDS = ("principal", "process", "namespace", "runtime")
+CONTEXT_FIELDS = (
+    "principal",
+    "actorSession",
+    "tenant",
+    "process",
+    "namespace",
+    "runtime",
+    "origin",
+    "cacheLayer",
+    "observationEpoch",
+)
+
+CAPABILITY_BINDING_SCALARS = (
+    "actorSession",
+    "tenant",
+    "resourceIdentity",
+    "resourceOwner",
+    "operation",
+    "permittedScope",
+    "observationEpoch",
+    "measuredEffect",
+    "evidenceConfidence",
+    "status",
+)
+CAPABILITY_BINDING_LISTS = (
+    "parameterConstraints",
+    "lifetime",
+    "invalidation",
+    "configuration",
+    "acquisitionPrerequisites",
+)
+CAPABILITY_ENDPOINT_FIELDS = ("process", "origin", "cacheLayer")
 
 
 def require_text(value: Any, field: str) -> str:
@@ -54,9 +92,56 @@ def require_text_list(value: Any, field: str, *, allow_empty: bool = False) -> l
     return list(dict.fromkeys(rows))
 
 
-def normalize_capability(value: Any, field: str) -> dict[str, Any]:
+def normalize_capability_endpoint(value: Any, field: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{field} must be an object")
+    return {
+        name: require_text(value.get(name), f"{field}.{name}")
+        for name in CAPABILITY_ENDPOINT_FIELDS
+    }
+
+
+def normalize_capability_binding(value: Any, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    normalized: dict[str, Any] = {
+        name: require_text(value.get(name), f"{field}.{name}")
+        for name in CAPABILITY_BINDING_SCALARS
+    }
+    if normalized["evidenceConfidence"] not in {
+        "hypothesis",
+        "source-supported",
+        "runtime-observed",
+        "independently-replayed",
+    }:
+        raise RuntimeError(f"{field}.evidenceConfidence is unsupported")
+    if normalized["status"] not in {"hypothetical", "runtime-observed"}:
+        raise RuntimeError(f"{field}.status must be hypothetical or runtime-observed")
+    normalized.update(
+        {
+            name: require_text_list(
+                value.get(name, []), f"{field}.{name}", allow_empty=True
+            )
+            for name in CAPABILITY_BINDING_LISTS
+        }
+    )
+    normalized["provider"] = normalize_capability_endpoint(
+        value.get("provider"), f"{field}.provider"
+    )
+    normalized["consumer"] = normalize_capability_endpoint(
+        value.get("consumer"), f"{field}.consumer"
+    )
+    return normalized
+
+
+def normalize_capability(
+    value: Any, field: str, *, require_binding: bool = False
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field} must be an object")
+    binding = value.get("binding")
+    if require_binding and binding is None:
+        raise RuntimeError(f"{field}.binding is required in typed-capability mode")
     return {
         "type": require_text(value.get("type"), f"{field}.type"),
         "properties": require_text_list(
@@ -69,6 +154,11 @@ def normalize_capability(value: Any, field: str) -> dict[str, Any]:
             value.get("forbiddenLimitations", []),
             f"{field}.forbiddenLimitations",
             allow_empty=True,
+        ),
+        "binding": (
+            normalize_capability_binding(binding, f"{field}.binding")
+            if binding is not None
+            else None
         ),
     }
 
@@ -138,16 +228,23 @@ def normalize_state_sequence(value: Any, field: str) -> dict[str, Any]:
     }
 
 
-def normalize_context(value: Any, field: str) -> dict[str, str]:
+def normalize_context(
+    value: Any, field: str, *, require_extended: bool = False
+) -> dict[str, str]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{field} must be an object")
-    return {
-        name: require_text(value.get(name), f"{field}.{name}")
-        for name in CONTEXT_FIELDS
-    }
+    result: dict[str, str] = {}
+    for name in CONTEXT_FIELDS:
+        if name in LEGACY_CONTEXT_FIELDS or require_extended:
+            result[name] = require_text(value.get(name), f"{field}.{name}")
+        else:
+            result[name] = str(value.get(name) or "any")
+    return result
 
 
-def normalize_context_transition(value: Any, field: str) -> dict[str, Any] | None:
+def normalize_context_transition(
+    value: Any, field: str, *, require_extended: bool = False
+) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -158,13 +255,23 @@ def normalize_context_transition(value: Any, field: str) -> dict[str, Any] | Non
             preserves, f"{field}.preservesCapabilities", allow_empty=True
         )
     return {
-        "from": normalize_context(value.get("from"), f"{field}.from"),
-        "to": normalize_context(value.get("to"), f"{field}.to"),
+        "from": normalize_context(
+            value.get("from"), f"{field}.from", require_extended=require_extended
+        ),
+        "to": normalize_context(
+            value.get("to"), f"{field}.to", require_extended=require_extended
+        ),
         "transport": require_text(value.get("transport"), f"{field}.transport"),
         "authorityChange": require_text(
             value.get("authorityChange"), f"{field}.authorityChange"
         ),
         "preservesCapabilities": preserves,
+        "crosses": require_text_list(
+            value.get("crosses", []), f"{field}.crosses", allow_empty=True
+        ),
+        "evidence": require_text_list(
+            value.get("evidence", []), f"{field}.evidence", allow_empty=True
+        ),
     }
 
 
@@ -366,12 +473,17 @@ def normalize_experimental_scope(value: Any, field: str) -> dict[str, Any]:
     }
 
 
-def normalize_boundary(value: Any, field: str = "criticalBoundary") -> dict[str, Any]:
+def normalize_boundary(
+    value: Any,
+    field: str = "criticalBoundary",
+    *,
+    typed_capabilities: bool = False,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{field} must be an object")
     operation = require_text(value.get("operation"), f"{field}.operation")
     if operation not in BOUNDARY_OPERATIONS:
-        raise RuntimeError(f"{field}.operation is not a Critical authority boundary")
+        raise RuntimeError(f"{field}.operation is not a supported authority boundary")
     required = value.get("requiredCapabilities")
     if not isinstance(required, list) or not required:
         raise RuntimeError(f"{field}.requiredCapabilities must be a non-empty list")
@@ -389,10 +501,18 @@ def normalize_boundary(value: Any, field: str = "criticalBoundary") -> dict[str,
             f"{field}.intermediateCapability",
         ),
         "requiredCapabilities": [
-            normalize_capability(item, f"{field}.requiredCapabilities[{index}]")
+            normalize_capability(
+                item,
+                f"{field}.requiredCapabilities[{index}]",
+                require_binding=typed_capabilities,
+            )
             for index, item in enumerate(required)
         ],
-        "context": normalize_context(value.get("context"), f"{field}.context"),
+        "context": normalize_context(
+            value.get("context"),
+            f"{field}.context",
+            require_extended=typed_capabilities,
+        ),
         "constraints": normalize_constraints(
             value.get("constraints"), f"{field}.constraints"
         ),
@@ -404,7 +524,11 @@ def normalize_boundary(value: Any, field: str = "criticalBoundary") -> dict[str,
 
 
 def normalize_primitive(
-    value: Any, field: str = "primitive", *, strict_authority: bool = False
+    value: Any,
+    field: str = "primitive",
+    *,
+    strict_authority: bool = False,
+    typed_capabilities: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{field} must be an object")
@@ -451,16 +575,30 @@ def normalize_primitive(
             allow_empty=True,
         ),
         "produces": [
-            normalize_capability(item, f"{field}.produces[{index}]")
+            normalize_capability(
+                item,
+                f"{field}.produces[{index}]",
+                require_binding=typed_capabilities,
+            )
             for index, item in enumerate(produces)
         ],
         "requires": [
-            normalize_capability(item, f"{field}.requires[{index}]")
+            normalize_capability(
+                item,
+                f"{field}.requires[{index}]",
+                require_binding=typed_capabilities,
+            )
             for index, item in enumerate(requires)
         ],
-        "context": normalize_context(value.get("context"), f"{field}.context"),
+        "context": normalize_context(
+            value.get("context"),
+            f"{field}.context",
+            require_extended=typed_capabilities,
+        ),
         "contextTransition": normalize_context_transition(
-            value.get("contextTransition"), f"{field}.contextTransition"
+            value.get("contextTransition"),
+            f"{field}.contextTransition",
+            require_extended=typed_capabilities,
         ),
         "attemptModel": normalize_attempt_model(
             value.get("attemptModel"), f"{field}.attemptModel"
@@ -517,6 +655,7 @@ def normalize_primitive(
             unresolved, f"{field}.unresolvedAssumptions", allow_empty=True
         ),
         "strictAuthority": strict_authority,
+        "typedCapabilities": typed_capabilities,
     }
     return normalized
 
@@ -528,6 +667,21 @@ def capability_match(produced: dict[str, Any], required: dict[str, Any]) -> tupl
         return False, "missing-properties"
     if set(produced["limitations"]).intersection(required["forbiddenLimitations"]):
         return False, "forbidden-limitation"
+    produced_binding = produced.get("binding")
+    required_binding = required.get("binding")
+    if (produced_binding is None) != (required_binding is None):
+        return False, "capability-binding-missing"
+    if produced_binding is not None and required_binding is not None:
+        for name in CAPABILITY_BINDING_SCALARS:
+            if produced_binding[name] != required_binding[name]:
+                return False, f"capability-binding:{name}"
+        for endpoint in ("provider", "consumer"):
+            for name in CAPABILITY_ENDPOINT_FIELDS:
+                if produced_binding[endpoint][name] != required_binding[endpoint][name]:
+                    return False, f"capability-binding:{endpoint}.{name}"
+        for name in CAPABILITY_BINDING_LISTS:
+            if not set(required_binding[name]).issubset(produced_binding[name]):
+                return False, f"capability-binding:{name}"
     return True, "matched"
 
 
@@ -547,6 +701,8 @@ def context_match(
     for field in CONTEXT_FIELDS:
         supplied = producer["context"][field]
         required = consumer["context"][field]
+        if supplied == required == "any":
+            continue
         if "any" in {supplied, required}:
             unknown.append(field)
         elif supplied != required:
@@ -765,6 +921,8 @@ def execution_check(
         for field in CONTEXT_FIELDS:
             supplied = chain_context[field]
             required = required_context[field]
+            if supplied == required == "any":
+                continue
             if "any" in {supplied, required}:
                 unknown.append(f"context-unresolved:{field}")
             elif supplied != required:
@@ -1008,10 +1166,12 @@ def experimental_scope(
 
 
 def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
-    if document.get("schemaVersion") not in {1, 2}:
-        raise RuntimeError("chain specification requires schemaVersion 1 or 2")
+    if document.get("schemaVersion") not in {1, 2, 3}:
+        raise RuntimeError("chain specification requires schemaVersion 1, 2, or 3")
+    typed_capabilities = document.get("schemaVersion") == 3
     strict_authority = bool(
-        document.get("strictAuthorityModel") or document.get("schemaVersion") == 2
+        document.get("strictAuthorityModel")
+        or document.get("schemaVersion") in {2, 3}
     )
     executable_oracle = document.get("executableOracle")
     if executable_oracle is not None and (
@@ -1021,12 +1181,19 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("executableOracle must be an executable object when supplied")
     primitives = [
         normalize_primitive(
-            item, f"primitives[{index}]", strict_authority=strict_authority
+            item,
+            f"primitives[{index}]",
+            strict_authority=strict_authority,
+            typed_capabilities=typed_capabilities,
         )
         for index, item in enumerate(document.get("primitives", []))
     ]
     boundaries = [
-        normalize_boundary(item, f"boundaries[{index}]")
+        normalize_boundary(
+            item,
+            f"boundaries[{index}]",
+            typed_capabilities=typed_capabilities,
+        )
         for index, item in enumerate(document.get("boundaries", []))
     ]
     if not primitives or not boundaries:
@@ -1109,6 +1276,7 @@ def analyze_chain(document: dict[str, Any]) -> dict[str, Any]:
         "orderingSensitive": sorted(ordering_sensitive),
         "executionLimits": execution_limits,
         "strictAuthorityModel": strict_authority,
+        "typedCapabilityModel": typed_capabilities,
     }
     search_digest = hashlib.sha256(
         json.dumps(

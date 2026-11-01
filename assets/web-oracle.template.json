@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "replace-with-oracle-id",
+  "kind": "authorization-isolation",
+  "claim": "Identity A cannot observe identity B's protected resource.",
+  "requiredObservations": [
+    {"step": "authoritative-before", "field": "identity.expectedTenant"},
+    {"step": "candidate-operation", "field": "resource.expectedOwner"},
+    {"step": "authoritative-after", "field": "response.bodySha256"}
+  ],
+  "evidenceRequirements": [
+    {
+      "purpose": "Bind the actor, tenant, selected resource, owner, and permitted action.",
+      "selectors": [
+        {"step": "candidate-operation", "field": "identity.id"},
+        {"step": "candidate-operation", "field": "identity.expectedTenant"},
+        {"step": "candidate-operation", "field": "resource.expectedOwner"},
+        {"step": "candidate-operation", "field": "resource.selectedResource"},
+        {"step": "candidate-operation", "field": "resource.permittedAction"}
+      ]
+    },
+    {
+      "purpose": "Use independent authoritative state reads before and after the candidate operation.",
+      "selectors": [
+        {"step": "authoritative-before", "field": "response.bodySha256"},
+        {"step": "authoritative-after", "field": "response.bodySha256"},
+        {"step": "authoritative-after", "field": "observationContext.evidenceOrigin"}
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "id": "baseline-is-observable",
+      "role": "baseline-control",
+      "operator": "exists",
+      "left": {"step": "authoritative-before", "field": "response.bodySha256"},
+      "expected": true
+    },
+    {
+      "id": "negative-control-is-distinct",
+      "role": "enforcing-negative",
+      "operator": "not-equals",
+      "left": {"step": "enforcing-negative", "field": "response.bodySha256"},
+      "right": {"step": "authoritative-before", "field": "response.bodySha256"},
+      "expected": true
+    },
+    {
+      "id": "authoritative-state-is-preserved",
+      "role": "positive-invariant",
+      "operator": "equals",
+      "left": {"step": "authoritative-after", "field": "response.bodySha256"},
+      "right": {"step": "authoritative-before", "field": "response.bodySha256"},
+      "expected": true
+    }
+  ],
+  "inconclusiveWhenMissing": true
+}

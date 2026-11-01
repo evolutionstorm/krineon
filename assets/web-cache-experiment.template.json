@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-web-cache-experiment",
+  "id": "replace-with-cache-experiment-id",
+  "title": "One cache-key dimension on one disposable resource",
+  "prerequisiteVersion": "replace-with-deployment-version",
+  "mode": "poisoning",
+  "observedCacheLayer": "unknown",
+  "identities": {
+    "attacker": {
+      "actorRef": "owned-actor-a",
+      "profileRef": "owned-profile-a",
+      "credentialBindingVersion": "credential-a-v1"
+    },
+    "victim": {
+      "actorRef": "owned-actor-b-or-anonymous",
+      "profileRef": "fresh-profile-b",
+      "credentialBindingVersion": "credential-b-v1-or-anonymous-v1"
+    }
+  },
+  "disputedDimension": {
+    "kind": "selected-header",
+    "baseline": "ordinary representation",
+    "attackerRepresentation": "one reviewed header variation",
+    "victimRepresentation": "ordinary representation without the variation",
+    "hypothesis": "the shared cache omits this security-relevant dimension"
+  },
+  "isolation": {
+    "liveSharedCacheMutation": false,
+    "established": false,
+    "planningOnly": true,
+    "basis": "unresolved",
+    "randomMarkerIsSoleBasis": false,
+    "exactSharedEffectApproved": false,
+    "approvalEvidence": [],
+    "namespace": "replace-with-owned-cache-namespace",
+    "evidence": []
+  },
+  "canary": {
+    "sha256": "replace-with-private-synthetic-canary-sha256",
+    "owned": true,
+    "synthetic": true,
+    "privateToActorRef": null
+  },
+  "steps": [
+    {
+      "id": "clean-baseline",
+      "role": "clean-baseline",
+      "workflowRef": "web/cache-clean-baseline.json",
+      "actorRef": "owned-actor-b-or-anonymous",
+      "resourceRef": "owned-cache-resource",
+      "ordinaryRepresentation": true
+    },
+    {
+      "id": "attacker-prime",
+      "role": "attacker-prime",
+      "workflowRef": "web/cache-attacker-prime.json",
+      "actorRef": "owned-actor-a",
+      "resourceRef": "owned-cache-resource",
+      "ordinaryRepresentation": false
+    },
+    {
+      "id": "victim-fetch",
+      "role": "victim-fetch",
+      "workflowRef": "web/cache-victim-fetch.json",
+      "actorRef": "owned-actor-b-or-anonymous",
+      "resourceRef": "owned-cache-resource",
+      "ordinaryRepresentation": true
+    },
+    {
+      "id": "enforcing-control",
+      "role": "enforcing-control",
+      "workflowRef": "web/cache-enforcing-control.json",
+      "actorRef": "owned-actor-b-or-anonymous",
+      "resourceRef": "owned-cache-control-resource",
+      "ordinaryRepresentation": true
+    },
+    {
+      "id": "cleanup-verify",
+      "role": "cleanup-verify",
+      "workflowRef": "web/cache-cleanup-verify.json",
+      "actorRef": "owned-actor-a",
+      "resourceRef": "owned-cache-resource",
+      "ordinaryRepresentation": true
+    }
+  ],
+  "competingExplanations": [
+    {
+      "id": "H1",
+      "statement": "a shared cache reused the attacker representation for the ordinary victim request"
+    },
+    {
+      "id": "H2",
+      "statement": "the origin reflected attacker input only to the attacker"
+    },
+    {
+      "id": "H3",
+      "statement": "browser or service-worker local state produced the observation"
+    },
+    {
+      "id": "H4",
+      "statement": "content negotiation or a stale deployment artifact explains the response"
+    }
+  ],
+  "safety": {
+    "broadPurge": false,
+    "commonRoutePoisoning": false,
+    "evictionResearch": false,
+    "fiveXXCaching": false,
+    "availabilityImpact": false,
+    "cacheControlNoCacheAssumedPurge": false,
+    "approvedTtlSeconds": 60,
+    "maxRequests": 8,
+    "maxStateChangingEffects": 1,
+    "cleanupBehavior": "wait for or remove only the owned isolated entry"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-web-authorization-review",
+  "contractSha256": "generated-by-prepare-review",
+  "programRulesSha256": "generated-by-prepare-review",
+  "approvedBy": "",
+  "programRulesDate": "",
+  "validUntil": "",
+  "environmentOwner": "",
+  "ownedFixtureNamespace": "",
+  "review": {
+    "exactOriginsAndPaths": false,
+    "methodsAndActions": false,
+    "ownedAccountsAndTenants": false,
+    "effectClassesAndLimits": false,
+    "budgetsAndCleanup": false,
+    "stopConditions": false,
+    "thirdPartyDataExcluded": false
+  },
+  "note": "Generate this file with web_contract.py prepare-review. Set a check to true only after reviewing the exact retained contract and program rules."
+}

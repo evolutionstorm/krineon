@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-nuclei-containment-evidence",
+  "executedBy": "krineon-coordinator",
+  "engineSha256": "replace-with-pinned-engine-sha256",
+  "loopbackReplayReachable": true,
+  "alternateEngineEgressBlocked": true,
+  "updatesAndUploadsBlocked": true,
+  "sandbox": {
+    "implementation": "replace-with-reviewed-network-sandbox",
+    "policySha256": "replace-with-policy-sha256",
+    "observationSha256": "replace-with-coordinator-observation-sha256"
+  }
+}

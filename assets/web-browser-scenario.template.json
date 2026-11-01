@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "replace-with-browser-scenario-id",
+  "description": "Bounded multi-role browser observation against an owned local fixture",
+  "requiredCapabilities": [
+    "fresh-process-per-run",
+    "fresh-profile-per-run",
+    "sandbox-enabled",
+    "normal-web-security",
+    "browser-generated-request-context",
+    "challenge-state-classification",
+    "fetch-scope-enforcement",
+    "network-events",
+    "console-exceptions",
+    "dom-and-storage-discovery",
+    "service-worker-discovery",
+    "downloads-denied"
+  ],
+  "runs": [
+    {
+      "id": "attacker-control",
+      "role": "attacker",
+      "mode": "headless",
+      "workflowStep": "replace-with-browser-step-id",
+      "timeoutSeconds": 30
+    },
+    {
+      "id": "victim-observation",
+      "role": "victim",
+      "mode": "headless",
+      "workflowStep": "replace-with-browser-step-id",
+      "timeoutSeconds": 30
+    },
+    {
+      "id": "independent-review",
+      "role": "reviewer",
+      "mode": "headless",
+      "workflowStep": "replace-with-browser-step-id",
+      "timeoutSeconds": 30
+    }
+  ]
+}

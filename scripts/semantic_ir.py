@@ -47,6 +47,137 @@ def runtime_index(observations: list[dict[str, Any]]) -> dict[str, list[dict[str
     return result
 
 
+WEB_FACT_KINDS = {
+    "http-operation",
+    "browser-operation",
+    "verified-actor",
+    "verified-tenant",
+    "concrete-resource",
+    "field-provenance",
+    "workflow-transition",
+    "approval",
+    "job",
+    "cache-observation",
+    "browser-selected-identity",
+}
+WEB_RELATION_STATES = {"known", "inferred", "unobserved", "contradicted"}
+
+
+def web_semantic_facts(
+    facts: list[dict[str, Any]], relations: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Normalize deployed web facts without inventing source evidence."""
+
+    normalized: list[dict[str, Any]] = []
+    for fact in facts:
+        kind = str(fact.get("kind") or "")
+        if kind not in WEB_FACT_KINDS:
+            continue
+        confidence = str(fact.get("confidence") or "")
+        if confidence not in {
+            "observed",
+            "owner-specified",
+            "source-supported",
+            "hypothesized",
+        }:
+            raise RuntimeError(f"web fact has unsupported confidence: {confidence}")
+        row = {
+            "id": str(fact.get("id") or stable_id("WEB-F", fact)),
+            "kind": kind,
+            "confidence": confidence,
+            "actorId": fact.get("actorId"),
+            "tenantId": fact.get("tenantId"),
+            "resourceId": fact.get("resourceId"),
+            "operation": fact.get("operation"),
+            "stateBefore": fact.get("stateBefore"),
+            "stateAfter": fact.get("stateAfter"),
+            "field": fact.get("field"),
+            "valueProvenance": fact.get("valueProvenance"),
+            "observationEpoch": fact.get("observationEpoch"),
+            "ownedIdentity": fact.get("ownedIdentity"),
+            "observationReference": fact.get("observationReference"),
+        }
+        if confidence == "observed" and (
+            not row["observationEpoch"] or not row["ownedIdentity"]
+        ):
+            raise RuntimeError(
+                "observed web facts require observationEpoch and ownedIdentity"
+            )
+        if kind in {"http-operation", "browser-operation"} and not row[
+            "observationReference"
+        ]:
+            raise RuntimeError(
+                "observed HTTP/browser operations require an observation reference"
+            )
+        # A CDP/request event is evidence, never a fictional source location.
+        if row["observationReference"] and fact.get("source") == row[
+            "observationReference"
+        ]:
+            raise RuntimeError(
+                "runtime observation references must not be used as source locations"
+            )
+        source_mapping = fact.get("sourceMapping")
+        if source_mapping is not None:
+            if not isinstance(source_mapping, dict) or not str(
+                source_mapping.get("sourceFact") or ""
+            ):
+                raise RuntimeError("sourceMapping requires an explicit sourceFact")
+            row["sourceMapping"] = source_mapping
+        normalized.append(row)
+
+    normalized_relations: list[dict[str, Any]] = []
+    for relation in relations:
+        if relation.get("profile") != "web-app" and relation.get("kind") not in {
+            "web-field-flow",
+            "web-workflow-edge",
+            "web-authority-edge",
+            "web-cache-edge",
+            "web-source-mapping",
+        }:
+            continue
+        state = str(relation.get("relationState") or "unobserved")
+        if state not in WEB_RELATION_STATES:
+            raise RuntimeError(f"unsupported web relation state: {state}")
+        normalized_relations.append(
+            {
+                "id": str(relation.get("id") or stable_id("WEB-R", relation)),
+                "kind": relation.get("kind"),
+                "from": relation.get("from"),
+                "to": relation.get("to"),
+                "relationState": state,
+                "evidence": relation.get("evidence", []),
+                "observationEpoch": relation.get("observationEpoch"),
+                "ownedIdentity": relation.get("ownedIdentity"),
+                "sourceMapping": relation.get("sourceMapping"),
+            }
+        )
+    by_kind = {
+        kind: [row for row in normalized if row["kind"] == kind]
+        for kind in sorted(WEB_FACT_KINDS)
+    }
+    return {
+        "facts": normalized,
+        "relations": normalized_relations,
+        "httpBrowserOperations": [
+            *by_kind["http-operation"],
+            *by_kind["browser-operation"],
+        ],
+        "actors": by_kind["verified-actor"],
+        "tenants": by_kind["verified-tenant"],
+        "resources": by_kind["concrete-resource"],
+        "fieldValueProvenance": by_kind["field-provenance"],
+        "workflowTransitions": by_kind["workflow-transition"],
+        "approvals": by_kind["approval"],
+        "jobs": by_kind["job"],
+        "cacheObservations": by_kind["cache-observation"],
+        "browserSelectedIdentities": by_kind["browser-selected-identity"],
+        "relationStates": {
+            state: [row["id"] for row in normalized_relations if row["relationState"] == state]
+            for state in sorted(WEB_RELATION_STATES)
+        },
+    }
+
+
 def operation_nodes(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     kinds = {
         "authentication-signal",
@@ -455,7 +586,7 @@ def build_semantic_ir(
     observations = runtime_index(runtime_observations or [])
     operations = operation_nodes(facts)
     paths = build_security_paths(facts, relations, observations)
-    return {
+    result = {
         "schemaVersion": 1,
         "producer": "krineon-semantic-ir",
         "framework": analysis.get("framework"),
@@ -476,6 +607,18 @@ def build_semantic_ir(
             "runtimeIdentityRequiredForContinuity": True,
         },
     }
+    web = web_semantic_facts(facts, relations)
+    if web["facts"] or web["relations"]:
+        result["profile"] = "web-app"
+        result["web"] = web
+        result["contract"].update(
+            {
+                "deployedObservationsBoundToEpochAndIdentity": True,
+                "runtimeObservationReferencesAreNotSourceLocations": True,
+                "blackboxReplayRequiredForExternalReachability": True,
+            }
+        )
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

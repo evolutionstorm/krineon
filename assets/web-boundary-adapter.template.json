@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-web-boundary-adapter",
+  "id": "replace-with-adapter-experiment-id",
+  "title": "One bounded target-specific boundary experiment",
+  "prerequisiteVersion": "replace-with-deployment-version",
+  "family": "parser-normalization",
+  "baselineMeasured": true,
+  "invariant": {
+    "statement": "replace-with-target-specific-security-invariant",
+    "basis": "owner-specified, source-supported, or observed legitimate workflow",
+    "baselineEvidence": [
+      "evidence/legitimate-baseline.json"
+    ]
+  },
+  "competingExplanations": [
+    {
+      "id": "H1",
+      "statement": "the two real consumers interpret the representation differently"
+    },
+    {
+      "id": "H2",
+      "statement": "the observed difference is an authentication or error-page artifact"
+    }
+  ],
+  "allowedEffects": [
+    "read-only"
+  ],
+  "fixtures": [
+    {
+      "id": "owned-disposable-fixture",
+      "owned": true,
+      "disposable": true,
+      "generation": "fresh-generation",
+      "factoryRef": "replace-with-fixture-factory",
+      "readbackRef": "replace-with-authoritative-readback",
+      "cleanupRef": "replace-with-cleanup"
+    }
+  ],
+  "independentOracle": {
+    "id": "replace-with-oracle-id",
+    "observerIdentity": "fresh-owned-observer",
+    "authoritativeReadback": "replace-with-server-visible-readback",
+    "negativeControl": "replace-with-enforcing-control"
+  },
+  "cleanup": {
+    "required": true,
+    "irreversible": false,
+    "verification": "replace-with-cleanup-readback"
+  },
+  "options": {
+    "boundaries": [
+      "application-parser",
+      "proxy-or-browser-consumer"
+    ],
+    "maxRepresentations": 8
+  }
+}

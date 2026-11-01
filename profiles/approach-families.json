@@ -144,6 +144,46 @@
       "mechanism": "positive and negative controls, clean replay, adversarial review, and synthesis",
       "invariant": "only independently reproducible stock-build effects with an exhaustive contradiction-free source-to-sink path proof may be promoted",
       "exploration": false
+    },
+    {
+      "id": "web-authorization-isolation",
+      "title": "Web identity, resource, and tenant authorization",
+      "boundary": "one application principal or tenant reaching another principal's protected resource or authority",
+      "mechanism": "object identity, ownership, role, tenant, session, and checker-consumer disagreement",
+      "invariant": "the acting principal may observe or mutate only resources authorized for that exact identity, tenant, and state",
+      "exploration": true
+    },
+    {
+      "id": "web-workflow-business-logic",
+      "title": "Multi-step workflow and business-rule composition",
+      "boundary": "individually valid operations composing into an unauthorized final state",
+      "mechanism": "history, replay, ordering, ownership transfer, approval, cancellation, redemption, and stale-state composition",
+      "invariant": "every workflow transition must preserve the business rule across the complete state history",
+      "exploration": true
+    },
+    {
+      "id": "web-cache-partition",
+      "title": "Web cache identity and partition mismatch",
+      "boundary": "attacker and victim requests sharing a cache entry despite different security-relevant identity",
+      "mechanism": "cache-key omission, normalization, variation, revalidation, deception, and shared-state sequencing",
+      "invariant": "security-relevant request dimensions must partition every reusable response and state entry",
+      "exploration": true
+    },
+    {
+      "id": "web-browser-api",
+      "title": "Browser and application API discovery",
+      "boundary": "sandboxed browser state crossing application, API, authentication, callback, or storage origins",
+      "mechanism": "CDP-observed navigation, forms, fetches, redirects, service workers, scripts, and client state",
+      "invariant": "browser-visible capabilities must remain within the authorized origin, identity, and workflow contract",
+      "exploration": true
+    },
+    {
+      "id": "web-controlled-broker",
+      "title": "Controlled web experiment execution",
+      "boundary": "agent-proposed operation crossing into authorized target traffic",
+      "mechanism": "coordinator approval, exact scope, effect classification, shared budgets, redaction, cancellation, and cleanup",
+      "invariant": "no target operation occurs outside the explicit authorization and resource budget",
+      "exploration": false
     }
   ],
   "profileMappings": {
@@ -185,6 +225,28 @@
       "v8-finding-scoped-replay-scheduler": ["validation-replay"],
       "v8-adversarial-review": ["validation-replay"],
       "v8-root-synthesis": ["chain-composition", "validation-replay"]
+    },
+    "web-app": {
+      "web-contract-coordinator": ["campaign-foundation", "web-controlled-broker"],
+      "web-identity-resource-inventory": ["web-authorization-isolation", "ingress-authority"],
+      "web-api-browser-discovery": ["web-browser-api", "ingress-authority"],
+      "web-authorization-oracles": ["web-authorization-isolation", "representation-parser"],
+      "web-workflow-state-modeling": ["web-workflow-business-logic"],
+      "web-cache-serialization-tools": ["web-cache-partition", "representation-parser", "capability-code-loading"],
+      "web-cheapest-discriminators": ["blocker-alternative-route", "web-controlled-broker"],
+      "web-business-logic-oracles": ["web-workflow-business-logic", "web-authorization-isolation"],
+      "web-business-sequence-planning": ["web-workflow-business-logic", "chain-composition"],
+      "web-forbidden-composition-search": ["web-workflow-business-logic", "chain-composition", "blocker-alternative-route"],
+      "web-controlled-execution": ["web-controlled-broker", "validation-replay"],
+      "web-business-sequence-execution": ["web-controlled-broker", "web-workflow-business-logic", "validation-replay"],
+      "web-cache-semantic-research": ["web-cache-partition", "web-controlled-broker", "validation-replay"],
+      "web-deserialization-semantic-research": ["representation-parser", "ingress-authority", "validation-replay"],
+      "web-bounded-boundary-adapters": ["representation-parser", "web-browser-api", "web-controlled-broker"],
+      "web-chain-composition": ["chain-composition", "web-authorization-isolation", "web-workflow-business-logic"],
+      "web-independent-replay": ["validation-replay", "web-controlled-broker"],
+      "web-blinded-evaluation": ["validation-replay", "web-controlled-broker"],
+      "web-evidence-finding-gate": ["validation-replay", "web-controlled-broker", "web-authorization-isolation"],
+      "web-root-synthesis": ["chain-composition", "validation-replay"]
     }
   }
 }

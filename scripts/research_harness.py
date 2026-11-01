@@ -36,8 +36,10 @@ try:
         progress_score,
     )
     from .experiment_control import (
+        control_public_key,
         ensure_authority,
         sign_file,
+        verify_file,
         verify_controlled_observation,
         verify_signed_record,
     )
@@ -47,6 +49,9 @@ try:
         safe_campaign_path,
         validate_attestation,
     )
+    from .web_oracle import evaluate as evaluate_web_oracle
+    from .web_contract import WebCampaignContract
+    from .web_workflow import verify as verify_web_workflow
 except ImportError:  # Direct script execution.
     from chain_reasoning import (
         analyze_chain,
@@ -57,13 +62,18 @@ except ImportError:  # Direct script execution.
         progress_score,
     )
     from experiment_control import (
+        control_public_key,
         ensure_authority,
         sign_file,
+        verify_file,
         verify_controlled_observation,
         verify_signed_record,
     )
     from path_proof import validate_path_proof
     from reality_evidence import evidence_reference, safe_campaign_path, validate_attestation
+    from web_oracle import evaluate as evaluate_web_oracle
+    from web_contract import WebCampaignContract
+    from web_workflow import verify as verify_web_workflow
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -135,7 +145,34 @@ REPORTABLE_GATES = CANDIDATE_GATES + (
     "secrets_removed",
 )
 
-PROFILE_NAMES = ("critical-rce", "chrome-v8")
+WEB_CANDIDATE_GATES = (
+    "authorization_confirmed",
+    "scope_confirmed",
+    "exact_version_pinned",
+    "root_cause_identified",
+    "attacker_control_proven",
+    "security_invariant_defined",
+    "runtime_invariant_disagreement",
+    "supported_reachability",
+    "baseline_control",
+    "negative_control",
+    "positive_case",
+    "concrete_impact",
+    "controlled_experiment_verified",
+    "cleanup_verified",
+    "secrets_removed",
+)
+
+WEB_REPORTABLE_GATES = WEB_CANDIDATE_GATES + (
+    "reproduction_complete",
+    "independent_replay",
+    "prior_art_checked",
+    "program_rules_rechecked",
+    "current_version_checked",
+    "source_refs_verified",
+)
+
+PROFILE_NAMES = ("critical-rce", "chrome-v8", "web-app")
 
 
 def approach_family_config() -> dict[str, Any]:
@@ -281,6 +318,7 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           route_id TEXT,
           task_kind TEXT NOT NULL DEFAULT 'ordinary',
           reviews_task_id TEXT,
+          resource_requirements_json TEXT NOT NULL DEFAULT '[]',
           attempt INTEGER NOT NULL DEFAULT 0,
           max_attempts INTEGER NOT NULL,
           timeout_seconds INTEGER NOT NULL,
@@ -369,6 +407,32 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           updated_at TEXT NOT NULL,
           FOREIGN KEY(task_id) REFERENCES tasks(task_id)
         );
+        CREATE TABLE IF NOT EXISTS resource_leases (
+          lease_id TEXT PRIMARY KEY,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          mode TEXT NOT NULL CHECK(mode IN ('shared-read','exclusive')),
+          cleanup_required INTEGER NOT NULL,
+          task_id TEXT NOT NULL,
+          worker_id TEXT NOT NULL,
+          lease_token TEXT NOT NULL,
+          lease_expires_at TEXT NOT NULL,
+          checkpoint_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+          FOREIGN KEY(worker_id) REFERENCES workers(worker_id)
+        );
+        CREATE TABLE IF NOT EXISTS resource_blocks (
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          checkpoint_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(resource_type, resource_id)
+        );
         CREATE INDEX IF NOT EXISTS tasks_state_wave_idx ON tasks(state, wave, priority);
         CREATE INDEX IF NOT EXISTS task_approach_family_idx
           ON task_approach_families(family_id, task_id);
@@ -377,6 +441,10 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
           ON research_leads(state, evidence_grade, updated_at);
         CREATE INDEX IF NOT EXISTS experiment_frontier_state_idx
           ON experiment_frontier(state, score DESC, updated_at);
+        CREATE INDEX IF NOT EXISTS resource_leases_resource_idx
+          ON resource_leases(resource_type, resource_id, mode, lease_expires_at);
+        CREATE INDEX IF NOT EXISTS resource_leases_task_idx
+          ON resource_leases(task_id, worker_id);
         """
     )
     task_columns = {
@@ -402,6 +470,10 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE tasks ADD COLUMN reviews_task_id TEXT")
     if "lead_id" not in task_columns:
         connection.execute("ALTER TABLE tasks ADD COLUMN lead_id TEXT")
+    if "resource_requirements_json" not in task_columns:
+        connection.execute(
+            "ALTER TABLE tasks ADD COLUMN resource_requirements_json TEXT NOT NULL DEFAULT '[]'"
+        )
     active_worker_index = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='index' "
         "AND name='tasks_one_running_per_worker'"
@@ -766,6 +838,7 @@ CHAIN_MATURITIES = (
 CHAIN_MATURITY_ORDER = {value: index for index, value in enumerate(CHAIN_MATURITIES)}
 LEAD_PROMOTION_LEVELS = (
     "observation",
+    "mechanism-supported",
     "source-supported-mechanism",
     "runtime-differential",
     "verified-primitive",
@@ -773,7 +846,13 @@ LEAD_PROMOTION_LEVELS = (
     "complete-terminal",
 )
 LEAD_PROMOTION_ORDER = {
-    value: index for index, value in enumerate(LEAD_PROMOTION_LEVELS)
+    "observation": 0,
+    "mechanism-supported": 1,
+    "source-supported-mechanism": 1,
+    "runtime-differential": 2,
+    "verified-primitive": 3,
+    "compatible-chain-edge": 4,
+    "complete-terminal": 5,
 }
 DEFAULT_LEAD_POLICY = {
     "maxActiveLeads": 25,
@@ -809,10 +888,19 @@ def validate_executable_oracle(root: Path, raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         raise SystemExit("researchLead.executableOracle must be an object")
     kind = str(raw.get("kind") or "")
+    if kind == "web-typed":
+        try:
+            from .web_oracles import admit_contract
+        except ImportError:
+            from web_oracles import admit_contract
+        try:
+            return admit_contract(root, raw)
+        except Exception as error:
+            raise SystemExit(f"invalid typed web oracle: {error}") from error
     if kind not in {"coordinator-replay", "http-differential", "command-differential"}:
         raise SystemExit(
             "researchLead.executableOracle.kind must be coordinator-replay, "
-            "http-differential, or command-differential"
+            "http-differential, command-differential, or web-typed"
         )
     one_variable = require_string(
         raw.get("oneVariable"), "researchLead.executableOracle.oneVariable"
@@ -874,6 +962,8 @@ def validate_executable_oracle(root: Path, raw: Any) -> dict[str, Any] | None:
 
 
 def lead_promotion_level(lead: dict[str, Any]) -> str:
+    if lead.get("profile") == "web-app" and lead.get("mechanismSupported") is True:
+        return "mechanism-supported"
     maturity = str(lead.get("chainMaturity") or "observation")
     grade = str(lead.get("evidenceGrade") or "observation")
     if maturity == "validated-connection":
@@ -1050,6 +1140,13 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         "negativeKnowledge": negative_knowledge,
         "executableOracle": executable_oracle,
     }
+    if raw.get("profile") == "web-app":
+        normalized["profile"] = "web-app"
+        normalized["mechanismSupported"] = raw.get("mechanismSupported") is True
+        if normalized["mechanismSupported"] and executable_oracle is None:
+            raise SystemExit(
+                "web mechanism-supported leads require an admitted executable oracle"
+            )
     if critical_boundary is not None:
         normalized["criticalBoundary"] = critical_boundary
     if capability_model is not None and chain_progress is not None:
@@ -1816,6 +1913,226 @@ def task_dependencies(row: sqlite3.Row) -> list[str]:
     return [str(item) for item in value]
 
 
+RESOURCE_LEASE_TYPES = {
+    "identity-session-refresh",
+    "owned-object",
+    "workflow-instance",
+    "cache-key-namespace",
+    "browser-profile",
+    "receiver-callback-correlation",
+}
+
+
+def normalize_resource_requirements(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise SystemExit("resourceLeases must be a list")
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise SystemExit(f"resourceLeases[{index}] must be an object")
+        resource_type = str(item.get("type") or "").strip()
+        resource_id = str(item.get("id") or "").strip()
+        mode = str(item.get("mode") or "").strip()
+        if resource_type not in RESOURCE_LEASE_TYPES:
+            raise SystemExit(f"resourceLeases[{index}].type is unsupported")
+        if not resource_id or any(character in resource_id for character in "\r\n\0"):
+            raise SystemExit(f"resourceLeases[{index}].id is invalid")
+        if mode not in {"shared-read", "exclusive"}:
+            raise SystemExit(f"resourceLeases[{index}].mode is unsupported")
+        cleanup_required = item.get("cleanupRequired")
+        if not isinstance(cleanup_required, bool):
+            raise SystemExit(f"resourceLeases[{index}].cleanupRequired must be boolean")
+        if mode == "shared-read" and cleanup_required:
+            raise SystemExit("shared-read resource leases cannot require mutating cleanup")
+        key = (resource_type, resource_id)
+        if key in seen:
+            raise SystemExit("resourceLeases contains a duplicate resource")
+        seen.add(key)
+        result.append(
+            {
+                "type": resource_type,
+                "id": resource_id,
+                "mode": mode,
+                "cleanupRequired": cleanup_required,
+            }
+        )
+    return sorted(result, key=lambda item: (item["type"], item["id"]))
+
+
+def task_resource_requirements(row: sqlite3.Row) -> list[dict[str, Any]]:
+    return normalize_resource_requirements(json.loads(row["resource_requirements_json"]))
+
+
+def resources_available(
+    connection: sqlite3.Connection, requirements: list[dict[str, Any]]
+) -> tuple[bool, list[str]]:
+    blockers: list[str] = []
+    now = utc_now()
+    connection.execute(
+        "DELETE FROM resource_leases WHERE lease_expires_at<=? AND task_id IN "
+        "(SELECT task_id FROM tasks WHERE state NOT IN ('running','verifying'))",
+        (now,),
+    )
+    for requirement in requirements:
+        blocked = connection.execute(
+            "SELECT reason FROM resource_blocks WHERE resource_type=? AND resource_id=?",
+            (requirement["type"], requirement["id"]),
+        ).fetchone()
+        if blocked is not None:
+            blockers.append(
+                f"blocked:{requirement['type']}:{requirement['id']}:{blocked['reason']}"
+            )
+            continue
+        active = connection.execute(
+            "SELECT mode,task_id FROM resource_leases WHERE resource_type=? AND resource_id=? "
+            "AND lease_expires_at>?",
+            (requirement["type"], requirement["id"], now),
+        ).fetchall()
+        if requirement["mode"] == "exclusive" and active:
+            blockers.append(f"leased:{requirement['type']}:{requirement['id']}")
+        elif requirement["mode"] == "shared-read" and any(
+            item["mode"] == "exclusive" for item in active
+        ):
+            blockers.append(f"exclusive:{requirement['type']}:{requirement['id']}")
+    return not blockers, blockers
+
+
+def acquire_resource_leases(
+    connection: sqlite3.Connection,
+    *,
+    task_id: str,
+    worker_id: str,
+    lease_token: str,
+    lease_expires_at: str,
+    requirements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    available, blockers = resources_available(connection, requirements)
+    if not available:
+        raise SystemExit("resource lease conflict: " + ", ".join(blockers))
+    now = utc_now()
+    acquired = []
+    for requirement in requirements:
+        lease_id = "resource_" + hashlib.sha256(
+            f"{task_id}\0{requirement['type']}\0{requirement['id']}".encode()
+        ).hexdigest()[:32]
+        connection.execute(
+            "INSERT INTO resource_leases(lease_id,resource_type,resource_id,mode,"
+            "cleanup_required,task_id,worker_id,lease_token,lease_expires_at,checkpoint_json,"
+            "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                lease_id,
+                requirement["type"],
+                requirement["id"],
+                requirement["mode"],
+                1 if requirement["cleanupRequired"] else 0,
+                task_id,
+                worker_id,
+                lease_token,
+                lease_expires_at,
+                "{}",
+                now,
+                now,
+            ),
+        )
+        acquired.append({**requirement, "leaseId": lease_id})
+    return acquired
+
+
+def mark_resource_recovery_required(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    reason: str,
+) -> None:
+    requirements = task_resource_requirements(row)
+    now = utc_now()
+    for requirement in requirements:
+        if requirement["mode"] != "exclusive" and not requirement["cleanupRequired"]:
+            continue
+        lease = connection.execute(
+            "SELECT checkpoint_json FROM resource_leases WHERE task_id=? AND resource_type=? AND resource_id=?",
+            (row["task_id"], requirement["type"], requirement["id"]),
+        ).fetchone()
+        checkpoint = lease["checkpoint_json"] if lease is not None else "{}"
+        connection.execute(
+            "INSERT INTO resource_blocks(resource_type,resource_id,task_id,reason,checkpoint_json,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(resource_type,resource_id) DO UPDATE SET "
+            "task_id=excluded.task_id,reason=excluded.reason,checkpoint_json=excluded.checkpoint_json,updated_at=excluded.updated_at",
+            (
+                requirement["type"],
+                requirement["id"],
+                row["task_id"],
+                reason,
+                checkpoint,
+                now,
+                now,
+            ),
+        )
+    connection.execute("DELETE FROM resource_leases WHERE task_id=?", (row["task_id"],))
+
+
+def finalize_resource_leases(
+    connection: sqlite3.Connection,
+    *,
+    task: sqlite3.Row,
+    result: dict[str, Any],
+) -> tuple[bool, str | None]:
+    requirements = task_resource_requirements(task)
+    if not requirements:
+        return False, None
+    outcome = result.get("resourceLeaseOutcome")
+    if not isinstance(outcome, dict):
+        raise SystemExit("resource-leased task result requires resourceLeaseOutcome")
+    checkpoints = outcome.get("checkpoints")
+    if not isinstance(checkpoints, list):
+        raise SystemExit("resourceLeaseOutcome.checkpoints must be a list")
+    indexed = {
+        (str(item.get("type")), str(item.get("id"))): item
+        for item in checkpoints
+        if isinstance(item, dict)
+    }
+    cleanup_failed = False
+    cleanup_reason: str | None = None
+    now = utc_now()
+    for requirement in requirements:
+        item = indexed.get((requirement["type"], requirement["id"]))
+        if item is None:
+            raise SystemExit("resourceLeaseOutcome does not cover every leased resource")
+        setup = item.get("setupCheckpoint")
+        readback = item.get("authoritativeReadback")
+        cleanup = item.get("cleanup")
+        if not isinstance(setup, dict) or not isinstance(readback, dict) or not isinstance(cleanup, dict):
+            raise SystemExit("resource checkpoints require setup, readback, and cleanup objects")
+        for field, value in (("setupCheckpoint", setup), ("authoritativeReadback", readback)):
+            if not str(value.get("evidence") or "").strip():
+                raise SystemExit(f"resource checkpoint {field} lacks evidence")
+        status = cleanup.get("status")
+        if requirement["cleanupRequired"] and status != "verified":
+            cleanup_failed = True
+            cleanup_reason = "cleanup failed or could not be verified"
+            connection.execute(
+                "INSERT INTO resource_blocks(resource_type,resource_id,task_id,reason,checkpoint_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(resource_type,resource_id) DO UPDATE SET "
+                "task_id=excluded.task_id,reason=excluded.reason,checkpoint_json=excluded.checkpoint_json,updated_at=excluded.updated_at",
+                (
+                    requirement["type"],
+                    requirement["id"],
+                    task["task_id"],
+                    cleanup_reason,
+                    json.dumps(item, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+        elif status not in {"verified", "not-required"}:
+            raise SystemExit("resource cleanup status is unsupported")
+    connection.execute("DELETE FROM resource_leases WHERE task_id=?", (task["task_id"],))
+    return cleanup_failed, cleanup_reason
+
+
 def dependency_state(connection: sqlite3.Connection, row: sqlite3.Row) -> str:
     dependencies = task_dependencies(row)
     if not dependencies:
@@ -1853,6 +2170,12 @@ def recover_tasks(connection: sqlite3.Connection) -> dict[str, int]:
                 if row["state"] in {"running", "verifying"}
                 else "cancelled"
             )
+            if row["state"] in {"running", "verifying"} and task_resource_requirements(row):
+                mark_resource_recovery_required(
+                    connection, row, reason="campaign budget ended during a resource-leased sequence"
+                )
+                next_state = "blocked"
+                blocked += 1
             connection.execute(
                 "UPDATE tasks SET state=?,lease_owner=NULL,lease_token=NULL,"
                 "lease_expires_at=NULL,last_error=?,cancellation_reason=?,updated_at=? "
@@ -1890,13 +2213,36 @@ def recover_tasks(connection: sqlite3.Connection) -> dict[str, int]:
         if not lease_expired and not task_expired:
             continue
         if task_expired:
-            state = "timed-out"
-            timed_out += 1
+            if task_resource_requirements(row):
+                state = "blocked"
+                mark_resource_recovery_required(
+                    connection, row, reason="task timeout requires authoritative checkpoint recovery"
+                )
+                blocked += 1
+            else:
+                state = "timed-out"
+                timed_out += 1
         elif row["attempt"] < row["max_attempts"]:
-            state = "queued"
-            recovered += 1
+            if task_resource_requirements(row):
+                state = "blocked"
+                mark_resource_recovery_required(
+                    connection, row, reason="worker loss requires authoritative checkpoint recovery"
+                )
+                blocked += 1
+            else:
+                state = "queued"
+                recovered += 1
         else:
-            state = "failed"
+            if task_resource_requirements(row):
+                state = "blocked"
+                mark_resource_recovery_required(
+                    connection,
+                    row,
+                    reason="worker loss exhausted attempts before verified cleanup",
+                )
+                blocked += 1
+            else:
+                state = "failed"
         connection.execute(
             "UPDATE tasks SET state=?, lease_owner=NULL, lease_token=NULL, "
             "lease_expires_at=NULL, workspace=NULL, last_error=?, updated_at=? "
@@ -1908,6 +2254,8 @@ def recover_tasks(connection: sqlite3.Connection) -> dict[str, int]:
                 row["task_id"],
             ),
         )
+        if state in {"failed", "timed-out"}:
+            connection.execute("DELETE FROM resource_leases WHERE task_id=?", (row["task_id"],))
         record_event(
             connection,
             "task-timeout" if task_expired else "lease-recovered",
@@ -2000,6 +2348,7 @@ def provision_workspace(
         ("PROGRAM_GUIDELINES.md", "PROGRAM_GUIDELINES.md"),
         ("PROGRAM_SCOPE.md", "PROGRAM_SCOPE.md"),
         ("approach-registry.json", "KRINEON_APPROACH_REGISTRY.json"),
+        ("web-campaign.json", "KRINEON_WEB_CAMPAIGN.json"),
     ):
         source = root / source_name
         if source.is_file():
@@ -2019,6 +2368,28 @@ def provision_workspace(
         reference_names.extend(
             ("chrome-v8.md", "macos-arm64.md", "chrome-v8-agent.md")
         )
+    if campaign.get("profile") == "web-app":
+        reference_names.extend(("web-app.md", "safety.md"))
+        web_contract_path = root / "web-campaign.json"
+        if web_contract_path.is_file():
+            web_contract = read_json(web_contract_path)
+            request_inputs = web_contract.get("requestInputs", {})
+            visible_inputs = workspace / "KRINEON_WEB_INPUTS"
+            for field in ("markdownFiles", "requestBundles"):
+                values = request_inputs.get(field, [])
+                if not isinstance(values, list):
+                    continue
+                for value in values:
+                    relative = Path(str(value))
+                    if relative.is_absolute() or ".." in relative.parts:
+                        raise HarnessError("web input path escapes the campaign")
+                    source = (root / relative).resolve()
+                    source.relative_to(root.resolve())
+                    if source.is_symlink() or not source.is_file():
+                        raise HarnessError("model-visible web input is not a regular file")
+                    destination = visible_inputs / relative.name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
     for reference_name in reference_names:
         source = (
             PROJECT_ROOT / "agents" / reference_name
@@ -2214,6 +2585,54 @@ def task_markdown(lane: dict[str, Any], campaign: dict[str, Any]) -> str:
             f"mechanism={family['mechanism']}; invariant={family['invariant']}"
         )
     approaches = "\n".join(approach_lines)
+    if campaign.get("profile") == "web-app":
+        profile_references = (
+            "Read `KRINEON_REFERENCES/web-app.md`, `KRINEON_WEB_CAMPAIGN.json`, "
+            "and the retained program rules before any target traffic."
+        )
+        mission_heading = "Web application invariant mission"
+        mission_text = """Search for application-specific authorization, isolation,
+workflow, cache, parser, deserialization, callback, and capability invariant
+violations. Multi-step compositions are first-class evidence. A useful
+observation does not need an invented Critical narrative, but filing requires
+independently reproduced concrete impact. An application-owned broken check or
+unsafe sink can be the root cause.
+
+Do not execute target traffic unless the versioned web contract confirms the
+exact origin, path, method, identity, effect class, and shared budget. Workers
+propose experiments. The coordinator signs recipes. The controlled broker
+executes them. Denial of service, resource exhaustion, port scanning, host
+discovery, credential guessing, bot evasion, real fund movement, persistence,
+customer data, and broad shared-cache pollution are prohibited. Scanner
+matches, status differences, and unexpected pages are observations, not
+vulnerability verdicts."""
+    else:
+        profile_references = (
+            "Read `KRINEON_REFERENCES/critical-rce.md` before discovery or chain "
+            "construction.\n"
+            + (
+                "Read `KRINEON_REFERENCES/chrome-v8.md` and "
+                "`KRINEON_REFERENCES/chrome-v8-agent.md` before starting."
+                if campaign.get("profile") == "chrome-v8"
+                else ""
+            )
+        )
+        mission_heading = "Critical/RCE mission and internal search objective"
+        mission_text = """Search for and retain unique minimized stacks,
+target-invariant breaks, and verified primitives from first-principles analysis
+of the pinned source and its exact-revision runtime behavior. Advance each
+retained lead with the smallest useful next experiment. A complete Critical/RCE
+chain is required for filing, not for completing this research task. Do not
+invent missing links. Do not use changelogs, advisories, git history or blame,
+historical commits, or patched-version comparisons. Never use an internet-based patch diff to locate vulnerabilities. Work from public ingress toward a privileged
+sink, and from execution/native sinks back toward attacker-controlled input. A
+crash, assertion, denial of service, isolated primitive, or lower-severity issue
+is a research lead, not a fileable finding. Read checked-in tests, assertions,
+fuzz targets, fixtures, and invariant comments from the pinned target as local
+oracles. Development servers, development builds, hot-reload paths, test or
+fixture servers, preview-only runtimes, and debug-only paths are also
+lead-generation environments, not findings. The primary terminal must survive
+a supported production-equivalent or release entrypoint before promotion."""
     return f"""# Task: {lane['title']}
 
 ## Campaign
@@ -2240,31 +2659,14 @@ Read `KRINEON_CAMPAIGN.json` before taking any dynamic action. If
 not as a source-analysis gate. Live, shared-system, testnet, account, wallet,
 or production actions still require explicit structured authorization in the
 campaign record. Stay within the recorded environment and stop conditions.
-Read `KRINEON_REFERENCES/critical-rce.md` before discovery or chain construction.
+{profile_references}
 Read `KRINEON_REFERENCES/dependencies.md` and `KRINEON_DEPENDENCIES.json` before
 assuming a library boundary ends the chain. Pinned dependency worktrees, when
 present, are under `KRINEON_THIRD_PARTY/`.
-{"Read `KRINEON_REFERENCES/chrome-v8.md` and `KRINEON_REFERENCES/chrome-v8-agent.md` before starting." if campaign.get('profile') == 'chrome-v8' else ""}
 
-## Critical/RCE mission and internal search objective
+## {mission_heading}
 
-Search for and retain unique minimized stacks, target-invariant breaks, and
-verified primitives from first-principles analysis of the pinned source and
-its exact-revision runtime behavior. Advance each retained lead with the
-smallest useful next experiment. A complete Critical/RCE chain is required for
-filing, not for completing this research task. Do not invent missing links.
-Do not use changelogs,
-advisories, git history or blame, historical commits, patched-version
-comparisons, or an internet-based patch diff to locate vulnerabilities. Work
-from public ingress toward a privileged sink, and from execution/native sinks
-back toward attacker-controlled input. A crash, assertion, denial of service,
-isolated primitive, or lower-severity issue is a research lead, not a fileable
-finding. Read checked-in tests, assertions, fuzz targets, fixtures, and
-invariant comments from the pinned target as local oracles.
-Development servers, development builds, hot-reload paths, test or fixture
-servers, preview-only runtimes, and debug-only paths are also lead-generation
-environments, not findings. The primary terminal must survive a supported
-production-equivalent or release entrypoint before promotion.
+{mission_text}
 
 ## Primary objective
 
@@ -2445,6 +2847,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             "createdAt": utc_now(),
             "lanes": [lane["id"] for lane in lanes],
             "dependencyManifest": "third_party/manifest.json",
+            "mission": (
+                "web-application-invariant-chain"
+                if args.profile == "web-app"
+                else "critical-rce-chain"
+            ),
         }
     )
     write_json(root / "campaign.json", data)
@@ -2466,6 +2873,23 @@ def cmd_init(args: argparse.Namespace) -> int:
         write_json(
             chrome_root / "result.template.json",
             template("chrome-v8-result.template.json"),
+        )
+    if args.profile == "web-app":
+        web_root = root / "web"
+        web_root.mkdir(exist_ok=True)
+        (root / "evidence" / "web").mkdir(parents=True, exist_ok=True)
+        write_json(root / "web-campaign.json", template("web-campaign.template.json"))
+        write_json(
+            web_root / "workflow.template.json",
+            template("web-workflow.template.json"),
+        )
+        write_json(
+            web_root / "oracle.template.json",
+            template("web-oracle.template.json"),
+        )
+        shutil.copy2(
+            ASSETS / "web-requests.template.md",
+            web_root / "requests.template.md",
         )
     write_json(
         registry_path(root),
@@ -2568,7 +2992,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
         {
             "schemaVersion": 2,
             "profile": profile_name,
-            "mission": "critical-rce-chain",
+            "mission": (
+                "web-application-invariant-chain"
+                if profile_name == "web-app"
+                else "critical-rce-chain"
+            ),
             "discoveryPolicy": campaign.get("discoveryPolicy", {}),
             "schedulingPolicy": profile.get("schedulingPolicy", {}),
             "workerAllocation": {
@@ -2655,6 +3083,9 @@ def cmd_queue(args: argparse.Namespace) -> int:
             refreshed = 0
             for task in plan.get("tasks", []):
                 task_id = str(task.get("taskId") or task["lane"])
+                resource_requirements = normalize_resource_requirements(
+                    task.get("resourceLeases", [])
+                )
                 values = (
                     task_id,
                     int(task["wave"]),
@@ -2664,6 +3095,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                     "queued",
                     int(task.get("priority", 0)),
                     json.dumps(task.get("dependsOn", [])),
+                    json.dumps(resource_requirements, sort_keys=True),
                     int(plan.get("defaultMaxAttempts", 2)),
                     int(plan.get("defaultTaskTimeoutSeconds", 7200)),
                     now,
@@ -2671,8 +3103,8 @@ def cmd_queue(args: argparse.Namespace) -> int:
                 )
                 cursor = connection.execute(
                     "INSERT OR IGNORE INTO tasks("
-                    "task_id,wave,lane,title,packet,state,priority,depends_json,max_attempts,"
-                    "timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "task_id,wave,lane,title,packet,state,priority,depends_json,resource_requirements_json,max_attempts,"
+                    "timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     values,
                 )
                 if cursor.rowcount:
@@ -2684,7 +3116,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                     ).fetchone()
                     if existing and existing["state"] == "queued":
                         connection.execute(
-                            "UPDATE tasks SET wave=?,lane=?,title=?,packet=?,priority=?,depends_json=?,"
+                            "UPDATE tasks SET wave=?,lane=?,title=?,packet=?,priority=?,depends_json=?,resource_requirements_json=?,"
                             "max_attempts=?,timeout_seconds=?,updated_at=? WHERE task_id=?",
                             (
                                 int(task["wave"]),
@@ -2693,6 +3125,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                                 str(task["task"]),
                                 int(task.get("priority", 0)),
                                 json.dumps(task.get("dependsOn", [])),
+                                json.dumps(resource_requirements, sort_keys=True),
                                 int(plan.get("defaultMaxAttempts", 2)),
                                 int(plan.get("defaultTaskTimeoutSeconds", 7200)),
                                 now,
@@ -3222,6 +3655,18 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 continue
             if not worker_is_eligible_for_round_task(connection, worker, row):
                 continue
+            resource_ready, resource_blockers = resources_available(
+                connection, task_resource_requirements(row)
+            )
+            if not resource_ready:
+                record_event(
+                    connection,
+                    "resource-lease-held",
+                    task_id=row["task_id"],
+                    worker_id=args.worker_id,
+                    payload={"blockers": resource_blockers},
+                )
+                continue
             eligible.append(row)
         allocation_hold = worker_allocation_hold(connection, worker, ready_rows)
         if allocation_hold is not None and eligible:
@@ -3285,6 +3730,14 @@ def cmd_claim(args: argparse.Namespace) -> int:
         if reservation.rowcount != 1:
             connection.rollback()
             raise SystemExit("task reservation raced with another scheduler")
+        acquired_resources = acquire_resource_leases(
+            connection,
+            task_id=str(chosen["task_id"]),
+            worker_id=args.worker_id,
+            lease_token=token,
+            lease_expires_at=lease_expires_at,
+            requirements=task_resource_requirements(chosen),
+        )
         connection.commit()
         try:
             workspace, workspace_mode = provision_workspace(
@@ -3308,6 +3761,10 @@ def cmd_claim(args: argparse.Namespace) -> int:
                     args.worker_id,
                     token,
                 ),
+            )
+            connection.execute(
+                "DELETE FROM resource_leases WHERE task_id=? AND worker_id=? AND lease_token=?",
+                (chosen["task_id"], args.worker_id, token),
             )
             connection.commit()
             raise
@@ -3333,6 +3790,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 "approachFamilies": task_approach_families(
                     connection, str(chosen["task_id"])
                 ),
+                "resourceLeases": acquired_resources,
             },
         )
         if redirect is not None:
@@ -3365,6 +3823,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 connection, str(chosen["task_id"])
             ),
             "approachRedirect": redirect,
+            "resourceLeases": acquired_resources,
             "recovery": recovery,
         }
         if args.json:
@@ -3409,9 +3868,21 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
         lease_seconds = args.lease_seconds or int(
             get_metadata(connection, "defaultLeaseSeconds", 900)
         )
+        renewed_until = future_time(lease_seconds)
         connection.execute(
             "UPDATE tasks SET lease_expires_at=?,updated_at=? WHERE task_id=?",
-            (future_time(lease_seconds), utc_now(), row["task_id"]),
+            (renewed_until, utc_now(), row["task_id"]),
+        )
+        connection.execute(
+            "UPDATE resource_leases SET lease_expires_at=?,updated_at=? "
+            "WHERE task_id=? AND worker_id=? AND lease_token=?",
+            (
+                renewed_until,
+                utc_now(),
+                row["task_id"],
+                args.worker_id,
+                args.lease_token,
+            ),
         )
         connection.execute(
             "UPDATE workers SET updated_at=? WHERE worker_id=?",
@@ -3428,6 +3899,146 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
         print(f"extended lease for {args.task_id}")
         return 0
     except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def cmd_resource_checkpoint(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    document = read_json(Path(args.checkpoint).expanduser().resolve())
+    if document.get("schemaVersion") != 1 or document.get("kind") != "krineon-resource-checkpoint":
+        raise SystemExit("checkpoint is not a Krineon resource checkpoint")
+    if document.get("taskId") != args.task_id:
+        raise SystemExit("resource checkpoint is bound to another task")
+    if document.get("phase") not in {
+        "setup",
+        "before-effect",
+        "effect-observed",
+        "authoritative-readback",
+        "cleanup",
+    }:
+        raise SystemExit("resource checkpoint phase is unsupported")
+    resources = document.get("resources")
+    if not isinstance(resources, list) or not resources:
+        raise SystemExit("resource checkpoint must cover leased resources")
+    connection = connect_orchestration(root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        task = require_owned_lease(
+            connection,
+            args.task_id,
+            args.worker_id,
+            args.lease_token,
+            states=("running", "verifying"),
+        )
+        requirements = {
+            (item["type"], item["id"]): item
+            for item in task_resource_requirements(task)
+        }
+        covered: set[tuple[str, str]] = set()
+        for item in resources:
+            if not isinstance(item, dict):
+                raise SystemExit("resource checkpoint entries must be objects")
+            key = (str(item.get("type") or ""), str(item.get("id") or ""))
+            if key not in requirements:
+                raise SystemExit("resource checkpoint references an unleased resource")
+            if not str(item.get("authoritativeState") or "").strip() or not str(
+                item.get("evidence") or ""
+            ).strip():
+                raise SystemExit("resource checkpoint requires authoritative state and evidence")
+            if not isinstance(item.get("safeToResume"), bool):
+                raise SystemExit("resource checkpoint safeToResume must be boolean")
+            covered.add(key)
+            connection.execute(
+                "UPDATE resource_leases SET checkpoint_json=?,updated_at=? "
+                "WHERE task_id=? AND worker_id=? AND lease_token=? AND resource_type=? AND resource_id=?",
+                (
+                    json.dumps(
+                        {
+                            "sequenceId": document.get("sequenceId"),
+                            "phase": document["phase"],
+                            **item,
+                        },
+                        sort_keys=True,
+                    ),
+                    utc_now(),
+                    args.task_id,
+                    args.worker_id,
+                    args.lease_token,
+                    key[0],
+                    key[1],
+                ),
+            )
+        if covered != set(requirements):
+            raise SystemExit("resource checkpoint does not cover the complete conflicting set")
+        record_event(
+            connection,
+            "resource-checkpoint",
+            task_id=args.task_id,
+            worker_id=args.worker_id,
+            payload={
+                "phase": document["phase"],
+                "sequenceId": document.get("sequenceId"),
+                "resources": sorted(f"{a}:{b}" for a, b in covered),
+            },
+        )
+        connection.commit()
+        print(f"recorded resource checkpoint for {args.task_id}")
+        return 0
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def cmd_resource_unblock(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    evidence = Path(args.evidence).expanduser().resolve()
+    try:
+        evidence_relative = evidence.relative_to(root)
+    except ValueError as error:
+        raise SystemExit("authoritative recovery evidence must be inside the campaign") from error
+    if not evidence.is_file():
+        raise SystemExit("authoritative recovery evidence is missing")
+    connection = connect_orchestration(root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        worker = connection.execute(
+            "SELECT * FROM workers WHERE worker_id=?", (args.worker_id,)
+        ).fetchone()
+        if worker is None or worker["role"] != "coordinator" or worker["status"] != "active":
+            raise SystemExit("only an active coordinator can clear a resource block")
+        row = connection.execute(
+            "SELECT * FROM resource_blocks WHERE resource_type=? AND resource_id=?",
+            (args.resource_type, args.resource_id),
+        ).fetchone()
+        if row is None:
+            raise SystemExit("resource is not blocked")
+        digest = sha256(evidence)
+        connection.execute(
+            "DELETE FROM resource_blocks WHERE resource_type=? AND resource_id=?",
+            (args.resource_type, args.resource_id),
+        )
+        record_event(
+            connection,
+            "resource-unblocked",
+            task_id=row["task_id"],
+            worker_id=args.worker_id,
+            payload={
+                "resourceType": args.resource_type,
+                "resourceId": args.resource_id,
+                "authoritativeState": args.authoritative_state,
+                "evidence": evidence_relative.as_posix(),
+                "evidenceSha256": digest,
+            },
+        )
+        connection.commit()
+        print(f"cleared resource block {args.resource_type}:{args.resource_id}")
+        return 0
+    except BaseException:
         connection.rollback()
         raise
     finally:
@@ -3462,6 +4073,7 @@ def insert_dynamic_task(
     task_kind: str = "ordinary",
     reviews_task_id: str | None = None,
     excluded_agents: list[str] | None = None,
+    resource_requirements: list[dict[str, Any]] | None = None,
 ) -> None:
     validate_dependencies(connection, dependencies)
     if connection.execute("SELECT 1 FROM tasks WHERE task_id=?", (task_id,)).fetchone():
@@ -3469,9 +4081,9 @@ def insert_dynamic_task(
     now = utc_now()
     connection.execute(
         "INSERT INTO tasks(task_id,wave,lane,title,packet,state,priority,depends_json,"
-        "excluded_workers_json,excluded_agents_json,unblocks_task_id,research_round,route_id,"
+        "excluded_workers_json,excluded_agents_json,resource_requirements_json,unblocks_task_id,research_round,route_id,"
         "task_kind,reviews_task_id,max_attempts,timeout_seconds,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             task_id,
             wave,
@@ -3482,6 +4094,10 @@ def insert_dynamic_task(
             json.dumps(dependencies),
             json.dumps(excluded_workers),
             json.dumps(sorted(set(excluded_agents or []))),
+            json.dumps(
+                normalize_resource_requirements(resource_requirements or []),
+                sort_keys=True,
+            ),
             unblocks_task_id,
             research_round,
             route_id,
@@ -4087,6 +4703,12 @@ def cmd_task_add(args: argparse.Namespace) -> int:
     if args.wave < 0 or args.max_attempts < 1 or args.timeout_seconds < 1:
         raise SystemExit("wave must be nonnegative; attempts and timeout must be positive")
     connection = connect_orchestration(root)
+    try:
+        requested_resources = normalize_resource_requirements(
+            [json.loads(value) for value in (args.resource_lease or [])]
+        )
+    except json.JSONDecodeError as error:
+        raise SystemExit("--resource-lease must be a JSON object") from error
     packet = root / "tasks" / f"dynamic-{args.task_id}.md"
     success = "\n".join(f"- {item}" for item in args.success_criterion)
     packet.write_text(
@@ -4153,6 +4775,7 @@ pinned revision are permitted and encouraged local oracles.
                 timeout_seconds=args.timeout_seconds,
                 approach_families=args.approach_family,
                 task_kind=args.task_kind,
+                resource_requirements=requested_resources,
             )
             record_event(
                 connection,
@@ -4163,6 +4786,7 @@ pinned revision are permitted and encouraged local oracles.
                     "objective": args.objective,
                     "dependencies": args.depends_on or [],
                     "approachFamilies": args.approach_family,
+                    "resourceLeases": requested_resources,
                 },
             )
         print(f"added exploration task {args.task_id}")
@@ -4983,12 +5607,92 @@ def complete_experiment_frontier(
     )
 
 
+def complete_profile_experiment_frontier(
+    connection: sqlite3.Connection,
+    *,
+    frontier_id: str,
+    normalized_outcome: dict[str, Any],
+    broker_evidence_verified: bool,
+) -> str:
+    """Persist a broker-evaluated profile experiment in the shared frontier.
+
+    This is intentionally an adapter over ``experiment_frontier`` rather than
+    a web-only scheduler.  Confirmation requires evidence produced and signed
+    by the controlled broker; preservation retains an exact scoped negative;
+    every other result is inconclusive.
+    """
+
+    row = connection.execute(
+        "SELECT * FROM experiment_frontier WHERE frontier_id=?",
+        (frontier_id,),
+    ).fetchone()
+    if row is None:
+        raise SystemExit(f"unknown experiment frontier item: {frontier_id}")
+    outcome = str(normalized_outcome.get("outcome") or "")
+    if outcome == "confirmed-disagreement":
+        if not broker_evidence_verified:
+            raise SystemExit(
+                "confirmed web disagreement requires verified broker evidence"
+            )
+        if normalized_outcome.get("cleanupComplete") is not True:
+            raise SystemExit("confirmed web disagreement requires successful cleanup")
+        state = "confirmed"
+    elif outcome == "observed-preservation":
+        if not broker_evidence_verified:
+            raise SystemExit(
+                "observed web preservation requires verified broker evidence"
+            )
+        negative = normalized_outcome.get("scopedNegativeKnowledge")
+        if not isinstance(negative, dict) or not isinstance(
+            negative.get("experimentalScope"), dict
+        ):
+            raise SystemExit(
+                "observed preservation requires exact scoped negative knowledge"
+            )
+        state = "refuted"
+    elif outcome == "inconclusive":
+        state = "inconclusive"
+    else:
+        raise SystemExit("unsupported normalized profile experiment outcome")
+    retained = dict(normalized_outcome)
+    retained["brokerEvidenceVerified"] = bool(broker_evidence_verified)
+    retained["promotionAuthorized"] = bool(
+        state == "confirmed" and broker_evidence_verified
+    )
+    now = utc_now()
+    connection.execute(
+        "UPDATE experiment_frontier SET state=?,outcome_json=?,updated_at=? "
+        "WHERE frontier_id=?",
+        (state, json.dumps(retained, sort_keys=True), now, frontier_id),
+    )
+    task_id = str(row["task_id"] or "")
+    if task_id:
+        connection.execute(
+            "UPDATE tasks SET state='completed',completed_at=?,updated_at=? "
+            "WHERE task_id=? AND state IN ('queued','running','verifying')",
+            (now, now, task_id),
+        )
+    record_event(
+        connection,
+        "profile-experiment-frontier-completed",
+        task_id=task_id or None,
+        payload={
+            "frontierId": frontier_id,
+            "state": state,
+            "outcome": outcome,
+            "brokerEvidenceVerified": bool(broker_evidence_verified),
+        },
+    )
+    return state
+
+
 def rebuild_campaign_capability_graph(
     root: Path,
     connection: sqlite3.Connection,
     *,
     extra_primitives: list[dict[str, Any]] | None = None,
     extra_boundaries: list[dict[str, Any]] | None = None,
+    prerequisite_version: str | None = None,
 ) -> dict[str, Any] | None:
     """Compose all independently retained campaign primitives into one graph."""
 
@@ -5076,6 +5780,14 @@ def rebuild_campaign_capability_graph(
         return None
     specification = {
         "schemaVersion": 1,
+        "prerequisiteVersion": str(
+            prerequisite_version
+            or get_metadata(
+                connection,
+                "campaignPrerequisiteVersion",
+                "unspecified-prerequisite-version",
+            )
+        ),
         "maximumConfigurations": 20000,
         "primitives": primitives,
         "boundaries": boundaries,
@@ -5970,7 +6682,24 @@ def cmd_submit(args: argparse.Namespace) -> int:
         if not result_target.exists():
             shutil.copy2(result_source, result_target)
         relative_result = result_target.relative_to(root).as_posix()
-        if finding_id and args.outcome == "completed":
+        cleanup_failed, cleanup_error = finalize_resource_leases(
+            connection, task=task, result=result
+        )
+        next_state = {
+            "completed": "completed",
+            "failed": "failed",
+            "blocked": "blocked",
+        }[args.outcome]
+        if cleanup_failed:
+            next_state = "blocked"
+        last_error = (
+            cleanup_error
+            if cleanup_failed
+            else str(blocker["reason"])
+            if blocker is not None
+            else (str(failure["reason"]) if failure is not None else None)
+        )
+        if finding_id and next_state == "completed":
             update_finding_from_submission(
                 root,
                 connection,
@@ -6005,18 +6734,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 worker_id=args.worker_id,
                 leads=validated_leads,
             )
-            if args.outcome == "completed" and validated_leads
+            if next_state == "completed" and validated_leads
             else []
-        )
-        next_state = {
-            "completed": "completed",
-            "failed": "failed",
-            "blocked": "blocked",
-        }[args.outcome]
-        last_error = (
-            str(blocker["reason"])
-            if blocker is not None
-            else (str(failure["reason"]) if failure is not None else None)
         )
         connection.execute(
             "INSERT INTO submissions(idempotency_key,task_id,worker_id,digest,result_path,"
@@ -6045,12 +6764,14 @@ def cmd_submit(args: argparse.Namespace) -> int:
             connection,
             task=task,
             result=result,
-            task_outcome=args.outcome,
+            task_outcome=next_state,
             validated_leads=validated_leads,
             coordinator_replay=coordinator_replay,
         )
         campaign_graph_update = None
-        if validated_leads or task["task_kind"] == "focused-chain-investigation":
+        if next_state == "completed" and (
+            validated_leads or task["task_kind"] == "focused-chain-investigation"
+        ):
             campaign_graph_update = rebuild_campaign_capability_graph(root, connection)
         automatic_unblock = None
         if blocker is not None:
@@ -6059,14 +6780,14 @@ def cmd_submit(args: argparse.Namespace) -> int:
             )
         intermediate_chain_task = None
         if (
-            args.outcome == "completed"
+            next_state == "completed"
             and task["task_kind"] == "adversarial-route-review"
         ):
             intermediate_chain_task = schedule_intermediate_chain_task(
                 root, connection, task, result, args.worker_id
             )
         next_round_planning_task = None
-        if args.outcome == "completed" and task["task_kind"] == "root-round-synthesis":
+        if next_state == "completed" and task["task_kind"] == "root-round-synthesis":
             next_round_planning_task = schedule_next_round_planning_task(
                 root, connection, task, result, args.worker_id
             )
@@ -6076,7 +6797,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
             task_id=args.task_id,
             worker_id=args.worker_id,
             payload={
-                "outcome": args.outcome,
+                "outcome": next_state,
                 "digest": digest,
                 "result": relative_result,
                 "findingId": finding_id,
@@ -6085,6 +6806,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 "nextRoundPlanningTask": next_round_planning_task,
                 "researchLeads": ingested_leads,
                 "coordinatorReplay": coordinator_replay,
+                "resourceCleanupFailed": cleanup_failed,
                 "campaignGraphScheduledTask": (
                     campaign_graph_update.get("scheduledTask")
                     if campaign_graph_update
@@ -6092,7 +6814,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 ),
             },
         )
-        if task["unblocks_task_id"] and args.outcome == "completed":
+        if task["unblocks_task_id"] and next_state == "completed":
             blocked_task_id = str(task["unblocks_task_id"])
             blocked_task = connection.execute(
                 "SELECT * FROM tasks WHERE task_id=?", (blocked_task_id,)
@@ -6117,7 +6839,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 revive_dependency_blocks(connection)
         write_approach_family_snapshot(root, connection)
         connection.commit()
-        print(f"accepted {args.outcome} result: {relative_result}")
+        print(f"accepted {next_state} result: {relative_result}")
         if automatic_unblock:
             print(f"scheduled automatic blocker breakout: {automatic_unblock}")
         if intermediate_chain_task:
@@ -6366,6 +7088,7 @@ def orchestration_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
         task["dependsOn"] = json.loads(task.pop("depends_json"))
         task["excludedWorkers"] = json.loads(task.pop("excluded_workers_json"))
         task["excludedAgents"] = json.loads(task.pop("excluded_agents_json"))
+        task["resourceLeases"] = json.loads(task.pop("resource_requirements_json"))
         task["approachFamilies"] = task_approach_families(
             connection, str(task["task_id"])
         )
@@ -6375,7 +7098,9 @@ def orchestration_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
     ready_rows = [
         row
         for row in task_rows
-        if row["state"] == "queued" and dependency_state(connection, row) == "ready"
+        if row["state"] == "queued"
+        and dependency_state(connection, row) == "ready"
+        and resources_available(connection, task_resource_requirements(row))[0]
     ]
     active_workers_by_agent: dict[str, set[str]] = {}
     for worker in workers:
@@ -6448,6 +7173,26 @@ def orchestration_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
         },
         "workers": workers,
         "tasks": tasks,
+        "resourceLeases": [
+            {
+                key: value
+                for key, value in dict(row).items()
+                if key not in {"lease_token", "checkpoint_json"}
+            }
+            for row in connection.execute(
+                "SELECT * FROM resource_leases ORDER BY resource_type,resource_id,task_id"
+            )
+        ],
+        "resourceBlocks": [
+            {
+                key: value
+                for key, value in dict(row).items()
+                if key != "checkpoint_json"
+            }
+            for row in connection.execute(
+                "SELECT * FROM resource_blocks ORDER BY resource_type,resource_id"
+            )
+        ],
         "approachRegistry": approach_family_snapshot(connection),
     }
 
@@ -6526,11 +7271,42 @@ def validate_finding_id(value: str) -> str:
 
 def cmd_register(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
-    require_campaign(root)
+    campaign = require_campaign(root)
     registry = load_registry(root)
     if any(item.get("id") == args.finding_id for item in registry.get("findings", [])):
         raise SystemExit(f"finding already exists: {args.finding_id}")
     finding = template("finding.template.json")
+    if campaign.get("profile") == "web-app":
+        finding["securityInvariant"] = {
+            "expected": "",
+            "observed": "",
+            "actor": "",
+            "resource": "",
+            "identityBoundary": "",
+            "unauthorizedEffect": "",
+        }
+        finding["webEvidence"] = {
+            "contract": "web-campaign.json",
+            "workflow": "",
+            "workflowSignature": "",
+            "observation": "",
+            "observationSignature": "",
+            "budgetLedger": "",
+        }
+        finding["independentWebReplays"] = []
+        finding["severityAssessment"] = {
+            "band": "",
+            "vector": "",
+            "justification": "",
+            "programMinimum": "",
+            "programRule": "",
+        }
+        finding["novelty"] = {
+            "claimedZeroDay": False,
+            "basis": "",
+        }
+        finding["availabilityOnly"] = False
+        finding["gates"] = {name: False for name in WEB_REPORTABLE_GATES}
     finding.update(
         {
             "id": args.finding_id,
@@ -6756,13 +7532,290 @@ def controlled_experiment_is_machine_verified(
     return False
 
 
+def verified_web_observation(
+    root: Path,
+    *,
+    contract_path: Path,
+    workflow_path: Path,
+    workflow_signature: Path,
+    observation_path: Path,
+    observation_signature: Path,
+    budget_ledger_path: Path,
+    require_disagreement: bool = True,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    errors: list[str] = []
+    try:
+        contract = WebCampaignContract.load(contract_path)
+        workflow_check = verify_web_workflow(
+            root,
+            contract_path,
+            workflow_path,
+            workflow_signature,
+        )
+        if not workflow_check.get("passed"):
+            errors.extend(
+                f"workflow:{value}" for value in workflow_check.get("errors", [])
+            )
+        public = control_public_key(root)
+        if not verify_file(public, observation_path, observation_signature):
+            errors.append("observation:signature")
+        observation = read_json(observation_path)
+        workflow = read_json(workflow_path)
+        if observation.get("contractSha256") != contract.digest:
+            errors.append("observation:contract-hash")
+        if observation.get("workflowId") != workflow.get("id"):
+            errors.append("observation:workflow-id")
+        if observation.get("driver") != "krineon-controlled-web-broker":
+            errors.append("observation:driver")
+        if observation.get("failure") is not None:
+            errors.append("observation:failure")
+        if observation.get("cleanupErrors"):
+            errors.append("observation:cleanup")
+        if observation.get("budgetLedgerSha256") != sha256(budget_ledger_path):
+            errors.append("observation:budget-ledger-hash")
+        ledger = read_json(budget_ledger_path)
+        if ledger.get("contractSha256") != contract.digest:
+            errors.append("observation:budget-contract-hash")
+        if int(ledger.get("requests", 0)) < 1:
+            errors.append("observation:empty-budget-ledger")
+        recomputed = [
+            evaluate_web_oracle(oracle, observation)
+            for oracle in workflow.get("oracles", [])
+            if isinstance(oracle, dict)
+        ]
+        if not recomputed:
+            errors.append("observation:no-oracle-results")
+        elif require_disagreement and not any(
+            row.get("securityViolationConfirmed") is True for row in recomputed
+        ):
+            errors.append("observation:no-confirmed-invariant-disagreement")
+        if observation.get("oracleResults") != recomputed:
+            errors.append("observation:oracle-results-not-recomputable")
+        return not errors, errors, {
+            "observation": observation,
+            "oracleResults": recomputed,
+            "contractSha256": contract.digest,
+            "discoveryTrack": contract.raw.get("discoveryTrack"),
+            "knownIssueBaselineEnabled": bool(
+                contract.raw.get("knownIssueBaseline", {}).get("enabled")
+            ),
+        }
+    except (OSError, ValueError, json.JSONDecodeError, WebContractError) as error:
+        return False, [f"web-evidence:{error}"], {}
+
+
+def web_replay_is_machine_verified(root: Path, finding: dict[str, Any]) -> bool:
+    originator = str(finding.get("originator") or "").strip()
+    replays = finding.get("independentWebReplays")
+    if not originator or not isinstance(replays, list):
+        return False
+    connection = connect_orchestration(root) if orchestration_path(root).is_file() else None
+    if connection is None:
+        return False
+    try:
+        origin = connection.execute(
+            "SELECT agent FROM workers WHERE worker_id=?", (originator,)
+        ).fetchone()
+        if origin is None:
+            return False
+        agents: set[str] = set()
+        run_ids: set[str] = set()
+        observation_hashes: set[str] = set()
+        for replay in replays:
+            if not isinstance(replay, dict):
+                continue
+            reviewer = str(replay.get("reviewer") or "")
+            worker = connection.execute(
+                "SELECT agent FROM workers WHERE worker_id=?", (reviewer,)
+            ).fetchone()
+            if worker is None or worker["agent"] == origin["agent"]:
+                continue
+            if worker["agent"] in agents:
+                continue
+            try:
+                paths = {
+                    key: safe_campaign_path(root, replay.get(key))
+                    for key in (
+                        "contract",
+                        "workflow",
+                        "workflowSignature",
+                        "observation",
+                        "observationSignature",
+                        "budgetLedger",
+                    )
+                }
+            except ValueError:
+                continue
+            passed, _, details = verified_web_observation(
+                root,
+                contract_path=paths["contract"],
+                workflow_path=paths["workflow"],
+                workflow_signature=paths["workflowSignature"],
+                observation_path=paths["observation"],
+                observation_signature=paths["observationSignature"],
+                budget_ledger_path=paths["budgetLedger"],
+            )
+            if not passed:
+                continue
+            observation = details["observation"]
+            run_id = str(observation.get("runId") or "")
+            digest = sha256(paths["observation"])
+            if not run_id or run_id in run_ids or digest in observation_hashes:
+                continue
+            run_ids.add(run_id)
+            observation_hashes.add(digest)
+            agents.add(str(worker["agent"]))
+        return len(agents) >= 2
+    finally:
+        connection.close()
+
+
+def web_gate_result(
+    finding: dict[str, Any],
+    level: str,
+    *,
+    replay_verified: bool,
+    campaign_root_path: Path | None,
+) -> dict[str, Any]:
+    required = WEB_CANDIDATE_GATES if level == "candidate" else WEB_REPORTABLE_GATES
+    gates = finding.get("gates") if isinstance(finding.get("gates"), dict) else {}
+    missing_gates = [name for name in required if gates.get(name) is not True]
+    missing_fields: list[str] = []
+    for field in ("rootCause", "impact"):
+        if not str(finding.get(field) or "").strip():
+            missing_fields.append(field)
+    if finding.get("availabilityOnly") is not False:
+        missing_fields.append("availabilityOnly:false")
+    if str(finding.get("impactClass") or "") not in {
+        "authorization-bypass",
+        "cross-tenant-access",
+        "protected-data-disclosure",
+        "privilege-escalation",
+        "unsafe-deserialization",
+        "cache-integrity",
+        "rce",
+        "program-defined-high",
+        "program-defined-critical",
+    }:
+        missing_fields.append("impactClass:web-security-impact")
+    for field in ("preconditions", "evidence"):
+        value = finding.get(field)
+        if not isinstance(value, list) or not value:
+            missing_fields.append(field)
+    invariant = finding.get("securityInvariant")
+    if not isinstance(invariant, dict):
+        missing_fields.append("securityInvariant")
+    else:
+        for field in (
+            "expected",
+            "observed",
+            "actor",
+            "resource",
+            "identityBoundary",
+            "unauthorizedEffect",
+        ):
+            if not str(invariant.get(field) or "").strip():
+                missing_fields.append(f"securityInvariant.{field}")
+    chain = finding.get("chain")
+    if not isinstance(chain, dict):
+        missing_fields.append("chain")
+    else:
+        for field in (
+            "attacker",
+            "ingress",
+            "attackerControl",
+            "brokenInvariant",
+            "primitive",
+            "terminal",
+            "deployment",
+        ):
+            if not str(chain.get(field) or "").strip():
+                missing_fields.append(f"chain.{field}")
+        transformations = chain.get("transformations")
+        if not isinstance(transformations, list) or not transformations:
+            missing_fields.append("chain.transformations")
+    controls = finding.get("controls")
+    controls = controls if isinstance(controls, dict) else {}
+    for field in ("baseline", "negative", "positive"):
+        if not str(controls.get(field) or "").strip():
+            missing_fields.append(f"controls.{field}")
+    evidence_summary: dict[str, Any] = {"passed": False, "errors": []}
+    web_evidence = finding.get("webEvidence")
+    if campaign_root_path is None:
+        missing_fields.append("webEvidence.campaignRoot")
+    elif not isinstance(web_evidence, dict):
+        missing_fields.append("webEvidence")
+    else:
+        try:
+            paths = {
+                key: safe_campaign_path(campaign_root_path, web_evidence.get(key))
+                for key in (
+                    "contract",
+                    "workflow",
+                    "workflowSignature",
+                    "observation",
+                    "observationSignature",
+                    "budgetLedger",
+                )
+            }
+            passed, errors, details = verified_web_observation(
+                campaign_root_path,
+                contract_path=paths["contract"],
+                workflow_path=paths["workflow"],
+                workflow_signature=paths["workflowSignature"],
+                observation_path=paths["observation"],
+                observation_signature=paths["observationSignature"],
+                budget_ledger_path=paths["budgetLedger"],
+            )
+            evidence_summary = {"passed": passed, "errors": errors, **details}
+            if not passed:
+                missing_fields.extend(errors)
+            novelty = finding.get("novelty")
+            novelty = novelty if isinstance(novelty, dict) else {}
+            if (
+                details.get("knownIssueBaselineEnabled") is True
+                and novelty.get("claimedZeroDay") is True
+            ):
+                missing_fields.append("novelty:known-baseline-cannot-be-zero-day")
+        except (OSError, ValueError, json.JSONDecodeError, SystemExit) as error:
+            missing_fields.append(f"webEvidence:{error}")
+    if level == "reportable":
+        severity = finding.get("severityAssessment")
+        severity = severity if isinstance(severity, dict) else {}
+        if severity.get("band") not in {"High", "Critical"}:
+            missing_fields.append("severityAssessment.band:High-or-Critical")
+        for field in ("justification", "programMinimum", "programRule"):
+            if not str(severity.get(field) or "").strip():
+                missing_fields.append(f"severityAssessment.{field}")
+        if not str(finding.get("originator") or "").strip():
+            missing_fields.append("originator")
+        if not replay_verified:
+            missing_fields.append("independentWebReplays")
+    return {
+        "finding": finding.get("id"),
+        "level": level,
+        "passed": not missing_gates and not missing_fields,
+        "missingGates": missing_gates,
+        "missingFields": missing_fields,
+        "webEvidence": evidence_summary,
+    }
+
+
 def gate_result(
     finding: dict[str, Any],
     level: str,
     *,
     replay_verified: bool = False,
     campaign_root_path: Path | None = None,
+    profile: str = "critical-rce",
 ) -> dict[str, Any]:
+    if profile == "web-app":
+        return web_gate_result(
+            finding,
+            level,
+            replay_verified=replay_verified,
+            campaign_root_path=campaign_root_path,
+        )
     required_gates = CANDIDATE_GATES if level == "candidate" else REPORTABLE_GATES
     gates = finding.get("gates", {})
     missing_gates = [name for name in required_gates if gates.get(name) is not True]
@@ -7156,14 +8209,23 @@ def gate_result(
 
 def cmd_gate(args: argparse.Namespace) -> int:
     root = campaign_root(args.campaign_dir)
+    campaign = require_campaign(root)
+    profile = str(campaign.get("profile") or "critical-rce")
     finding = read_json(finding_path(root, args.finding_id))
     result = gate_result(
         finding,
         args.level,
         campaign_root_path=root,
         replay_verified=(
-            replay_is_machine_verified(root, finding) if args.level == "reportable" else False
+            (
+                web_replay_is_machine_verified(root, finding)
+                if profile == "web-app"
+                else replay_is_machine_verified(root, finding)
+            )
+            if args.level == "reportable"
+            else False
         ),
+        profile=profile,
     )
     if args.json:
         print(json.dumps(result, indent=2))
@@ -7216,6 +8278,7 @@ def iter_artifacts(root: Path) -> Iterable[Path]:
         "dynamic",
         "chrome-v8",
         "benchmarks",
+        "web",
     ):
         base = root / dirname
         if not base.exists():
@@ -7233,6 +8296,7 @@ def iter_artifacts(root: Path) -> Iterable[Path]:
         "PROGRAM_SCOPE.md",
         "onboarding.json",
         "third_party/manifest.json",
+        "web-campaign.json",
     ):
         path = root / filename
         if path.is_file():
@@ -7439,6 +8503,29 @@ def build_parser() -> argparse.ArgumentParser:
     heartbeat.add_argument("--lease-seconds", type=int)
     heartbeat.set_defaults(func=cmd_heartbeat)
 
+    resource_checkpoint = sub.add_parser(
+        "resource-checkpoint",
+        help="record authoritative setup/readback/cleanup state for every leased resource",
+    )
+    resource_checkpoint.add_argument("campaign_dir")
+    resource_checkpoint.add_argument("worker_id", type=validate_identity)
+    resource_checkpoint.add_argument("task_id")
+    resource_checkpoint.add_argument("--lease-token", required=True)
+    resource_checkpoint.add_argument("--checkpoint", required=True)
+    resource_checkpoint.set_defaults(func=cmd_resource_checkpoint)
+
+    resource_unblock = sub.add_parser(
+        "resource-unblock",
+        help="clear a recovery block after coordinator-verified authoritative readback",
+    )
+    resource_unblock.add_argument("campaign_dir")
+    resource_unblock.add_argument("worker_id", type=validate_identity)
+    resource_unblock.add_argument("resource_type", choices=sorted(RESOURCE_LEASE_TYPES))
+    resource_unblock.add_argument("resource_id")
+    resource_unblock.add_argument("--authoritative-state", required=True)
+    resource_unblock.add_argument("--evidence", required=True)
+    resource_unblock.set_defaults(func=cmd_resource_unblock)
+
     submit = sub.add_parser("submit", help="idempotently ingest a leased task result")
     submit.add_argument("campaign_dir")
     submit.add_argument("worker_id", type=validate_identity)
@@ -7476,6 +8563,14 @@ def build_parser() -> argparse.ArgumentParser:
     task_add.add_argument("--priority", type=int, default=50)
     task_add.add_argument("--max-attempts", type=int, default=2)
     task_add.add_argument("--timeout-seconds", type=int, default=7200)
+    task_add.add_argument(
+        "--resource-lease",
+        action="append",
+        help=(
+            "JSON resource lease object with type, id, mode, and cleanupRequired; "
+            "repeatable and acquired in deterministic order"
+        ),
+    )
     task_add.add_argument(
         "--task-kind",
         choices=("ordinary", "focused-chain-investigation"),

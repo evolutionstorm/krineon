@@ -65,6 +65,151 @@ def oracle_violations(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return violations
 
 
+def normalized_web_outcomes(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Read producer fields exactly; do not infer outcomes from similar prose."""
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        candidates = [record]
+        oracle_result = record.get("oracleResult")
+        if isinstance(oracle_result, dict):
+            candidates.append(oracle_result)
+        for field in ("oracleResults", "results"):
+            values = record.get(field)
+            if isinstance(values, list):
+                candidates.extend(value for value in values if isinstance(value, dict))
+        for value in candidates:
+            outcome = value.get("outcome")
+            if outcome in {
+                "confirmed-disagreement",
+                "observed-preservation",
+                "inconclusive",
+            }:
+                rows.append(value)
+    return rows
+
+
+def decide_web(
+    ir: dict[str, Any],
+    *,
+    coverage: dict[str, Any] | None,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    outcomes = normalized_web_outcomes(observations)
+    unsafe = next(
+        (
+            row
+            for row in outcomes
+            if row.get("reason")
+            in {"cleanup-failure", "cleanup-failed", "unsafe-effect", "third-party-data"}
+            or row.get("cleanupComplete") is False
+        ),
+        None,
+    )
+    confirmed = next(
+        (row for row in outcomes if row.get("outcome") == "confirmed-disagreement"),
+        None,
+    )
+    inconclusive = next(
+        (row for row in outcomes if row.get("outcome") == "inconclusive"),
+        None,
+    )
+    web_coverage = coverage or {}
+    ledger = web_coverage.get("actorResourceActionHistory")
+    if not isinstance(ledger, dict):
+        ledger = {}
+    gaps = [value for value in ledger.get("unattempted", []) if isinstance(value, dict)]
+    candidates = [
+        value
+        for value in ir.get("experimentCandidates", [])
+        if isinstance(value, dict)
+    ]
+    executable = [value for value in candidates if value.get("executableOracle")]
+    if unsafe is not None:
+        action = {
+            "kind": "safety-stop-and-cleanup-review",
+            "reason": str(unsafe.get("reason") or "cleanup did not complete"),
+            "target": str(unsafe.get("contractId") or "web-experiment"),
+            "machineEvidence": True,
+            "successCriterion": "confirm cleanup and authority containment before any further target action",
+        }
+    elif confirmed is not None:
+        action = {
+            "kind": "independent-authority-violation-replay",
+            "reason": "a typed web oracle measured an authority disagreement",
+            "target": str(confirmed.get("contractId") or "web-invariant"),
+            "machineEvidence": True,
+            "successCriterion": "fresh owned identity and resource reproduce the disagreement with the enforcing negative intact",
+        }
+    elif inconclusive is not None:
+        reason = str(inconclusive.get("reason") or "missing-telemetry")
+        action_kind = {
+            "authentication-expiry-or-state": "refresh-owned-auth-baseline",
+            "deployment-drift": "rebind-prerequisite-version",
+            "challenge-or-environment-blocked": "request-approved-access-path",
+            "missing-telemetry": "add-one-missing-discriminator",
+            "consistency-window-unresolved": "wait-approved-consistency-window",
+            "control-failure": "repair-enforcing-control",
+            "inaccessible-business-state": "add-authoritative-state-readback",
+            "cleanup-failed": "safety-stop-and-cleanup-review",
+        }.get(reason, "add-one-missing-discriminator")
+        action = {
+            "kind": action_kind,
+            "reason": reason,
+            "target": str(inconclusive.get("contractId") or "web-experiment"),
+            "machineEvidence": True,
+            "successCriterion": "restore the missing actor, resource, state, or deployment discriminator without treating the run as safe",
+        }
+    elif gaps:
+        action = {
+            "kind": "expand-legitimate-workflow-coverage",
+            "reason": "an owned actor/resource/action/history combination is unattempted",
+            "target": str(gaps[0].get("id") or "coverage-gap"),
+            "machineEvidence": bool(coverage),
+            "successCriterion": "exercise one approved owned-state combination with a typed oracle and bounded cleanup",
+        }
+    elif executable:
+        action = {
+            "kind": "execute-best-bounded-web-experiment",
+            "reason": "an admitted experiment can distinguish the remaining explanations",
+            "target": str(executable[0].get("id") or "web-experiment"),
+            "machineEvidence": False,
+            "successCriterion": "broker returns a typed three-valued outcome and complete effect accounting",
+        }
+    elif candidates:
+        action = {
+            "kind": "prepare-replay-adapter-or-oracle",
+            "reason": "the candidate is useful planning knowledge but cannot execute safely",
+            "target": str(candidates[0].get("id") or "web-candidate"),
+            "machineEvidence": False,
+            "successCriterion": "bind a registered runner, approved sequence, exact fixtures, budgets, and machine assertion",
+        }
+    else:
+        action = {
+            "kind": "bounded-input-exploration",
+            "reason": "no authority violation or missing discriminator remains in current evidence",
+            "target": "owned-web-surface",
+            "machineEvidence": False,
+            "successCriterion": "produce a new observed operation or falsifiable invariant without increasing load",
+        }
+    return {
+        "schemaVersion": 1,
+        "producer": "krineon-runtime-feedback",
+        "profile": "web-app",
+        "decisionId": "RF-" + digest(action)[:20],
+        "action": action,
+        "inputs": {
+            "normalizedOutcomes": len(outcomes),
+            "confirmedDisagreements": sum(
+                row.get("outcome") == "confirmed-disagreement" for row in outcomes
+            ),
+            "inconclusive": sum(row.get("outcome") == "inconclusive" for row in outcomes),
+            "actorResourceActionHistoryGaps": len(gaps),
+        },
+        "promotionAuthorized": False,
+    }
+
+
 def coverage_state(record: dict[str, Any] | None) -> dict[str, Any]:
     if not record:
         return {"newEdges": 0, "plateau": False, "holes": []}
@@ -117,6 +262,12 @@ def decide(
     crashes: list[dict[str, Any]] | None = None,
     observations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if ir.get("profile") == "web-app" or isinstance(ir.get("web"), dict):
+        return decide_web(
+            ir,
+            coverage=coverage,
+            observations=observations or [],
+        )
     crash_rows = unique_crashes(crashes or [])
     violation_rows = oracle_violations(observations or [])
     coverage_row = coverage_state(coverage)

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-nuclei-reviewed-template-manifest",
+  "id": "krineon-reviewed-http-templates-v1",
+  "templateCommit": "krineon-repository-content-v1",
+  "reviewPolicy": "complete-expanded-template",
+  "templates": [
+    {
+      "id": "krineon-owned-canary",
+      "path": "assets/nuclei-templates/krineon-owned-canary.yaml",
+      "sha256": "f17863566bfc4c26441f04cc155a3edd3a853990d3af6e8e16c12e6610d3fe0b",
+      "expandedSha256": "f17863566bfc4c26441f04cc155a3edd3a853990d3af6e8e16c12e6610d3fe0b",
+      "track": "first-principles",
+      "provenance": "generic-invariant",
+      "agentGenerated": false,
+      "independentAdmissionReview": {
+        "status": "confirmed",
+        "reviewer": "krineon-maintainer",
+        "evidence": "tests/test_nuclei_policy.py"
+      },
+      "ownedFixtureExecution": {
+        "status": "confirmed",
+        "fixture": "owned-loopback-broker-replay",
+        "evidence": "tests/test_nuclei_policy.py"
+      },
+      "approval": {
+        "effect": "read-only",
+        "methods": [
+          "GET"
+        ],
+        "allowedPathPrefixes": [
+          "/fixture/canary"
+        ],
+        "allowedOriginIds": [
+          "owned-loopback-fixture"
+        ],
+        "redirects": false,
+        "maxRequests": 1,
+        "maxRequestBytes": 0,
+        "maxResponseBytes": 65536,
+        "ownedFixtureNamespace": "krineon-nuclei-policy-tests"
+      }
+    }
+  ]
+}

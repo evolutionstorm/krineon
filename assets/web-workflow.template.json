@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "prerequisiteVersion": "replace-with-derived-prerequisite-version",
+  "id": "replace-with-workflow-id",
+  "title": "Bounded web invariant experiment",
+  "hypothesis": "State the proposed security invariant disagreement.",
+  "competingExplanations": [
+    {
+      "id": "H1",
+      "statement": "The application violates the stated invariant.",
+      "expectedObservations": []
+    },
+    {
+      "id": "H2",
+      "statement": "The response is an authorized or error-page artifact.",
+      "expectedObservations": []
+    }
+  ],
+  "changedVariable": "identity",
+  "steps": [
+    {
+      "id": "replace-with-step-id",
+      "type": "http",
+      "originId": "app",
+      "identityId": "anonymous",
+      "method": "GET",
+      "path": "/",
+      "headers": [],
+      "headerContext": {
+        "mode": "",
+        "sourceObservation": "",
+        "preservedHeaders": [],
+        "intentionalChanges": []
+      },
+      "effectClass": "read-only",
+      "intent": "authorization-invariant",
+      "resource": {
+        "id": "replace-with-resource-id",
+        "kind": "replace-with-resource-kind",
+        "expectedOwner": "public",
+        "selectedResource": "/",
+        "permittedAction": "read"
+      },
+      "observationContext": {
+        "evidenceOrigin": "authoritative application response",
+        "cacheLayer": "not-applicable",
+        "executionContext": "independent broker request"
+      },
+      "limits": {
+        "maximumEffect": "read one reviewed resource",
+        "maxActions": 1,
+        "maxInputBytes": 4096,
+        "timeoutSeconds": 10,
+        "cleanupPlan": "none required for read-only step",
+        "retryPolicy": "never",
+        "idempotent": true
+      },
+      "extract": []
+    }
+  ],
+  "operationContracts": [
+    {
+      "id": "replace-with-operation-id",
+      "actorRef": {
+        "id": "anonymous",
+        "role": "anonymous",
+        "tenant": "public",
+        "session": "anonymous",
+        "verified": true,
+        "effectiveActor": "anonymous",
+        "capabilityVersion": "replace-with-identity-capability-version",
+        "sessionRefreshVersion": "replace-with-session-refresh-version",
+        "permissionVersion": "replace-with-application-permission-version"
+      },
+      "actionRef": {
+        "runner": "krineon-http-broker-v1",
+        "workflow": "web/replace-with-workflow.json",
+        "signature": "web/replace-with-workflow.json.sig",
+        "campaignContract": "web-campaign.json",
+        "workflowId": "replace-with-workflow-id",
+        "stepId": "replace-with-step-id",
+        "effectClass": "read-only"
+      },
+      "resourceBindings": [
+        {
+          "id": "replace-with-resource-id",
+          "kind": "replace-with-resource-kind",
+          "parent": "root",
+          "tenant": "public",
+          "owner": "public",
+          "version": "replace-with-resource-version",
+          "generation": "replace-with-resource-generation",
+          "fixtureNamespace": "replace-with-owned-fixture-namespace",
+          "owned": true,
+          "disposable": true
+        }
+      ],
+      "requires": {
+        "operator": "fact",
+        "type": "state",
+        "ref": "replace-with-authoritative-precondition",
+        "expected": false,
+        "evidence": []
+      },
+      "produces": [],
+      "consumes": [],
+      "invalidates": [],
+      "authorityBinding": {
+        "actor": "anonymous",
+        "resource": "replace-with-resource-id",
+        "action": "read",
+        "version": "replace-with-resource-version"
+      },
+      "ordering": {
+        "after": [],
+        "before": [],
+        "asyncBoundary": false,
+        "sequencingHintOnly": false,
+        "dependencyConfidence": "hypothesized",
+        "evidence": []
+      },
+      "asyncWait": null,
+      "identityTransition": null,
+      "observations": [
+        {
+          "id": "replace-with-readback-id",
+          "kind": "authoritative-readback",
+          "authoritative": true,
+          "evidenceOrigin": "server-response",
+          "resourceBindingRef": "replace-with-resource-id",
+          "stateSelectors": {
+            "status": "response.status",
+            "bodySha256": "response.bodySha256"
+          }
+        }
+      ],
+      "consistencyWindow": {
+        "basis": "replace-with-owner-supported-or-measured-window",
+        "maximumSeconds": 0
+      },
+      "cleanup": {
+        "hookRef": "none-required-read-only",
+        "irreversible": false
+      },
+      "cost": {
+        "maxRequests": 1,
+        "maxSteps": 1,
+        "maxBytes": 1048576,
+        "maxPolling": 0,
+        "maxEffects": 0,
+        "maxConcurrencyParticipants": 1
+      }
+    }
+  ],
+  "oracles": [],
+  "cleanupSteps": [],
+  "coordinatorApproval": {
+    "approved": false,
+    "approvedBy": "",
+    "approvedAt": null,
+    "contractSha256": ""
+  }
+}

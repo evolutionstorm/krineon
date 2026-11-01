@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-nuclei-profile",
+  "id": "replace-with-nuclei-profile-id",
+  "optional": true,
+  "track": "first-principles",
+  "engine": {
+    "path": "nuclei",
+    "sha256": "replace-with-pinned-binary-sha256",
+    "versionOutputSha256": "replace-with-version-output-sha256",
+    "helpOutputSha256": "replace-with-help-output-sha256",
+    "requiredCapabilities": [
+      "disable-update-check",
+      "disable-redirects",
+      "jsonl",
+      "no-interactsh",
+      "rate-limit",
+      "bulk-size",
+      "concurrency",
+      "retries"
+    ]
+  },
+  "templateManifest": {
+    "path": "assets/nuclei-reviewed-templates.manifest.json",
+    "sha256": "4fdf52190f2efe9d8e08bc603f4053a832235b79c88ae13a1292ca5dbe39a8e7"
+  },
+  "selectedTemplateIds": [
+    "krineon-owned-canary"
+  ],
+  "effectiveConfiguration": {
+    "automaticUpdates": false,
+    "remoteTemplateDownloads": false,
+    "cloudUpload": false,
+    "externalAiGeneration": false,
+    "issueCreation": false,
+    "discoveryIntegrations": false,
+    "interactsh": false,
+    "headless": false,
+    "code": false,
+    "javascript": false,
+    "file": false,
+    "network": false,
+    "dns": false,
+    "redirects": false,
+    "maxRedirects": 0,
+    "rateLimit": 1,
+    "bulkSize": 1,
+    "concurrency": 1,
+    "retries": 0,
+    "maxJsonlBytes": 1048576,
+    "maxWallSeconds": 60
+  },
+  "execution": {
+    "mode": "broker-response-loopback-replay",
+    "targetTrafficByNuclei": false,
+    "ambientHomeDisabled": true,
+    "automaticTargetDiscovery": false,
+    "allAddressScanning": false,
+    "blanketCredentialHeaders": false,
+    "credentialsInProcessArguments": false,
+    "identityScopedCredentialsRemainInBroker": true,
+    "networkSandboxRequired": true,
+    "alternateEngineEgressTestRequired": true
+  },
+  "limits": {
+    "maxTemplates": 4,
+    "maxExpandedRequests": 16,
+    "maxRequestBytes": 65536,
+    "maxResponseBytes": 1048576
+  },
+  "output": {
+    "captureJsonl": true,
+    "captureEffectiveCommand": true,
+    "captureAcceptedRejectedTemplates": true,
+    "captureProvenance": true,
+    "publicSensitiveHttpExchanges": false,
+    "semanticReplayRequired": true
+  }
+}
