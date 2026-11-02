@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "hypothesisIds": [
+    "hyp-complete-terminal-id"
+  ],
+  "sourceLocationIds": [
+    "loc-admitted-location-id"
+  ]
+}

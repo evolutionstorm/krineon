@@ -22,6 +22,17 @@ directory. Give workers absolute skill, campaign, claimed workspace, evidence,
 and result-template paths. Include the optional authorization summary only when
 it exists. Runtime permissions do not broaden campaign authorization.
 
+When executing a retained source or native recipe, use the
+[four-plane runtime](references/runtime-planes.md). Register the external model
+session, bind the recipe to the claimed task workspace and exact target hashes,
+and use an exact Docker image digest. General recipe commands run with Docker
+network mode `none`; networked web observations must continue through the
+signed HTTP or browser broker. Treat runtime events and content-addressed
+artifacts as observations, not findings. Coordinator replay requires a fresh
+worker and agent identity plus a passing, separately executed observer. The
+operator workbench is read-only and cannot authorize, replay, clean up, or
+promote work.
+
 On Codex, invoke `$krineon`, keep the root agent as coordinator, and read the
 [Codex runtime adapter](references/codex.md) before launching workers. Use
 `list_agents` for capacity, `spawn_agent` with `fork_turns="none"` by default,
@@ -267,14 +278,13 @@ recorded disagreement, and an equal control. Bind solver constraints to an
 exact source fragment and execute the result through both consumers. Read
 [tool-assisted analysis](references/tool-assisted-analysis.md).
 
-Semantic discovery currently has one deliberately narrow pilot: Next.js
-authorization to production route execution. It models attacker-controlled
-path representations, the checks that classify them, the route resolver that
-consumes them, and ownership of each intermediate representation. It then
-generates the cheapest experiment that separates agreement, normalization
-bypass, public alias, and unprotected-baseline explanations. Do not claim this
-depth for other ecosystems until an equally concrete boundary adapter exists.
-Read [the semantic IR](references/semantic-ir.md) and
+Build the campaign's canonical architecture model and source-coverage ledger
+before claiming broad source coverage. Record components, identities,
+resources, dependencies, entrypoints, trust boundaries, consumers, generated
+artifacts, and exact evidence. Treat every target adapter as a concrete
+boundary model whose checks, transformations, ownership, and consumers must be
+derived from that target. Read [campaign intelligence](references/campaign-intelligence.md),
+[the semantic IR](references/semantic-ir.md), and
 [semantic experiments](references/semantic-experiments.md).
 
 Require every runtime hypothesis to state competing explanations, one changed
@@ -301,6 +311,22 @@ history, deployment, and terminal class. Read
 [execution-boundary and chain reasoning](references/chain-reasoning.md).
 
 ## Campaign orchestration
+
+Use the campaign intelligence stage machine as the epistemic source of truth:
+architecture, threat model, research plan, research, reconciliation,
+adversarial review, production critic, runtime confirmation, independent
+replay, and report. A worker observation is immutable and content-addressed.
+Reconciliation joins source and runtime evidence by mechanism but never emits a
+vulnerability verdict. Every promoted hypothesis receives a terminal
+disposition or remains explicitly active.
+
+Materialize role-specific views for architects, researchers, reviewers,
+replayers, and reporters. Do not expose another worker's conclusion, an
+expected verdict, raw credentials, or unrelated campaign state. Report source
+locations only through the admitted revision/file/line/snippet-hash join. Bind
+web sessions to exact actor, tenant, role, permission generation, and client
+provenance; a credential refresh cannot restore invalidated application
+authority.
 
 Use Krineon's durable scheduler as the source of truth. Before scaling, run its
 gate self-test with one worker and require the coordinator to re-execute and

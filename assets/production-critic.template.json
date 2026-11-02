@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "facts": {
+    "supportedRelease": {
+      "value": null,
+      "reason": "replace null only after checking the supported release",
+      "evidence": []
+    },
+    "shippedArtifact": {
+      "value": null,
+      "reason": "prove the relevant code survives in the shipped artifact",
+      "evidence": []
+    },
+    "externalIngress": {
+      "value": null,
+      "reason": "prove attacker control at the actual ingress",
+      "evidence": []
+    },
+    "productionEntrypoint": {
+      "value": null,
+      "reason": "prove production routing reaches the consumer",
+      "evidence": []
+    },
+    "optimizedBuild": {
+      "value": null,
+      "reason": "prove optimization does not remove or alter the chain",
+      "evidence": []
+    },
+    "noDevOnlyDependency": {
+      "value": null,
+      "reason": "exclude tests, examples, development servers, and debug-only code",
+      "evidence": []
+    },
+    "noArtificialSink": {
+      "value": null,
+      "reason": "exclude an application-authored unsafe callback standing in for impact",
+      "evidence": []
+    },
+    "remoteAcquisition": {
+      "value": null,
+      "reason": "prove acquisition of identifiers, addresses, capabilities, or module coordinates",
+      "evidence": []
+    },
+    "simultaneousPreconditions": {
+      "value": null,
+      "reason": "prove one realistic deployment satisfies every condition together",
+      "evidence": []
+    }
+  },
+  "conditions": [],
+  "evidence": [
+    "evidence/production-review.json"
+  ]
+}

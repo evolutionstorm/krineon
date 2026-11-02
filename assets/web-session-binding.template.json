@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "session-owned-actor-a",
+  "actorId": "actor-owned-a",
+  "role": "verified role",
+  "tenantId": "tenant-owned-a",
+  "permissionVersion": "server-observed-permission-generation",
+  "credentialRef": "secret-broker-reference-only",
+  "credentialFingerprint": "replace-with-sha256-not-the-credential",
+  "cookieArtifactSha256": "replace-with-retained-cookie-jar-artifact-sha256",
+  "clientKind": "chrome-cdp",
+  "authenticatedAt": "replace-with-rfc3339",
+  "expiresAt": "replace-with-rfc3339"
+}

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-differential",
+  "mechanism": "checker-consumer-representation-disagreement",
+  "confidence": "runtime-observed",
+  "producerRole": "researcher",
+  "producerIdentity": "registered-agent-id",
+  "target": "exact consumer or boundary",
+  "sourceLocations": [
+    "loc-admitted-location-id"
+  ],
+  "evidence": [
+    "evidence/retained-raw-observation.json"
+  ],
+  "payload": {
+    "cases": {
+      "baseline": {
+        "observation": "legitimate behavior"
+      },
+      "negative": {
+        "observation": "enforcing control"
+      },
+      "positive": {
+        "observation": "single-variable disputed behavior"
+      }
+    },
+    "interpretation": "machine-derived interpretation, not a vulnerability verdict"
+  }
+}

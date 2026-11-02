@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "status": "inconclusive",
+  "hypothesisFailureMode": "State the strongest concrete reason the proposed mechanism could be false.",
+  "observerFailureMode": "State how the measuring system could produce the same apparent result without the mechanism.",
+  "challengedConditions": [
+    "Name the exact conditional, ownership assumption, acquisition step, or deployment condition challenged."
+  ],
+  "evidence": [
+    "evidence/adversarial-review.json"
+  ]
+}

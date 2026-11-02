@@ -25,6 +25,7 @@ from urllib.parse import urlsplit, urlunsplit
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESEARCH_HARNESS = PROJECT_ROOT / "scripts" / "research_harness.py"
 TOOL_PROBE = PROJECT_ROOT / "scripts" / "tool_probe.py"
+CAMPAIGN_INTELLIGENCE = PROJECT_ROOT / "scripts" / "campaign_intelligence.py"
 WEB_CONTRACT_TOOL = PROJECT_ROOT / "scripts" / "web_contract.py"
 WEB_REQUEST_IMPORT = PROJECT_ROOT / "scripts" / "web_request_import.py"
 WEB_TEMPLATE = PROJECT_ROOT / "assets" / "web-campaign.template.json"
@@ -955,6 +956,19 @@ def main(argv: list[str] | None = None) -> int:
                 str(campaign_root / "tools" / "tool-probe.json"),
             ]
         )
+        run_checked(
+            [sys.executable, str(CAMPAIGN_INTELLIGENCE), "init", str(campaign_root)]
+        )
+        if checkout is not None:
+            run_checked(
+                [
+                    sys.executable,
+                    str(CAMPAIGN_INTELLIGENCE),
+                    "source-inventory",
+                    str(campaign_root),
+                    str(checkout),
+                ]
+            )
         if not args.no_queue:
             run_checked(
                 [sys.executable, str(RESEARCH_HARNESS), "queue", str(campaign_root)]

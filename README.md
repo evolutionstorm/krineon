@@ -17,6 +17,14 @@ knowledge is compacted without deleting its members. Approved browser journeys
 also produce recursive client-artifact, permission-hint, WebSocket, and SSE
 graphs without copying message secrets or expanding target scope.
 
+Krineon also provides four explicit runtime planes. The research plane proposes
+experiments; the execution plane runs frozen recipes in offline task sandboxes
+and retains a tool-event ledger; the verification plane performs fresh-agent
+replay with a separately executed observer; and the loopback operator plane
+shows live trace, graph, traffic metadata, approvals, and cleanup state without
+exposing captured bodies or permitting mutations. See
+[runtime planes](references/runtime-planes.md).
+
 ## Requirements
 
 Install or provide the following components:
@@ -270,38 +278,57 @@ Krineon runs the following campaign:
 1. Pins the source, runtime, build, and deployed artifact. It also records a
    supplied authorization boundary, but source-only analysis does not require
    an `AUTHORIZATION.md` file.
-2. Builds an evidence-linked semantic IR for attacker-controlled values,
+2. Builds one canonical architecture knowledge base for components, identities,
+   resources, dependencies, entrypoints, trust boundaries, and generated
+   artifacts. A hash-bound coverage ledger accounts for every production source
+   file without treating file count as research depth.
+3. Builds an evidence-linked semantic IR for attacker-controlled values,
    function-scoped def-use, aliases and property mutations, control candidates,
    cross-module calls, request representation changes, authority, ownership,
    lifetime, source maps, and runtime identity.
-3. Derives competing explanations for the focused authorization-to-route
-   boundary and runs only experiments with coordinator-owned baseline,
-   enforcing-negative, positive, and automatic interpretation contracts.
-4. Models each primitive as a typed capability and marks a connection feasible,
+4. Moves campaigns through machine-enforced architecture, threat-model,
+   planning, research, reconciliation, adversarial-review, production-critic,
+   confirmation, replay, and reporting stages. Partial and blocked stages retain
+   their exact reason.
+5. Reconciles immutable source, runtime, browser, and fuzzing observations by
+   mechanism and generates competing explanations. Runtime experiments require
+   coordinator-owned baseline, enforcing-negative, positive, and automatic
+   interpretation contracts.
+6. Models each primitive as a typed capability and marks a connection feasible,
    unknown, or impossible. A chain exists only when one execution satisfies
    context, object generation, state, lifetime, ordering, deployment, and
    acquisition conditions together.
-5. Treats login, cache priming, ownership transfer, worker reuse, allocation,
+7. Treats login, cache priming, ownership transfer, worker reuse, allocation,
    release, reallocation, and victim reads as bounded, history-preserving state
-   sequences.
-6. Launches independent research routes and prevents one approach family from
+   sequences. Browser and HTTP sessions are bound to exact actors, tenants,
+   roles, and permission generations.
+8. Launches independent research routes and prevents one approach family from
    consuming all worker capacity.
-7. Promotes leads through observation, source-supported mechanism, runtime
+9. Promotes leads through observation, source-supported mechanism, runtime
    differential, verified primitive, compatible chain edge, and complete
-   terminal. Per-mechanism work limits and evidence expiry keep the active
-   frontier bounded.
-8. Rebuilds a versioned campaign-wide capability graph and assigns its
+   terminal. Every hypothesis receives an explicit disposition. Per-mechanism
+   work limits and evidence expiry keep the active frontier bounded.
+10. Rebuilds a versioned campaign-wide capability graph and assigns its
    highest-value missing-link experiment by boundary relevance, uncertainty,
    shared usefulness, and measured cost.
-9. Tests promising chains against supported release or production-equivalent
-   builds in an owned environment.
-10. Feeds coverage plateaus, invariant observations, and minimized stack
+11. Requires separate adversarial and production-viability reviews. Reviewers
+    receive role-isolated context without the originator's verdict, and source
+    citations remain bound to exact revision, file, line, and snippet hashes.
+12. Tests promising chains against supported release or production-equivalent
+    builds in an owned environment.
+13. Feeds coverage plateaus, invariant observations, and minimized stack
    clusters back into the next harness, grammar, or replay decision.
-11. Requires coordinator-signed experiments, recomputed raw observations, an
+14. Requires coordinator-signed experiments, recomputed raw observations, an
    enforcing negative control, and fresh-process adversarial replay.
-12. Produces a source-audit report package only when complete Critical/RCE
+15. Produces a source-audit report package only when complete Critical/RCE
     impact is demonstrated. The separate web profile uses program-defined High
     or Critical impact and application-specific invariant gates.
+
+The optional execution runtime binds each recipe to exact target hashes, an
+exact container image digest, resource limits, an active external-agent session,
+and primary plus separate-observer assertions. Arbitrary sandbox commands have no
+network. Approved web traffic continues to use the signed HTTP or browser
+broker rather than inheriting a worker's shell authority.
 
 When a route fails, Krineon records the enforcing mechanism and creates a new
 task only when the source supports a different bypass or composition. It does
@@ -326,6 +353,14 @@ Krineon includes focused support for these targets and techniques:
 - V8, Istanbul, and source-map-aware JavaScript coverage
 - First-fault crash clustering, minimization, and bounded replay
 - Evidence-linked semantic IR and automatic runtime feedback
+- Canonical architecture knowledge, production-source coverage, immutable
+  observation reconciliation, production criticism, and hash-bound citations
+- Role-isolated architect, researcher, reviewer, replayer, and reporter context
+- Actor-, tenant-, role-, and permission-version-bound web sessions
+- Offline per-task Docker recipes, correlated tool events, and immutable
+  content-addressed runtime artifacts
+- Fresh-agent runtime replay with a separate observer process
+- Authenticated, loopback-only, read-only operator workbench
 - Real-Chromium session discovery with browser-generated request context
 - Offline identity, resource, lifecycle, and trust-representation mapping
 - Business-rule coverage by actor, resource, action, and state
@@ -426,6 +461,7 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Evidence gates](references/evidence-gates.md)
 - [Semantic hypothesis experiments](references/semantic-experiments.md)
 - [Semantic intermediate representation](references/semantic-ir.md)
+- [Campaign architecture, evidence, review, and session intelligence](references/campaign-intelligence.md)
 - [Runtime feedback loop](references/runtime-feedback.md)
 - [Execution-boundary and typed chain reasoning](references/chain-reasoning.md)
 - [Held-out multi-stage evaluation](references/multistage-evaluation.md)

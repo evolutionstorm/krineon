@@ -29,6 +29,16 @@
       "promotionReady": false,
       "reviewedInterpretation": ""
     },
+    "runtimeExecution": {
+      "runId": "",
+      "recipeSha256": "",
+      "targetHashes": {},
+      "resultArtifact": "",
+      "assertionsPassed": false,
+      "alternateObserverPassed": false,
+      "coordinatorReplayId": "",
+      "coordinatorReplayVerdict": "inconclusive"
+    },
     "externalFuzzing": {
       "profile": "",
       "engine": "",

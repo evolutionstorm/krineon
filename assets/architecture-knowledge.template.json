@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "objects": [
+    {
+      "id": "public-entrypoint",
+      "kind": "entrypoint",
+      "name": "Public production entrypoint",
+      "confidence": "source-supported",
+      "attributes": {
+        "protocol": "replace-me",
+        "principal": "anonymous",
+        "productionArtifact": "replace-me"
+      },
+      "evidence": [
+        "admitted source location or retained runtime observation"
+      ]
+    },
+    {
+      "id": "authority-consumer",
+      "kind": "consumer",
+      "name": "Security-relevant consumer",
+      "confidence": "source-supported",
+      "attributes": {
+        "authority": "replace-me",
+        "process": "replace-me",
+        "runtime": "replace-me"
+      },
+      "evidence": [
+        "admitted source location"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "source": "public-entrypoint",
+      "relation": "reaches",
+      "target": "authority-consumer",
+      "conditions": [
+        "state every required condition"
+      ],
+      "evidence": [
+        "source or runtime evidence for the connection"
+      ]
+    }
+  ]
+}

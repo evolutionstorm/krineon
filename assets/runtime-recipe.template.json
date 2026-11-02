@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "recipeId": "replace-with-stable-recipe-id",
+  "taskId": "replace-with-queued-task-id",
+  "workerId": "replace-with-registered-worker-id",
+  "sessionId": "replace-with-active-model-session-id",
+  "workspace": "worktrees/replace-with-task-workspace",
+  "command": [
+    "/workspace/owned-verifier",
+    "--json"
+  ],
+  "environment": {
+    "KRINEON_CASE": "baseline"
+  },
+  "sandbox": {
+    "mode": "docker-offline",
+    "image": "registry.example/owned-runner@sha256:replace-with-64-hex-digest",
+    "timeoutSeconds": 120,
+    "memoryMb": 2048,
+    "cpus": 2,
+    "pids": 256
+  },
+  "network": {
+    "mode": "none"
+  },
+  "targetHashes": {
+    "owned-verifier": "replace-with-64-hex-digest",
+    "owned-observer": "replace-with-64-hex-digest"
+  },
+  "assertions": {
+    "exitCode": 0,
+    "stdoutContains": [
+      "PASS"
+    ],
+    "stderrNotContains": [
+      "AddressSanitizer:DEADLYSIGNAL"
+    ],
+    "stdoutRegex": []
+  },
+  "alternateObserver": {
+    "command": [
+      "/workspace/owned-observer",
+      "--evidence",
+      "/evidence"
+    ],
+    "environment": {},
+    "assertions": {
+      "exitCode": 0,
+      "stdoutRegex": [
+        "\\\"terminal\\\":\\s*\\\"owned\\\""
+      ],
+      "stderrNotContains": [
+        "runtime observer failed"
+      ]
+    }
+  }
+}
