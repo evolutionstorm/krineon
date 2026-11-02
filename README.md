@@ -6,46 +6,19 @@ vulnerabilities, remote code execution (RCE), sandbox escapes, and zero-days.
 Web-application campaigns additionally accept independently reproduced,
 program-eligible High-severity security invariant violations.
 
-Krineon analyzes one pinned source tree from first principles. It does not use
-changelogs, advisories, Git history, or patched-version comparisons to discover
-bugs. It retains partial primitives as research leads, but it promotes a
-finding only after a production-equivalent proof and independent replay.
-
-Krineon keeps a searchable observation blackboard, persistent typed attack
-chains, global asset coverage, and resumable worker checkpoints. New evidence
-automatically unlocks the next compatible chain experiment. Repeated settled
-knowledge is compacted without deleting its members. Approved browser journeys
-also produce recursive client-artifact, permission-hint, WebSocket, and SSE
-graphs without copying message secrets or expanding target scope.
-
-Its event-driven control layer lets specialist workers subscribe to typed
-observations and propose experiments without receiving execution authority.
-Trust-tiered ancestry prevents target content from becoming control policy;
-cost-aware independent verification, heterogeneous model routing,
-volatility-aware scheduling, a persistent cleanup stack, an owned OOB oracle,
-and provider/tool health telemetry keep the resulting campaign bounded and
-auditable.
-
 For shipped binaries, generated bundles, JavaScript or Electron packages, and
 other artifacts that source alone cannot explain, Krineon can consume evidence
 from an existing local REA installation. It binds the evidence to unchanged
 artifact and tool hashes, preserves REA coverage and unknowns, and turns the
 result into source-versus-artifact hypotheses rather than findings.
 
-Krineon also provides four explicit runtime planes. The research plane proposes
-experiments; the execution plane runs frozen recipes in offline task sandboxes
-and retains a tool-event ledger; the verification plane performs fresh-agent
-replay with a separately executed observer; and the loopback operator plane
-shows live trace, graph, traffic metadata, approvals, and cleanup state without
-exposing captured bodies or permitting mutations. See
-[runtime planes](references/runtime-planes.md).
-
 ## Requirements
 
-Install or provide the following components:
+Install these core components:
 
 - Git
 - Python 3.10 or later
+- OpenSSL
 - PyYAML for strict `krineon-web` Markdown metadata parsing
 - Codex, OpenCode, or OMP (Oh My Pi)
 - The target source code or a repository URL
@@ -56,16 +29,62 @@ Program rules and scope intake are optional for source-only campaigns. A
 `web-app` campaign requires a versioned application contract and remains
 offline until authorization is explicitly confirmed.
 
-Krineon detects tools and does not install them automatically. When Trailmark,
-Joern, Z3, or cppcheck is installed and compatible with the target, the static
-pipeline must run it and retain the result. Tree-sitter, AFL++, libFuzzer, and
-Fuzzilli add coverage when their target adapters apply.
-REA is optional for shipped-artifact reverse engineering and is never installed
-automatically.
-When Codex, OpenCode, or OMP already exposes Burp Suite MCP, Krineon can use its
-filtered history, exact request, and Repeater tools through the same scope,
-budget, private-evidence, and independent-replay controls. Krineon does not
-install or configure Burp or its MCP connection.
+### Helper tools for maximum coverage
+
+Krineon does not install helper tools. Install the tools that apply to the
+target before starting a campaign. Run `scripts/tool_probe.py` to inventory
+the supported analysis tools that Krineon can detect automatically.
+
+| Tool | What it adds | Use it for |
+| --- | --- | --- |
+| ripgrep (`rg`) | Fast source and artifact search | Every source campaign |
+| Tree-sitter CLI and Python modules | Syntax-aware source structure and candidate extraction | Multi-language source analysis |
+| Trailmark | Single-revision structure, entrypoint, and data-flow assistance | Supported source languages |
+| Joern (`joern`, `joern-parse`, `joern-scan`) | Code property graphs and cross-function reachability | C, C++, Java, JavaScript, and other supported languages |
+| Z3 CLI and Python module | Concrete inputs for source-bound arithmetic and constraint models | Parsers, integer boundaries, state machines, and protocol checks |
+| cppcheck | Additional C and C++ diagnostics | Native targets |
+| Semgrep or OpenGrep | Fast structural rules and target-specific pattern checks | Source reconnaissance |
+| CodeQL CLI | Deeper cross-file data-flow queries | Languages and builds supported by CodeQL |
+| REA | Evidence from shipped binaries, generated bundles, Electron packages, and other artifacts | Source-versus-artifact differentials |
+
+When Trailmark, Joern, Z3, or cppcheck is available and applicable, Krineon's
+static pipeline runs it and retains its provenance. A tool match remains a
+hypothesis until a controlled runtime experiment validates it.
+
+### Build, runtime, and fuzzing helpers
+
+| Tool | What it adds | Use it for |
+| --- | --- | --- |
+| Docker | Reproducible production builds, isolated services, and disposable test environments | Framework, service, and multi-component campaigns |
+| Clang and LLVM | ASan, UBSan, libFuzzer, sanitizer coverage, symbolization, and coverage reports | Native code and browser engines |
+| CMake and Ninja | Fast reproducible native builds | C and C++ targets |
+| AFL++ (`afl-fuzz`, `afl-showmap`) | Parallel coverage-guided fuzzing and corpus measurement | Instrumented native parsers and protocol targets |
+| Fuzzilli and Swift | JavaScript engine generation and REPRL execution | V8 and JavaScript engines |
+| `llvm-profdata` and `llvm-cov` | Coverage merging and source-level coverage gaps | LLVM-instrumented targets |
+| LLDB or GDB | Independent crash, lifetime, and control-flow observations | Native exploitability verification |
+| `minidump_stackwalk` | Stable stack recovery from minidumps | Chromium and crash-reporting targets |
+| Node.js and a lockfile-aware package manager | Production JavaScript builds and persistent test workers | React, Next.js, Node.js, and web tooling |
+| Rust and Cargo | Reproducible Rust builds and sanitizer-compatible test targets | Rust projects |
+
+For Chromium and V8, also install `depot_tools` (`gclient`, `gn`, and
+`autoninja`), Ninja, Clang, `llvm-symbolizer`, a sandboxed Chrome or Chromium
+binary, and Fuzzilli when JavaScript-engine fuzzing is in scope. On macOS,
+install Xcode command-line tools, LLDB, `atos`, `codesign`, `lipo`, `otool`, and
+`dwarfdump`.
+
+### Web application helpers
+
+| Tool | What it adds | Use it for |
+| --- | --- | --- |
+| Chrome or Chromium | Real browser sessions, CDP evidence, browser-generated headers, and client artifact collection | Authenticated and browser-only behavior |
+| Playwright | Optional browser fixture and compatibility support | Owned browser test environments |
+| Burp Suite MCP | Filtered proxy history, exact requests, and Repeater preparation | Authorized manual and agent-assisted web testing |
+| Nuclei | Bounded supporting checks against broker-created, credential-free fixtures | Reviewed templates only |
+| ffuf | Bounded candidate validation derived from observed routes | Approved endpoint discovery only |
+
+Burp Suite MCP must already be enabled in Codex, OpenCode, or OMP. Krineon
+does not install or configure Burp, bypass bot protection, or grant tools more
+scope than the signed campaign contract.
 
 ## Supported hosts
 
@@ -415,50 +434,6 @@ Krineon includes focused support for these targets and techniques:
 - Cost-aware independent verifier and heterogeneous per-role model routing
 - Volatility-aware scheduling, persistent verified cleanup, owned OOB receipts,
   and provider/tool health telemetry
-
-For web campaigns, API extraction is a required discovery stage. First use a
-legitimate real-Chromium journey to create
-`client-artifact-manifest.json`. The manifest contains only artifacts Chrome
-loaded from admitted origins and records referenced source maps without
-probing them.
-Then extract static and runtime operations and build the measured catalog:
-
-```bash
-scripts/web_js_api_extract.py \
-  BROWSER_OUTPUT/client-artifact-manifest.json \
-  --artifact-root BROWSER_OUTPUT \
-  --output API_EXTRACTION.json
-scripts/web_endpoint_catalog.py API_EXTRACTION.json \
-  --output ENDPOINT_CATALOG.json
-```
-
-Literal URL strings remain hints. Bounded AST results remain source-supported
-candidates. Only Chrome observations or independent replay raise confidence.
-The catalog never claims to contain all APIs and does not authorize dispatch.
-It reports unavailable chunks, source-map coverage, role differences,
-unresolved expressions, blocked effects, and the next legitimate journey.
-
-Map the catalog and other observed application behavior before creating broad
-experiments:
-
-```bash
-scripts/web_surface_map.py --request-bundle REQUEST_BUNDLE.json \
-  --browser-observation BROWSER_OBSERVATION.json \
-  --endpoint-catalog ENDPOINT_CATALOG.json \
-  --output SURFACE_MAP.json
-scripts/web_workflow_model.py SURFACE_MAP.json --output WORKFLOW_MODEL.json
-```
-
-The browser runner uses real Chromium CDP and fresh profiles. Raw HTTP remains
-an explicitly labelled client replay; it cannot impersonate Chrome by copying
-User-Agent, client hints, or Fetch Metadata. Bot challenges pause the campaign
-as environment-blocked rather than becoming a vulnerability or safe result.
-
-Static tools generate hypotheses. Runtime evidence decides whether a candidate
-advances. Executable semantic models cover the Next.js
-authorization-to-route-execution boundary and workerd native lifetime
-boundaries; other entries in this list are execution adapters and analysis
-aids.
 
 ## Finding requirements
 
