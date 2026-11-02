@@ -162,7 +162,7 @@ opencode
 Start the campaign with this prompt:
 
 ```text
-Load the krineon skill. Read PROGRAM_RULES.md and audit this pinned checkout
+@krineon Read PROGRAM_RULES.md and audit this pinned checkout
 for a complete Critical, RCE, sandbox-escape, or zero-day chain. Use source
 review and bounded tests in an owned local environment. Do not test live
 systems. Coordinate independent OpenCode tasks and require machine-backed
@@ -174,6 +174,11 @@ the durable Krineon queue; a finished task is not a substitute for a submitted
 result or independent replay. If the skill is not listed, verify its
 frontmatter, the installation path, and that `permission.skill` does not deny
 `krineon`.
+
+For web campaigns, the primary OpenCode agent retains credentials, browser
+state, MCP dispatch, budgets, and cleanup. Subagents receive redacted evidence
+and propose experiments. See the
+[OpenCode runtime adapter](references/opencode.md).
 
 ## Start with OMP
 
@@ -205,6 +210,11 @@ and bounded tests in an owned local environment. Do not test live systems.
 For a headless OMP campaign, configure `--wait-async` and an appropriate
 `--max-time` value so the session retains active workers.
 
+For web campaigns, the top-level OMP session retains credentials, browser
+state, MCP dispatch, budgets, and cleanup. Task workers receive redacted
+evidence and propose experiments. See the
+[OMP runtime adapter](references/omp.md).
+
 ## Test a web application
 
 Use Krineon only on applications and accounts that you own or are explicitly
@@ -230,16 +240,21 @@ agent-visible evidence.
 ### Start the campaign
 
 Open the authorized target in Codex, OpenCode, or OMP as described above.
-Attach the program rules and optional request files, then use this prompt:
+Attach the program rules and optional request files, then invoke the client’s
+skill form:
 
 ```text
-Use Krineon to test this authorized web application. Create an offline plan
-first and make no requests until I review the exact scope, accounts, actions,
-limits, cleanup, and stop conditions. After approval, establish a legitimate
-baseline and test one security hypothesis at a time. Use only my owned accounts
-and disposable data. Require a negative control, authoritative readback,
-cleanup, and independent replay before reporting a finding.
+Codex: $krineon Test this authorized web application under the supplied rules.
+OpenCode: @krineon Test this authorized web application under the supplied rules.
+OMP: /skill:krineon Test this authorized web application under the supplied rules.
 ```
+
+In every client, require an offline plan first and make no requests until you
+review the exact scope, accounts, actions, limits, cleanup, and stop conditions.
+After approval, establish the legitimate baseline and test one hypothesis at a
+time using only owned accounts and disposable data. Require an enforcing
+negative control, authoritative readback, cleanup, and independent replay
+before reporting a finding.
 
 ### Review and approve the plan
 
@@ -490,6 +505,8 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Skill instructions](SKILL.md)
 - [Codex runtime adapter](references/codex.md)
 - [OpenCode skill adapter](.opencode/skills/krineon/SKILL.md)
+- [OpenCode runtime adapter](references/opencode.md)
+- [OMP runtime adapter](references/omp.md)
 - [Research methodology](references/methodology.md)
 - [Critical/RCE promotion contract](references/critical-rce.md)
 - [Orchestration and independent replay](references/orchestration.md)

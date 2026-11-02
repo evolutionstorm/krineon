@@ -140,7 +140,8 @@
         "tool.chromium",
         "tool.google-chrome",
         "python.playwright",
-        "mcp.playwright"
+        "mcp.playwright",
+        "runtime.browser-cdp"
       ],
       "contextPacks": [
         "browser-runtime"

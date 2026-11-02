@@ -5,6 +5,20 @@ researcher is explicitly authorized to test. A URL, credential, request
 capture, public bug-bounty page, or scanner configuration does not establish
 that authority.
 
+## Client runtime ownership
+
+Read the active client adapter before creating tasks:
+
+- `opencode.md` for OpenCode;
+- `omp.md` for OMP; or
+- `codex.md` for Codex.
+
+The top-level client session remains the coordinator. It owns literal
+credentials, authenticated browser state, private Burp arguments, signatures,
+the shared budget, cleanup, target dispatch, and coordinator replay. Workers
+receive redacted evidence and propose experiments. A child tool permission,
+inherited MCP connection, or browser tool does not expand the web contract.
+
 ## Intake contract
 
 The campaign authority is `web-campaign.json` (schema version 2). It records:

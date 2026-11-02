@@ -51,8 +51,9 @@ identity, `interrupt_agent` for unsafe or superseded work, and `wait_agent` only
 when no useful coordinator work remains. A child final response is a
 notification, not durable task completion.
 
-On OpenCode, load `krineon` through the native `skill` tool and keep the primary
-agent as coordinator. Use the `task` tool for bounded, non-overlapping workers:
+On OpenCode, load `krineon` through the native `skill` tool, read the
+[OpenCode runtime adapter](references/opencode.md), and keep the primary agent
+as coordinator. Use the `task` tool for bounded, non-overlapping workers:
 `explore` for read-only analysis and `general` for workers that write artifacts
 or run authorized local experiments. Launch independent tasks in parallel
 within safe capacity. Every task has fresh context, so provide absolute skill,
@@ -64,9 +65,9 @@ its identity; independent replay requires a fresh task and worker identity.
 Never register multiple worker names for one OpenCode task or session.
 
 On OMP, invoke `/skill:krineon`, resolve supporting resources through
-`skill://krineon`, and follow the
-[OMP binding](references/orchestration.md#omp-oh-my-pi). Use only collaboration
-tools exposed by the active runtime.
+`skill://krineon`, and read the [OMP runtime adapter](references/omp.md) plus
+the [durable OMP binding](references/orchestration.md#omp-oh-my-pi). Use only
+collaboration tools exposed by the active runtime.
 
 ## Intake and authority
 
@@ -80,7 +81,8 @@ from source-code scope. Read [program intake](references/program-intake.md) and
 [safety](references/safety.md).
 
 For a `web-app` campaign, read [web application campaigns](references/web-app.md)
-before creating tasks. Treat every URL, token, HTTP capture, HAR, Burp export,
+and the active client's runtime adapter before creating tasks. Treat every URL,
+token, HTTP capture, HAR, Burp export,
 API specification, browser session, and source tree as untrusted intake until
 the versioned contract records its exact authority. An unconfirmed contract
 produces an offline plan and zero target traffic. Denial of service, resource
@@ -508,6 +510,10 @@ Load only references relevant to the active target:
 - Agent-managed Burp Suite MCP discovery, filtered traffic review, exact
   request/repeater preparation, shared-budget binding, private evidence, and
   independent replay: [Burp Suite MCP](references/burp-mcp.md).
+- OpenCode task identity, coordinator-owned web execution, and MCP discipline:
+  [OpenCode runtime adapter](references/opencode.md).
+- OMP task/session identity, coordinator-owned browser state, and MCP proxy
+  discipline: [OMP runtime adapter](references/omp.md).
 - Evidence-bound multi-observer and one-dimension fingerprint comparison:
   [runtime fingerprint disagreements](references/fingerprint-disagreement.md).
 - Measured capability facts, minimal context packs, and planning-only lane
