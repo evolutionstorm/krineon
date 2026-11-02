@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "replace-model-id",
+  "provider": "replace-provider",
+  "model": "replace-model",
+  "family": "replace-independent-model-family",
+  "roles": ["researcher", "reviewer"],
+  "capabilities": ["source-analysis"],
+  "inputCost": 0.0,
+  "outputCost": 0.0,
+  "expectedLatency": 1.0,
+  "quality": 0.8,
+  "cacheAllowed": false,
+  "enabled": true
+}

@@ -17,6 +17,7 @@ from scripts.runtime_plane import (
     docker_offline_runner,
     runtime_status,
 )
+from scripts.swarm_control import ControlStore
 
 
 class RuntimeOperatorPlanesTest(unittest.TestCase):
@@ -149,6 +150,25 @@ class RuntimeOperatorPlanesTest(unittest.TestCase):
                 {row["tool_call_id"] for row in observer_finishes},
             )
             self.assertEqual(runtime_status(self.root)["counts"]["replays"], 1)
+            control = ControlStore(self.root)
+            try:
+                components = {
+                    row["component_id"]: row["state"]
+                    for row in control.connection.execute(
+                        "SELECT component_id,state FROM swarm_components"
+                    ).fetchall()
+                }
+                self.assertEqual(components["provider:codex"], "unknown")
+                self.assertEqual(components["tool:recipe-a"], "healthy")
+                self.assertTrue(any(key.startswith("model:runtime-model-") for key in components))
+                self.assertEqual(
+                    control.connection.execute(
+                        "SELECT COUNT(*) AS n FROM swarm_invocations WHERE component_id='tool:recipe-a'"
+                    ).fetchone()["n"],
+                    2,
+                )
+            finally:
+                control.close()
         finally:
             runtime.close()
 

@@ -17,6 +17,11 @@
     "allowRuntimeExpansion": true,
     "preferFourOrMoreWorkersWhenAvailable": true
   },
+  "capabilityInputs": {
+    "facts": "capability-facts.json",
+    "toolInventory": "tools/tool-inventory.json",
+    "fingerprintAnalysis": "evidence/fingerprint-analysis.json"
+  },
   "discoveryPolicy": {
     "firstPrinciplesOnly": true,
     "prohibitedDiscoveryInputs": [

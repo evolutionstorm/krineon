@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "contextPacks": {
+    "core": [
+      "references/safety.md",
+      "references/evidence-gates.md"
+    ],
+    "source-semantic": [
+      "references/semantic-ir.md",
+      "references/semantic-experiments.md",
+      "references/chain-reasoning.md"
+    ],
+    "static-tools": [
+      "references/tool-assisted-analysis.md"
+    ],
+    "native-runtime": [
+      "references/reality-evidence.md",
+      "references/fuzzing.md"
+    ],
+    "chrome-v8": [
+      "references/chrome-v8.md",
+      "references/javascript-coverage-generation.md"
+    ],
+    "web-core": [
+      "references/web-app.md",
+      "references/http-protocol-harness.md"
+    ],
+    "browser-runtime": [
+      "references/javascript-coverage-generation.md",
+      "references/fingerprint-disagreement.md"
+    ],
+    "fingerprint-disagreement": [
+      "references/fingerprint-disagreement.md"
+    ],
+    "burp-mcp": [
+      "references/burp-mcp.md"
+    ],
+    "rea": [
+      "references/rea.md"
+    ],
+    "blocker-resolution": [
+      "references/blocker-resolution.md"
+    ]
+  },
+  "profileContextPacks": {
+    "critical-rce": [
+      "core",
+      "source-semantic"
+    ],
+    "chrome-v8": [
+      "core",
+      "source-semantic",
+      "chrome-v8"
+    ],
+    "web-app": [
+      "core",
+      "web-core"
+    ]
+  },
+  "laneRules": [
+    {
+      "id": "source-tree-analysis",
+      "profiles": [
+        "critical-rce",
+        "chrome-v8"
+      ],
+      "laneIds": [
+        "static-analysis-lead-generation",
+        "public-ingress-map",
+        "execution-sink-backtrace",
+        "memory-lifetime-invariants",
+        "parser-representation-invariants",
+        "capability-code-loading-invariants",
+        "dependency-boundary-audit",
+        "v8-static-analysis-lead-generation",
+        "jit-compiler-invariants",
+        "gc-object-lifetime",
+        "wasm-parser-compiler",
+        "v8-sandbox-boundaries",
+        "v8-execution-sink-backtrace",
+        "v8-dependency-boundary-audit"
+      ],
+      "requiresAll": [
+        "target.source-tree"
+      ],
+      "contextPacks": [
+        "static-tools"
+      ]
+    },
+    {
+      "id": "chrome-browser-runtime",
+      "profiles": [
+        "chrome-v8"
+      ],
+      "laneIds": [
+        "chromium-integration"
+      ],
+      "requiresAny": [
+        "tool.chromium",
+        "tool.google-chrome"
+      ],
+      "contextPacks": [
+        "browser-runtime"
+      ]
+    },
+    {
+      "id": "structured-v8-fuzzing",
+      "profiles": [
+        "chrome-v8"
+      ],
+      "laneIds": [
+        "structured-js-fuzzing",
+        "v8-differential-fuzzing"
+      ],
+      "requiresAll": [
+        "target.instrumented-fuzz-target"
+      ],
+      "requiresAny": [
+        "tool.FuzzilliCli",
+        "tool.afl-fuzz",
+        "target.libfuzzer-harness"
+      ],
+      "contextPacks": [
+        "native-runtime"
+      ]
+    },
+    {
+      "id": "web-browser-runtime",
+      "profiles": [
+        "web-app"
+      ],
+      "laneIds": [
+        "web-api-browser-discovery"
+      ],
+      "requiresAll": [
+        "authorization.confirmed",
+        "authorization.browser-navigation"
+      ],
+      "requiresAny": [
+        "tool.chromium",
+        "tool.google-chrome",
+        "python.playwright",
+        "mcp.playwright"
+      ],
+      "contextPacks": [
+        "browser-runtime"
+      ]
+    },
+    {
+      "id": "web-controlled-runtime",
+      "profiles": [
+        "web-app"
+      ],
+      "laneIds": [
+        "web-controlled-execution",
+        "web-business-sequence-execution",
+        "web-cache-semantic-research",
+        "web-deserialization-semantic-research",
+        "web-bounded-boundary-adapters",
+        "web-independent-replay",
+        "web-blinded-evaluation"
+      ],
+      "requiresAll": [
+        "authorization.confirmed"
+      ],
+      "contextPacks": []
+    }
+  ],
+  "augmentations": [
+    {
+      "id": "fingerprint-follow-up",
+      "laneIds": [
+        "stock-deployment-reachability",
+        "attacker-acquisition",
+        "chromium-integration",
+        "web-api-browser-discovery",
+        "web-authorization-oracles",
+        "web-cache-serialization-tools",
+        "web-cheapest-discriminators"
+      ],
+      "requiresAll": [
+        "evidence.fingerprint-disagreement"
+      ],
+      "contextPacks": [
+        "fingerprint-disagreement"
+      ]
+    },
+    {
+      "id": "rea-shipped-artifact",
+      "laneIds": [
+        "dependency-boundary-audit",
+        "stock-deployment-reachability",
+        "v8-dependency-boundary-audit",
+        "chromium-integration"
+      ],
+      "requiresAll": [
+        "target.shipped-artifact"
+      ],
+      "requiresAny": [
+        "tool.rea",
+        "mcp.rea"
+      ],
+      "contextPacks": [
+        "rea"
+      ]
+    },
+    {
+      "id": "burp-authorized-web",
+      "profiles": [
+        "web-app"
+      ],
+      "requiresAll": [
+        "authorization.confirmed",
+        "mcp.burp"
+      ],
+      "contextPacks": [
+        "burp-mcp"
+      ]
+    },
+    {
+      "id": "blocker-context",
+      "laneIds": [
+        "blocker-breakout",
+        "open-ended-variant-expansion",
+        "web-cheapest-discriminators"
+      ],
+      "contextPacks": [
+        "blocker-resolution"
+      ]
+    }
+  ]
+}

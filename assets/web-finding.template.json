@@ -94,7 +94,7 @@
     "prerequisites": "replace with measured prerequisites",
     "boundaryCrossed": "cross-tenant confidentiality",
     "consequence": "synthetic private record disclosure",
-    "programRating": "program-defined"
+    "programRating": "High"
   },
   "independentReplay": {
     "freshSecretBindings": true,

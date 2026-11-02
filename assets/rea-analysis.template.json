@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "operation": "javascript-application",
+  "target": "worktrees/example-task/path/to/shipped-artifact",
+  "provider": null,
+  "buildManifest": null,
+  "timeoutSeconds": 900,
+  "purpose": "Compare the shipped artifact with source-level security assumptions",
+  "expectedOutputs": [
+    "module and import relationships",
+    "explicit coverage and limitations",
+    "residual unknowns requiring follow-up"
+  ]
+}

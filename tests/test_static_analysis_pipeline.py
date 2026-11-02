@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -292,6 +293,87 @@ class StaticAnalysisPipelineTests(unittest.TestCase):
                 parse_z3_spec(spec, allow_unbound=False)
             parsed = parse_z3_spec(spec, allow_unbound=True)
             self.assertNotIn("implementationBinding", parsed)
+
+    def test_pipeline_retains_rea_evidence_as_hypothesis_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaign = root / "campaign"
+            source = campaign / "worktrees" / "source"
+            source.mkdir(parents=True)
+            (campaign / "campaign.json").write_text(
+                json.dumps({"schemaVersion": 1, "commit": "c" * 40}) + "\n",
+                encoding="utf-8",
+            )
+            (source / "app.js").write_text("export const value = 1;\n", encoding="utf-8")
+            spec = campaign / "rea-spec.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "operation": "javascript-application",
+                        "target": "worktrees/source",
+                        "provider": None,
+                        "timeoutSeconds": 30,
+                        "purpose": "Compare generated modules with source assumptions",
+                        "expectedOutputs": ["module graph", "coverage"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            tool_dir = root / "bin"
+            tool_dir.mkdir()
+            tool = tool_dir / "rea"
+            evidence = {
+                "evidence_id": "ev_pipeline",
+                "operation": "analyze_javascript_application",
+                "provider": "javascript-static",
+                "analysis_profile": {"version": 1},
+                "limitations": [],
+                "residual_unknowns": [],
+                "normalized_result": {
+                    "coverage": {"status": "complete"},
+                    "modules": [{"id": "app"}],
+                    "imports": [],
+                },
+            }
+            tool.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "if '--version' in sys.argv:\n"
+                "    print('rea-agents 6.8.0')\n"
+                "else:\n"
+                f"    print(json.dumps({evidence!r}))\n",
+                encoding="utf-8",
+            )
+            tool.chmod(0o700)
+            environment = dict(os.environ)
+            environment["PATH"] = str(tool_dir) + os.pathsep + "/usr/bin:/bin"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(PIPELINE),
+                    "run",
+                    str(campaign),
+                    "--source",
+                    str(source),
+                    "--rea-spec",
+                    str(spec),
+                    "--timeout",
+                    "30",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=40,
+                env=environment,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            run_path = Path(completed.stdout.strip().splitlines()[-1])
+            run = json.loads(run_path.read_text(encoding="utf-8"))
+            rea_leads = [lead for lead in run["leads"] if lead["tool"] == "rea"]
+            self.assertEqual(len(rea_leads), 1)
+            self.assertEqual(rea_leads[0]["claimBoundary"], "hypothesis-only")
+            self.assertTrue(rea_leads[0]["untrustedTargetContent"])
 
 if __name__ == "__main__":
     unittest.main()

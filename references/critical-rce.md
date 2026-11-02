@@ -1,5 +1,11 @@
 # First-principles Critical/RCE campaigns
 
+This promotion contract applies to source, native, browser-engine, and sandbox
+profiles. The separately authorized `web-app` profile may also promote a
+complete, independently reproduced, program-eligible High-severity finding
+under the stricter web finding gate described in
+[web application campaigns](web-app.md).
+
 ## Mission
 
 Krineon exists to assemble and prove a complete Critical/RCE chain from the

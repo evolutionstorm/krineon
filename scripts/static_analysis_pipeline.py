@@ -20,6 +20,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 HARNESS = PROJECT / "scripts" / "research_harness.py"
 Z3_SOLVER = PROJECT / "scripts" / "z3_boundary_solver.py"
 DIFFERENTIAL = PROJECT / "scripts" / "differential_witness.py"
+REA_ADAPTER = PROJECT / "scripts" / "rea_adapter.py"
 ALLOWED_FAMILIES = {
     "ingress-authority",
     "execution-sink-backtrace",
@@ -396,6 +397,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
     selected.update(args.tool or ())
     if args.differential_spec:
         selected.add("differential")
+    if args.rea_spec:
+        selected.add("rea")
     run_id = (
         dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
         + uuid.uuid4().hex[:8]
@@ -627,6 +630,50 @@ def run_pipeline(args: argparse.Namespace) -> int:
                         )
                     )
 
+    if "rea" in selected:
+        if not args.rea_spec:
+            tools.append(
+                {
+                    "name": "rea",
+                    "status": "skipped",
+                    "reason": "no shipped-artifact --rea-spec supplied",
+                }
+            )
+        for index, spec_path in enumerate(args.rea_spec or (), 1):
+            source_spec = read_json(spec_path.expanduser().resolve())
+            retained_spec = run_dir / f"rea-{index}-spec.json"
+            write_json(retained_spec, source_spec)
+            output = run_dir / f"rea-{index}-run.json"
+            timeout = int(source_spec.get("timeoutSeconds") or 900)
+            result = command_record(
+                f"rea-{index}",
+                [
+                    sys.executable,
+                    str(REA_ADAPTER),
+                    str(campaign_root),
+                    "--spec",
+                    str(retained_spec),
+                    "--output",
+                    str(output),
+                ],
+                run_dir,
+                max(args.timeout, min(timeout, 3600) + 60),
+            )
+            tools.append(result)
+            if result["status"] == "completed" and output.is_file():
+                rea_result = read_json(output)
+                rea_evidence = [
+                    relative_evidence(campaign_root, retained_spec),
+                    relative_evidence(campaign_root, output),
+                ]
+                for field in ("evidencePath", "stderrPath"):
+                    value = rea_result.get(field)
+                    if isinstance(value, str) and value:
+                        rea_evidence.append(value)
+                for lead in rea_result.get("hypotheses", []):
+                    if isinstance(lead, dict):
+                        raw_leads.append((lead, rea_evidence))
+
     normalized, untruncated_lead_count = select_normalized_leads(
         raw_leads,
         run_id=run_id,
@@ -776,7 +823,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--tool",
         action="append",
-        choices=("trailmark", "joern", "differential", "z3", "cppcheck"),
+        choices=("trailmark", "joern", "differential", "z3", "cppcheck", "rea"),
         help="add an analysis lane; installed core analyzers cannot be disabled",
     )
     run.add_argument(
@@ -786,6 +833,12 @@ def parser() -> argparse.ArgumentParser:
         help="two-consumer executable witness specification; repeatable",
     )
     run.add_argument("--z3-spec", action="append", type=Path)
+    run.add_argument(
+        "--rea-spec",
+        action="append",
+        type=Path,
+        help="approved shipped-artifact REA analysis specification; repeatable",
+    )
     run.add_argument(
         "--allow-unbound-z3",
         action="store_true",

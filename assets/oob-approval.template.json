@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "campaignSha256": "replace-with-campaign-json-sha256",
+  "allowExternalCallbacks": false,
+  "allowedBindAddresses": [],
+  "approvedBy": "replace-with-owner-or-program-operator",
+  "validUntil": "1970-01-01T00:00:00Z"
+}

@@ -152,6 +152,12 @@ non-byte-exact relative to the original. For origin-form request targets, the
 `Host` header must select one exact authorized origin. Burp XML DTDs and
 entities fail closed. OpenAPI intake remains deferred.
 
+When the active Codex, OpenCode, or OMP session already exposes Burp Suite MCP,
+follow [Burp Suite MCP](burp-mcp.md). The agent client owns the connection;
+Krineon registers the advertised schemas and binds each admitted call to this
+same contract and process-shared budget. MCP history and responses remain
+untrusted intake and do not bypass workflow approval or independent replay.
+
 ## Workflow contract
 
 Workers may import annotated Markdown requests, redacted HAR files, redacted
@@ -747,6 +753,14 @@ positive, negative, and counterfactual semantic controls; an independently
 observed confidentiality, integrity, entitlement, cross-tenant, browser,
 server, or program-defined effect; conditions and unknowns; fresh replay;
 verified cleanup; and artifact hashes.
+
+The web filing threshold is program-eligible **High or Critical** severity.
+This exception applies only to the `web-app` profile; it does not lower the
+Critical/RCE threshold for source, native, browser-engine, or sandbox
+campaigns. Retain verified Medium and lower-severity observations as primitives
+for possible chaining, but do not package them as reports by default. The gate
+rejects any web finding whose program rating is not explicitly `High` or
+`Critical`.
 
 Store raw artifacts in encrypted restricted private evidence. The reviewer tier
 contains only redacted synthetic data and is scanned for credential-like

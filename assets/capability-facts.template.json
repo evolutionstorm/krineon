@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-capability-facts",
+  "facts": [],
+  "notes": [
+    "Add only measured target, artifact, or MCP capabilities.",
+    "Each fact requires state present, absent, or unknown and provenance with trust and basis.",
+    "Capability facts never expand authorization."
+  ]
+}

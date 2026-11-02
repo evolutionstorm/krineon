@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-fingerprint-observation-set",
+  "target": {
+    "id": "owned-target",
+    "deploymentEpoch": "deployment-epoch-1"
+  },
+  "observations": [
+    {
+      "id": "browser-home-anonymous",
+      "observer": {
+        "id": "owned-chromium",
+        "family": "browser-runtime",
+        "kind": "browser"
+      },
+      "scope": {
+        "origin": "app",
+        "hostname": "app.example.test",
+        "port": "443",
+        "route": "/",
+        "method": "GET",
+        "actor": "anonymous",
+        "session": "fresh-profile-a",
+        "backend": "unknown",
+        "deploymentEpoch": "deployment-epoch-1"
+      },
+      "observedAt": "2026-01-01T00:00:00Z",
+      "evidence": [
+        {
+          "path": "evidence/web/browser-home.json",
+          "sha256": "replace-with-lowercase-sha256",
+          "selector": "$.response.headers"
+        }
+      ],
+      "signals": [
+        {
+          "id": "framework-version",
+          "component": "application-framework",
+          "property": "reported-version",
+          "value": "replace-with-observed-value"
+        },
+        {
+          "id": "asset-root",
+          "component": "client-artifacts",
+          "property": "root-content-hash",
+          "value": "replace-with-content-hash"
+        }
+      ]
+    }
+  ]
+}

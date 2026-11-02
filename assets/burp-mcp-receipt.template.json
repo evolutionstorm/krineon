@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "capabilityId": "burp-call-replace-with-prepared-capability",
+  "serverName": "burp",
+  "toolName": "send_http1_request",
+  "toolSchemaSha256": "replace-with-the-prepared-tool-schema-hash",
+  "argumentsSha256": "replace-with-the-prepared-arguments-hash",
+  "outcome": "success",
+  "targetRequestDispatched": true,
+  "resultFile": "private/burp-mcp/send-http1.result.txt",
+  "truncated": false
+}

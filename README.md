@@ -1,9 +1,10 @@
 # Krineon
 
-Krineon coordinates authorized source and web application research that
-searches for complete Critical vulnerabilities, remote code execution (RCE),
-sandbox escapes, zero-days, and independently reproduced application security
-invariant violations.
+Krineon coordinates authorized source and web application research. Source,
+native, browser, and sandbox campaigns search for complete Critical
+vulnerabilities, remote code execution (RCE), sandbox escapes, and zero-days.
+Web-application campaigns additionally accept independently reproduced,
+program-eligible High-severity security invariant violations.
 
 Krineon analyzes one pinned source tree from first principles. It does not use
 changelogs, advisories, Git history, or patched-version comparisons to discover
@@ -16,6 +17,20 @@ automatically unlocks the next compatible chain experiment. Repeated settled
 knowledge is compacted without deleting its members. Approved browser journeys
 also produce recursive client-artifact, permission-hint, WebSocket, and SSE
 graphs without copying message secrets or expanding target scope.
+
+Its event-driven control layer lets specialist workers subscribe to typed
+observations and propose experiments without receiving execution authority.
+Trust-tiered ancestry prevents target content from becoming control policy;
+cost-aware independent verification, heterogeneous model routing,
+volatility-aware scheduling, a persistent cleanup stack, an owned OOB oracle,
+and provider/tool health telemetry keep the resulting campaign bounded and
+auditable.
+
+For shipped binaries, generated bundles, JavaScript or Electron packages, and
+other artifacts that source alone cannot explain, Krineon can consume evidence
+from an existing local REA installation. It binds the evidence to unchanged
+artifact and tool hashes, preserves REA coverage and unknowns, and turns the
+result into source-versus-artifact hypotheses rather than findings.
 
 Krineon also provides four explicit runtime planes. The research plane proposes
 experiments; the execution plane runs frozen recipes in offline task sandboxes
@@ -45,6 +60,12 @@ Krineon detects tools and does not install them automatically. When Trailmark,
 Joern, Z3, or cppcheck is installed and compatible with the target, the static
 pipeline must run it and retain the result. Tree-sitter, AFL++, libFuzzer, and
 Fuzzilli add coverage when their target adapters apply.
+REA is optional for shipped-artifact reverse engineering and is never installed
+automatically.
+When Codex, OpenCode, or OMP already exposes Burp Suite MCP, Krineon can use its
+filtered history, exact request, and Repeater tools through the same scope,
+budget, private-evidence, and independent-replay controls. Krineon does not
+install or configure Burp or its MCP connection.
 
 ## Supported hosts
 
@@ -198,6 +219,9 @@ Prepare the following information:
 - Two owned test accounts when testing authorization or tenant isolation.
 - Disposable test records owned by those accounts.
 - Optional redacted HTTP requests, HAR files, or Burp exports.
+- Optionally, an already-enabled Burp Suite MCP connection exposed by Codex,
+  OpenCode, or OMP. Keep Burp target approval enabled and use a dedicated
+  project containing only authorized traffic.
 
 Do not paste passwords, cookies, API keys, or bearer tokens into the prompt.
 Krineon stores credentials through private references and keeps them out of
@@ -311,16 +335,22 @@ Krineon runs the following campaign:
 10. Rebuilds a versioned campaign-wide capability graph and assigns its
    highest-value missing-link experiment by boundary relevance, uncertainty,
    shared usefulness, and measured cost.
-11. Requires separate adversarial and production-viability reviews. Reviewers
+11. Activates lane context from measured source, tool, artifact, browser, MCP,
+    and authorization capabilities. Missing capabilities keep a lane visible
+    for planning without granting execution authority.
+12. Compares evidence-bound fingerprints across independent observers and
+    one-dimensional scope changes. Disagreements create controlled experiments,
+    not version or vulnerability verdicts.
+13. Requires separate adversarial and production-viability reviews. Reviewers
     receive role-isolated context without the originator's verdict, and source
     citations remain bound to exact revision, file, line, and snippet hashes.
-12. Tests promising chains against supported release or production-equivalent
+14. Tests promising chains against supported release or production-equivalent
     builds in an owned environment.
-13. Feeds coverage plateaus, invariant observations, and minimized stack
+15. Feeds coverage plateaus, invariant observations, and minimized stack
    clusters back into the next harness, grammar, or replay decision.
-14. Requires coordinator-signed experiments, recomputed raw observations, an
+16. Requires coordinator-signed experiments, recomputed raw observations, an
    enforcing negative control, and fresh-process adversarial replay.
-15. Produces a source-audit report package only when complete Critical/RCE
+17. Produces a source-audit report package only when complete Critical/RCE
     impact is demonstrated. The separate web profile uses program-defined High
     or Critical impact and application-specific invariant gates.
 
@@ -364,6 +394,11 @@ Krineon includes focused support for these targets and techniques:
 - Real-Chromium session discovery with browser-generated request context
 - Offline identity, resource, lifecycle, and trust-representation mapping
 - Business-rule coverage by actor, resource, action, and state
+- Typed observation subscriptions with coordinator-reviewed experiment proposals
+- Trust-tiered observation ancestry and poisoning-resistant policy separation
+- Cost-aware independent verifier and heterogeneous per-role model routing
+- Volatility-aware scheduling, persistent verified cleanup, owned OOB receipts,
+  and provider/tool health telemetry
 
 For web campaigns, API extraction is a required discovery stage. First use a
 legitimate real-Chromium journey to create
@@ -462,6 +497,11 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Semantic hypothesis experiments](references/semantic-experiments.md)
 - [Semantic intermediate representation](references/semantic-ir.md)
 - [Campaign architecture, evidence, review, and session intelligence](references/campaign-intelligence.md)
+- [Event-driven swarm control, trust, routing, cleanup, and OOB verification](references/swarm-control.md)
+- [REA shipped-artifact reverse-engineering evidence](references/rea.md)
+- [Burp Suite MCP integration](references/burp-mcp.md)
+- [Runtime fingerprint disagreements](references/fingerprint-disagreement.md)
+- [Capability-conditioned lane activation](references/capability-lane-activation.md)
 - [Runtime feedback loop](references/runtime-feedback.md)
 - [Execution-boundary and typed chain reasoning](references/chain-reasoning.md)
 - [Held-out multi-stage evaluation](references/multistage-evaluation.md)

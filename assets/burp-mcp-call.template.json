@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "burp-replace-with-registered-session",
+  "toolName": "send_http1_request",
+  "capability": "http-send",
+  "originId": "app",
+  "identityId": "user-a",
+  "effectClass": "read-only",
+  "operationClass": "ordinary-http",
+  "intent": "Test one named security hypothesis with an enforcing control",
+  "argumentsFile": "private/burp-mcp/send-http1.arguments.json",
+  "maxResultBytes": 1048576,
+  "timeoutSeconds": 60
+}

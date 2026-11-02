@@ -18,6 +18,7 @@ from platform_support import host_platform
 
 COMMANDS: dict[str, list[list[str]]] = {
     "trailmark": [["trailmark", "--version"]],
+    "rea": [["rea", "--version"]],
     "tree-sitter": [["tree-sitter", "--version"]],
     "joern": [["joern", "--version"]],
     "joern-parse": [["joern-parse", "--help"]],
@@ -137,6 +138,7 @@ def build_inventory() -> dict[str, Any]:
             "differential": "scripts/differential_witness.py runs two pinned consumers on one hashed input and requires an equal control before retaining a disagreement.",
             "z3": "The static pipeline exercises an available Z3 installation on every run. Source-bound specifications may generate inputs, but a model is not runtime proof.",
             "trailmark": "The static pipeline infers the dominant supported language and invokes single-revision structure and entrypoint analysis; diff modes are prohibited.",
+            "rea": "Use scripts/rea_adapter.py only for a shipped artifact, generated bundle, package, or runtime fact that source analysis cannot establish. Retain REA Evidence, limitations, coverage, and residual unknowns; never treat decompiler output as a finding.",
             "cppcheck": "The static pipeline invokes cppcheck for C/C++ targets when it is available and records an explicit not-applicable result for other source languages.",
             "chromeV8": "For chrome-v8 campaigns, record GN, Ninja, Clang, symbolizer, Swift/Fuzzilli, and minidump availability without installing them.",
             "darwinArm64": "On Apple Silicon, retain arm64 Mach-O architecture evidence, Xcode tool versions, and Darwin Seatbelt checks for browser promotion.",

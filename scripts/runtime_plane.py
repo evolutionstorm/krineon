@@ -20,8 +20,14 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    from .swarm_control import ControlError, ControlStore, stable_id
+except ImportError:
+    from swarm_control import ControlError, ControlStore, stable_id
 
 
 IMAGE_DIGEST = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
@@ -323,6 +329,24 @@ class RuntimeStore:
             worker_id=worker_id,
             payload={"sessionId": session_id, "agentIdentity": agent_identity, "parent": parent_session_id},
         )
+        control = ControlStore(self.root)
+        try:
+            control.ensure_component(
+                kind="provider",
+                name=provider,
+                capabilities=("model-session",),
+                actor="runtime-plane",
+            )
+            control.ensure_component(
+                kind="model",
+                name=stable_id("runtime-model", provider, model),
+                version=model,
+                capabilities=("model-session",),
+                actor="runtime-plane",
+            )
+            control.connection.commit()
+        finally:
+            control.close()
         return dict(self.connection.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone())
 
     def session(self, session_id: str, *, active: bool = True) -> sqlite3.Row:
@@ -638,6 +662,19 @@ class ExecutionRuntime:
                 raise RuntimePlaneError("coordinator replay requires a different agent identity")
         run_id = "run-" + secrets.token_hex(16)
         tool_call_id = "tool-" + secrets.token_hex(12)
+        control = ControlStore(self.root)
+        try:
+            tool_component_id = control.ensure_component(
+                kind="tool",
+                name=recipe["recipeId"],
+                version=sha256_bytes(recipe_contract_bytes(recipe))[:16],
+                capabilities=("bounded-execution", recipe["sandbox"]["mode"]),
+                actor="runtime-plane",
+            )
+            control.connection.commit()
+        finally:
+            control.close()
+        telemetry_started = time.monotonic()
         run_dir = self.store.runtime_root / "runs" / run_id
         output_dir = run_dir / "output"
         output_dir.mkdir(parents=True, exist_ok=False)
@@ -792,6 +829,36 @@ class ExecutionRuntime:
             },
             artifacts=[stdout_artifact.sha256, stderr_artifact.sha256, result_artifact.sha256],
         )
+        try:
+            control = ControlStore(self.root)
+            try:
+                control.component_observe(
+                    {
+                        "componentId": tool_component_id,
+                        "taskId": recipe["taskId"],
+                        "operation": "runtime-execution",
+                        "outcome": "passed" if state == "passed" else "failed",
+                        "latencyMs": (time.monotonic() - telemetry_started) * 1000,
+                        "artifactRefs": [
+                            stdout_artifact.sha256,
+                            stderr_artifact.sha256,
+                            result_artifact.sha256,
+                        ],
+                        "detail": state,
+                    },
+                    actor="runtime-plane",
+                )
+                control.connection.commit()
+            finally:
+                control.close()
+        except (ControlError, OSError, sqlite3.Error) as exc:
+            self.store.event(
+                "component_observability_failed",
+                run_id=run_id,
+                task_id=recipe["taskId"],
+                worker_id=recipe["workerId"],
+                payload={"componentId": tool_component_id, "errorType": type(exc).__name__},
+            )
         self.bridge_event("runtime-run-finished", recipe["taskId"], recipe["workerId"], result)
         return result
 

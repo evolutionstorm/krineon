@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "replace-verifier-id",
+  "name": "Replace with an independent verifier",
+  "observerClass": "alternate-runtime",
+  "independenceDomains": ["different-process", "different-parser"],
+  "capabilities": ["runtime-differential"],
+  "adapter": "replace-with-approved-adapter",
+  "fixedCost": 0.0,
+  "expectedSeconds": 60.0,
+  "effectRisk": 0.0,
+  "informationGain": 0.8,
+  "enabled": true
+}

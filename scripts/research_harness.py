@@ -61,6 +61,8 @@ try:
         safe_campaign_path,
         validate_attestation,
     )
+    from .lane_activation import ActivationError, build_activation
+    from .swarm_control import ControlError, ControlStore
     from .web_oracle import evaluate as evaluate_web_oracle
     from .web_contract import WebCampaignContract
     from .web_workflow import verify as verify_web_workflow
@@ -95,6 +97,8 @@ except ImportError:  # Direct script execution.
         upsert_continuation as upsert_depth_continuation,
     )
     from reality_evidence import evidence_reference, safe_campaign_path, validate_attestation
+    from lane_activation import ActivationError, build_activation
+    from swarm_control import ControlError, ControlStore
     from web_oracle import evaluate as evaluate_web_oracle
     from web_contract import WebCampaignContract
     from web_workflow import verify as verify_web_workflow
@@ -188,6 +192,7 @@ WEB_CANDIDATE_GATES = (
 )
 
 WEB_REPORTABLE_GATES = WEB_CANDIDATE_GATES + (
+    "program_high_or_critical",
     "reproduction_complete",
     "independent_replay",
     "prior_art_checked",
@@ -2610,6 +2615,14 @@ def task_markdown(lane: dict[str, Any], campaign: dict[str, Any]) -> str:
             f"mechanism={family['mechanism']}; invariant={family['invariant']}"
         )
     approaches = "\n".join(approach_lines)
+    activation = lane.get("activation") if isinstance(lane.get("activation"), dict) else {}
+    activation_state = str(activation.get("state") or "unmeasured")
+    selected_capabilities = activation.get("selectedCapabilities") or []
+    missing_capabilities = activation.get("missingCapabilities") or []
+    context_files = activation.get("contextFiles") or []
+    capability_lines = "\n".join(f"- `{value}`" for value in selected_capabilities) or "- None measured for this lane."
+    missing_lines = "\n".join(f"- `{value}`" for value in missing_capabilities) or "- None."
+    context_lines = "\n".join(f"- `{value}`" for value in context_files) or "- Use only the campaign and profile base contract."
     if campaign.get("profile") == "web-app":
         profile_references = (
             "Read `KRINEON_REFERENCES/web-app.md`, `KRINEON_WEB_CAMPAIGN.json`, "
@@ -2678,6 +2691,29 @@ a supported production-equivalent or release entrypoint before promotion."""
 An unmeasured lane is an experiment, not evidence that the methodology works.
 Measure it with `scripts/rediscovery_benchmark.py` against target-owned tests or
 invariants on a frozen local corpus before making efficacy claims.
+
+## Capability activation
+
+- State: `{activation_state}`
+- Runtime authority from activation: `{str(activation.get('runtimeAuthority') is True).lower()}`
+- Activation record: `KRINEON_LANE_ACTIVATION.json`
+
+Measured capabilities selected for this lane:
+
+{capability_lines}
+
+Missing or unresolved execution capabilities:
+
+{missing_lines}
+
+Load only these lane-specific context files in addition to the campaign packet:
+
+{context_lines}
+
+Capability availability never expands authorization. If this lane is
+`planning-only`, analyze retained evidence and design the cheapest acquisition
+or discriminator experiment, but do not exercise or claim the missing runtime,
+browser, fuzzer, MCP, artifact, or authorization.
 
 Read `KRINEON_CAMPAIGN.json` before taking any dynamic action. If
 `AUTHORIZATION.md` is present, treat it as an optional human-readable summary,
@@ -2877,9 +2913,18 @@ def cmd_init(args: argparse.Namespace) -> int:
                 if args.profile == "web-app"
                 else "critical-rce-chain"
             ),
+            "capabilityInputs": {
+                "facts": "capability-facts.json",
+                "toolInventory": "tools/tool-inventory.json",
+                "fingerprintAnalysis": "evidence/fingerprint-analysis.json",
+            },
         }
     )
     write_json(root / "campaign.json", data)
+    write_json(
+        root / "capability-facts.json",
+        template("capability-facts.template.json"),
+    )
     write_json(
         root / "third_party" / "manifest.json",
         {
@@ -2958,6 +3003,12 @@ Edit this file and `campaign.json` before any live or shared-system test.
     if args.authorization_record:
         (root / "AUTHORIZATION.md").write_text(authorization, encoding="utf-8")
     (root / "logs" / ".gitkeep").touch()
+    control = ControlStore(root)
+    try:
+        control.install_defaults()
+        control.connection.commit()
+    finally:
+        control.close()
     print(f"initialized campaign: {root}")
     print("next: review campaign.json, then run the plan command")
     return 0
@@ -2974,7 +3025,61 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if unknown:
         raise SystemExit(f"unknown lanes: {', '.join(sorted(unknown))}")
 
-    included = [lane for lane in lanes if not selected or lane["id"] in selected]
+    capability_inputs = (
+        campaign.get("capabilityInputs")
+        if isinstance(campaign.get("capabilityInputs"), dict)
+        else {}
+    )
+
+    def optional_capability_path(key: str, fallback: str) -> Path | None:
+        raw = capability_inputs.get(key, fallback)
+        try:
+            path = safe_campaign_path(root, raw)
+        except ValueError as error:
+            raise SystemExit(f"invalid capability input {key}: {error}") from error
+        return path if path.is_file() else None
+
+    try:
+        activation = build_activation(
+            campaign_path=root / "campaign.json",
+            profile_path=PROFILES / f"{profile_name}.json",
+            tool_inventory_path=optional_capability_path(
+                "toolInventory", "tools/tool-inventory.json"
+            ),
+            facts_path=optional_capability_path("facts", "capability-facts.json"),
+            web_campaign_path=(
+                root / "web-campaign.json"
+                if profile_name == "web-app" and (root / "web-campaign.json").is_file()
+                else None
+            ),
+            fingerprint_path=optional_capability_path(
+                "fingerprintAnalysis", "evidence/fingerprint-analysis.json"
+            ),
+        )
+    except ActivationError as error:
+        raise SystemExit(f"lane activation failed: {error}") from error
+    activation_path = root / "lane-activation.json"
+    write_json(activation_path, activation)
+    activation_by_lane = {
+        str(value["laneId"]): value for value in activation.get("lanes", [])
+    }
+    included = []
+    for raw_lane in lanes:
+        if selected and raw_lane["id"] not in selected:
+            continue
+        lane = dict(raw_lane)
+        lane["activation"] = activation_by_lane.get(
+            lane["id"],
+            {
+                "state": "planning-only",
+                "runtimeAuthority": False,
+                "selectedCapabilities": [],
+                "missingCapabilities": ["activation-record-missing"],
+                "contextFiles": [],
+                "priorityAdjustment": -25,
+            },
+        )
+        included.append(lane)
     measurement = rediscovery_measurement(root)
     task_campaign = dict(campaign)
     task_campaign["_rediscoveryMeasurement"] = measurement
@@ -2990,7 +3095,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 "lane": lane["id"],
                 "title": lane["title"],
                 "task": str(path.relative_to(root)),
-                "priority": lane["priority"],
+                "priority": lane["priority"]
+                + int(lane["activation"].get("priorityAdjustment", 0)),
+                "activation": lane["activation"],
                 "approachFamilies": lane["approachFamilies"],
                 "dependsOn": (
                     [value for value in lane.get("dependsOn", []) if value in included_ids]
@@ -3032,6 +3139,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
             },
             "leadPolicy": DEFAULT_LEAD_POLICY,
             "rediscoveryMeasurement": measurement,
+            "capabilityActivation": {
+                "path": activation_path.relative_to(root).as_posix(),
+                "sha256": sha256(activation_path),
+                "summary": activation.get("summary", {}),
+                "policy": activation.get("policy", {}),
+            },
             "generatedAt": utc_now(),
             "maxConcurrency": args.max_concurrency,
             "defaultLeaseSeconds": args.lease_seconds,
@@ -6883,10 +6996,14 @@ def cmd_submit(args: argparse.Namespace) -> int:
             else []
         )
         depth_update: dict[str, Any] | None = None
+        swarm_update: dict[str, Any] | None = None
         depth_scheduled_tasks: list[str] = []
         depth_digests: list[str] = []
         if next_state == "completed":
             try:
+                swarm_control = ControlStore(root, connection)
+                swarm_control.install_defaults()
+                expired_swarm_observations = swarm_control.sweep_volatility()
                 depth_update = ingest_depth_submission(
                     root,
                     connection,
@@ -6910,8 +7027,15 @@ def cmd_submit(args: argparse.Namespace) -> int:
                     worker_id=args.worker_id,
                     depth_update=depth_update,
                 )
+                swarm_update = {
+                    "published": [
+                        swarm_control.publish_observation(str(observation_id))
+                        for observation_id in depth_update.get("observations", [])
+                    ],
+                    "expired": expired_swarm_observations,
+                }
                 depth_digests = compact_depth_graph(connection, minimum=12)
-            except ValueError as error:
+            except (ValueError, ControlError) as error:
                 raise SystemExit(f"depth knowledge ingestion rejected the result: {error}") from error
         else:
             task_result = (
@@ -7009,6 +7133,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
                     else None
                 ),
                 "depthKnowledge": depth_update,
+                "swarmControl": swarm_update,
                 "depthScheduledTasks": depth_scheduled_tasks,
                 "depthDigests": depth_digests,
             },

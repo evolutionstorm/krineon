@@ -857,10 +857,21 @@ class HarnessTests(unittest.TestCase):
             campaign = self.create_campaign(Path(tmp))
             self.assertTrue((campaign / "third_party").is_dir())
             self.assertTrue((campaign / "third_party" / "manifest.json").is_file())
+            self.assertTrue((campaign / "capability-facts.json").is_file())
             self.run_cli("plan", str(campaign))
             launch = json.loads((campaign / "launch-plan.json").read_text())
             self.assertEqual(len(launch["tasks"]), 18)
+            activation_path = campaign / launch["capabilityActivation"]["path"]
+            self.assertTrue(activation_path.is_file())
+            self.assertEqual(
+                launch["capabilityActivation"]["sha256"],
+                hashlib.sha256(activation_path.read_bytes()).hexdigest(),
+            )
+            self.assertTrue(all("activation" in task for task in launch["tasks"]))
             self.assertTrue((campaign / "tasks" / "wave-1-public-ingress-map.md").is_file())
+            packet = (campaign / "tasks" / "wave-1-public-ingress-map.md").read_text()
+            self.assertIn("## Capability activation", packet)
+            self.assertIn("KRINEON_LANE_ACTIVATION.json", packet)
             self.assertFalse((campaign / "AUTHORIZATION.md").exists())
 
     @unittest.skipUnless(shutil.which("git"), "Git is required for dependency pinning")

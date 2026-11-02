@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "client": "codex",
+  "serverName": "burp",
+  "connected": true,
+  "dedicatedProject": true,
+  "burpTargetApprovalEnabled": true,
+  "burpVersion": "record the observed version",
+  "extensionVersion": "record the observed MCP extension version",
+  "tools": [
+    {
+      "name": "get_proxy_http_history_regex",
+      "observedFromClient": true,
+      "inputSchema": {
+        "replaceWithExactAdvertisedSchema": true
+      }
+    },
+    {
+      "name": "send_http1_request",
+      "observedFromClient": true,
+      "inputSchema": {
+        "replaceWithExactAdvertisedSchema": true
+      }
+    },
+    {
+      "name": "create_repeater_tab",
+      "observedFromClient": true,
+      "inputSchema": {
+        "replaceWithExactAdvertisedSchema": true
+      }
+    }
+  ]
+}

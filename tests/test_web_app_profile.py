@@ -16,6 +16,7 @@ from pathlib import Path
 
 from scripts.research_harness import (
     WEB_CANDIDATE_GATES,
+    WEB_REPORTABLE_GATES,
     verified_web_observation,
     web_gate_result,
 )
@@ -961,6 +962,33 @@ http:
                 campaign_root_path=campaign,
             )
             self.assertTrue(gate["passed"], gate)
+            finding["gates"] = {name: True for name in WEB_REPORTABLE_GATES}
+            finding["originator"] = "agent-web-originator"
+            finding["severityAssessment"] = {
+                "band": "High",
+                "justification": "verified cross-tenant protected-data disclosure",
+                "programMinimum": "High",
+                "programRule": "program accepts High and Critical web findings",
+            }
+            reportable = web_gate_result(
+                finding,
+                "reportable",
+                replay_verified=True,
+                campaign_root_path=campaign,
+            )
+            self.assertTrue(reportable["passed"], reportable)
+            finding["severityAssessment"]["band"] = "Medium"
+            medium = web_gate_result(
+                finding,
+                "reportable",
+                replay_verified=True,
+                campaign_root_path=campaign,
+            )
+            self.assertFalse(medium["passed"])
+            self.assertIn(
+                "severityAssessment.band:High-or-Critical", medium["missingFields"]
+            )
+            finding["severityAssessment"]["band"] = "High"
             finding["availabilityOnly"] = True
             rejected = web_gate_result(
                 finding,

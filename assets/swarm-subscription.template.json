@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "replace-subscription-id",
+  "ownerId": "coordinator",
+  "name": "Replace with a typed observation subscription",
+  "kinds": ["runtime-differential"],
+  "mechanisms": [],
+  "capabilities": [],
+  "minTrust": "tool-measurement",
+  "minConfidence": "runtime-observed",
+  "allowUntrustedAncestry": true,
+  "includeQuarantined": false,
+  "excludeOwner": true,
+  "enabled": true,
+  "proposal": {
+    "title": "Review {observationId}",
+    "lane": "adversarial-review",
+    "objective": "Challenge {mechanism} using a fresh observer and enforcing control",
+    "approachFamilies": ["validation-replay"],
+    "successCriteria": [
+      "fresh machine evidence either reproduces or refutes the mechanism"
+    ],
+    "priority": 1800,
+    "maxAttempts": 2
+  }
+}

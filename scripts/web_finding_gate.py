@@ -28,6 +28,7 @@ IMPACT_CLASSES = {
     "server-execution",
     "program-defined-critical-effect",
 }
+REPORTABLE_SEVERITIES = {"high": "High", "critical": "Critical"}
 SECRET_PATTERNS = (
     re.compile(rb"(?i)authorization\s*:\s*bearer\s+[A-Za-z0-9._~+/-]{12,}"),
     re.compile(rb"(?i)(?:cookie|set-cookie)\s*:\s*[^\r\n]{12,}"),
@@ -227,6 +228,11 @@ def validate_finding(
         raise WebContractError("severityAssessment must be an object")
     for field in ("startingPrivileges", "prerequisites", "boundaryCrossed", "consequence", "programRating"):
         text(severity.get(field), f"severityAssessment.{field}")
+    normalized_rating = str(severity["programRating"]).strip().casefold()
+    if normalized_rating not in REPORTABLE_SEVERITIES:
+        raise WebContractError(
+            "web findings must have an explicit program rating of High or Critical"
+        )
     replay = raw.get("independentReplay")
     if not isinstance(replay, dict):
         raise WebContractError("independentReplay must be an object")
@@ -289,6 +295,7 @@ def validate_finding(
         "passed": True,
         "impactClass": effect["impactClass"],
         "terminalClass": effect["terminalClass"],
+        "severityBand": REPORTABLE_SEVERITIES[normalized_rating],
         "observationEpoch": evidence["observationEpoch"]["id"],
         "blackboxRootCauseMayRemainUnknown": evidence["provenance"]["mode"] == "blackbox",
         "sourceLinkedPathBypassesEffectGate": False,

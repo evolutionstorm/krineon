@@ -179,7 +179,7 @@ def finding(private_sha: str, reviewer_sha: str) -> dict:
             "prerequisites": "owned account",
             "boundaryCrossed": "cross tenant",
             "consequence": "confidentiality",
-            "programRating": "program defined",
+            "programRating": "High",
         },
         "independentReplay": {
             "freshSecretBindings": True,
@@ -258,6 +258,25 @@ class WebFindingGateTests(unittest.TestCase):
             )
             self.assertTrue(verdict["passed"])
             self.assertTrue(verdict["blackboxRootCauseMayRemainUnknown"])
+            self.assertEqual(verdict["severityBand"], "High")
+
+            critical = finding(
+                hashlib.sha256(private.read_bytes()).hexdigest(),
+                hashlib.sha256(reviewer.read_bytes()).hexdigest(),
+            )
+            critical["severityAssessment"]["programRating"] = "Critical"
+            self.assertEqual(
+                validate_finding(critical, evidence(), package_root=root)["severityBand"],
+                "Critical",
+            )
+
+            medium = finding(
+                hashlib.sha256(private.read_bytes()).hexdigest(),
+                hashlib.sha256(reviewer.read_bytes()).hexdigest(),
+            )
+            medium["severityAssessment"]["programRating"] = "Medium"
+            with self.assertRaisesRegex(WebContractError, "High or Critical"):
+                validate_finding(medium, evidence(), package_root=root)
 
     def test_deployment_drift_expires_the_prior_experiment(self) -> None:
         verdict = evaluate_drift(
