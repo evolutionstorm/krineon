@@ -54,6 +54,28 @@ MANDATORY_DENIED_EFFECTS = {
 }
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+OWNED_FULL_TEST_READ_METHODS = {
+    "GET",
+    "HEAD",
+    "OPTIONS",
+    "PROPFIND",
+    "REPORT",
+    "SEARCH",
+}
+OWNED_FULL_TEST_WRITE_METHODS = {
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "PROPPATCH",
+    "MKCOL",
+    "COPY",
+    "MOVE",
+    "LOCK",
+    "UNLOCK",
+}
+OWNED_FULL_TEST_METHODS = OWNED_FULL_TEST_READ_METHODS | OWNED_FULL_TEST_WRITE_METHODS
+STATE_CHANGING_METHODS |= OWNED_FULL_TEST_WRITE_METHODS
 EFFECT_CLASSES = {
     "read-only",
     "disposable-write",
@@ -93,6 +115,22 @@ AUTHORIZATION_REVIEW_CHECKS = (
     "stopConditions",
     "thirdPartyDataExcluded",
 )
+
+FORBIDDEN_ACCOUNT_SECRET_FIELDS = {
+    "password",
+    "passwordvalue",
+    "token",
+    "tokenvalue",
+    "cookie",
+    "cookievalue",
+    "apikey",
+    "apikeyvalue",
+    "bearer",
+    "bearertoken",
+    "secret",
+    "secretvalue",
+    "authorization",
+}
 
 
 class WebContractError(RuntimeError):
@@ -397,6 +435,55 @@ class WebCampaignContract:
             )
         if authorization.get("unknownEffectPolicy") != "block-until-reviewed":
             raise WebContractError("unknown effects must be blocked until reviewed")
+        full_testing = authorization.get("ownedFullTesting")
+        if full_testing is not None:
+            if not isinstance(full_testing, dict):
+                raise WebContractError("authorization.ownedFullTesting must be an object")
+            if not isinstance(full_testing.get("enabled"), bool):
+                raise WebContractError(
+                    "authorization.ownedFullTesting.enabled must be Boolean"
+                )
+            if full_testing.get("enabled") is True:
+                if authorization.get("confirmed") is not True:
+                    raise WebContractError(
+                        "owned full testing requires confirmed authorization"
+                    )
+                if full_testing.get("ownedAccountsOnly") is not True:
+                    raise WebContractError(
+                        "owned full testing requires ownedAccountsOnly=true"
+                    )
+                if full_testing.get("autoApproveBoundedWorkflows") is not True:
+                    raise WebContractError(
+                        "owned full testing requires bounded workflow auto-approval"
+                    )
+                manifest_path = safe_campaign_path(
+                    self.path.parent,
+                    full_testing.get("accountManifest"),
+                    "authorization.ownedFullTesting.accountManifest",
+                )
+                expected_manifest_sha = str(
+                    full_testing.get("accountManifestSha256") or ""
+                )
+                if not re.fullmatch(r"[0-9a-f]{64}", expected_manifest_sha):
+                    raise WebContractError(
+                        "owned full testing requires an account manifest SHA-256"
+                    )
+                if not manifest_path.is_file() or sha256_bytes(
+                    manifest_path.read_bytes()
+                ) != expected_manifest_sha:
+                    raise WebContractError(
+                        "owned full testing account manifest is missing or changed"
+                    )
+                account_ids = full_testing.get("accountIds")
+                if not isinstance(account_ids, list) or not account_ids:
+                    raise WebContractError(
+                        "owned full testing requires verified account IDs"
+                    )
+                for account_id in account_ids:
+                    require_identifier(
+                        account_id,
+                        "authorization.ownedFullTesting.accountIds[]",
+                    )
         for field in (
             "allowCacheMutation",
             "allowDeserializationExperiments",
@@ -406,6 +493,7 @@ class WebCampaignContract:
             "allowUploads",
             "allowWebSockets",
             "allowBrowserNavigation",
+            "allowBrowserActions",
             "allowStateChangingOperations",
             "allowTerminalExecution",
             "allowNuclei",
@@ -660,6 +748,23 @@ class WebCampaignContract:
                 cookie_name=cookie_name,
                 secret_version=secret_version,
             )
+
+        if isinstance(full_testing, dict) and full_testing.get("enabled") is True:
+            expected_accounts = set(map(str, full_testing["accountIds"]))
+            if expected_accounts != set(self.identities):
+                raise WebContractError(
+                    "owned full testing identities differ from the verified account manifest"
+                )
+            unverified = [
+                identity.id
+                for identity in self.identities.values()
+                if identity.verification_status != "verified"
+            ]
+            if unverified:
+                raise WebContractError(
+                    "owned full testing requires verified identities: "
+                    + ", ".join(sorted(unverified))
+                )
 
         effects = self.raw.get("effectClasses")
         if not isinstance(effects, dict):
@@ -955,6 +1060,20 @@ class WebCampaignContract:
             if record.get("contractSha256After") != self.digest:
                 raise WebContractError(
                     "authorization approval is not bound to the current contract"
+                )
+            rules_path = safe_campaign_path(
+                campaign,
+                record.get("programRules"),
+                "authorization approval programRules",
+            )
+            rules_sha = str(record.get("programRulesSha256") or "")
+            if (
+                not rules_path.is_file()
+                or not re.fullmatch(r"[0-9a-f]{64}", rules_sha)
+                or sha256_bytes(rules_path.read_bytes()) != rules_sha
+            ):
+                raise WebContractError(
+                    "authorization approval is not bound to the current program rules"
                 )
             if not verify_file(public, record_path, signature_path):
                 raise WebContractError("authorization approval signature is invalid")
@@ -1320,6 +1439,356 @@ def _program_rules_path(contract: WebCampaignContract) -> Path:
     return path
 
 
+def _reject_literal_account_secrets(value: Any, field: str = "ownedAccounts") -> None:
+    """Reject account manifests that contain credential values instead of references."""
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in FORBIDDEN_ACCOUNT_SECRET_FIELDS and item not in (
+                None,
+                "",
+                [],
+                {},
+            ):
+                raise WebContractError(
+                    f"{field}.{key} contains a literal credential; use credentialRef=secret://..."
+                )
+            _reject_literal_account_secrets(item, f"{field}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_literal_account_secrets(item, f"{field}[{index}]")
+
+
+def _load_owned_accounts_manifest(
+    campaign: Path,
+    manifest_path: Path | str,
+    contract: WebCampaignContract,
+) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+    manifest = Path(manifest_path).expanduser().resolve()
+    try:
+        manifest.relative_to(campaign)
+    except ValueError as exc:
+        raise WebContractError(
+            "owned account manifest must be retained inside the campaign"
+        ) from exc
+    value = load_object(manifest, "owned account manifest")
+    if value.get("schemaVersion") != 1 or value.get("kind") != (
+        "krineon-owned-web-accounts"
+    ):
+        raise WebContractError(
+            "owned account manifest must use schemaVersion 1 and kind "
+            "krineon-owned-web-accounts"
+        )
+    if value.get("ownedAccountsOnly") is not True:
+        raise WebContractError("owned account manifest requires ownedAccountsOnly=true")
+    _reject_literal_account_secrets(value)
+    for field in (
+        "confirmedBy",
+        "environmentOwner",
+        "ownedFixtureNamespace",
+        "programRulesDate",
+        "validUntil",
+    ):
+        if not str(value.get(field) or "").strip():
+            raise WebContractError(f"owned account manifest requires {field}")
+    require_identifier(value.get("ownedFixtureNamespace"), "ownedFixtureNamespace")
+    try:
+        dt.date.fromisoformat(str(value["programRulesDate"]))
+    except ValueError as exc:
+        raise WebContractError("programRulesDate must use YYYY-MM-DD") from exc
+    if parse_time(value["validUntil"], "validUntil") <= utc_now():
+        raise WebContractError("owned account manifest validUntil must be in the future")
+    accounts = value.get("accounts")
+    if not isinstance(accounts, list) or not accounts:
+        raise WebContractError("owned account manifest requires at least one account")
+    account_ids: set[str] = set()
+    normalized_accounts: list[dict[str, Any]] = []
+    for index, raw in enumerate(accounts):
+        if not isinstance(raw, dict):
+            raise WebContractError(f"accounts[{index}] must be an object")
+        account = json.loads(json.dumps(raw))
+        account_id = require_identifier(account.get("id"), f"accounts[{index}].id")
+        if account_id in account_ids:
+            raise WebContractError(f"duplicate owned account id: {account_id}")
+        account_ids.add(account_id)
+        verification = account.get("verification")
+        if not isinstance(verification, dict) or verification.get("status") != "verified":
+            raise WebContractError(
+                f"owned account {account_id} requires verified ownership evidence"
+            )
+        if verification.get("method") not in {
+            "owner-assertion",
+            "reviewed-endpoint",
+            "interactive-browser-checkpoint",
+        } or not str(verification.get("evidence") or "").strip():
+            raise WebContractError(
+                f"owned account {account_id} has incomplete ownership verification"
+            )
+        allowed_origins = account.get("allowedOriginIds")
+        if not isinstance(allowed_origins, list) or not allowed_origins:
+            raise WebContractError(
+                f"owned account {account_id} requires explicit allowedOriginIds"
+            )
+        unknown_origins = set(map(str, allowed_origins)).difference(contract.origins)
+        if unknown_origins:
+            raise WebContractError(
+                f"owned account {account_id} references unknown origins: "
+                + ", ".join(sorted(unknown_origins))
+            )
+        credential_ref = str(account.get("credentialRef") or "")
+        if not credential_ref:
+            raise WebContractError(
+                f"owned account {account_id} requires a private credentialRef"
+            )
+        if not SECRET_REF.fullmatch(credential_ref):
+            raise WebContractError(
+                f"owned account {account_id} must use a secret:// credential reference"
+            )
+        if credential_ref and not str(account.get("secretVersion") or "").strip():
+            raise WebContractError(
+                f"owned account {account_id} requires secretVersion"
+            )
+        if not str(account.get("expectedTenant") or "").strip():
+            raise WebContractError(
+                f"owned account {account_id} requires an expectedTenant"
+            )
+        normalized_accounts.append(account)
+    return manifest, value, normalized_accounts
+
+
+def activate_owned_full_testing(
+    campaign_path: Path | str,
+    contract_path: Path | str,
+    manifest_path: Path | str,
+) -> dict[str, Any]:
+    """Activate the complete program-permitted surface for verified owned accounts.
+
+    This is a standing coordinator authorization. It removes per-lane approval
+    friction, but it does not relax permanent safety denials, exact-origin
+    containment, shared budgets, cleanup, or evidence requirements.
+    """
+
+    campaign = Path(campaign_path).expanduser().resolve()
+    contract_file = Path(contract_path).expanduser().resolve()
+    try:
+        contract_file.relative_to(campaign)
+    except ValueError as exc:
+        raise WebContractError("web contract must be inside the campaign") from exc
+    campaign_record_path = campaign / "campaign.json"
+    if not campaign_record_path.is_file():
+        raise WebContractError("campaign.json is required for owned full testing")
+    contract = WebCampaignContract.load(contract_file)
+    if contract.authorization_confirmed:
+        raise WebContractError(
+            "owned full testing must be activated before another authorization is confirmed"
+        )
+    rules_path = _program_rules_path(contract)
+    manifest, manifest_value, accounts = _load_owned_accounts_manifest(
+        campaign, manifest_path, contract
+    )
+    manifest_relative = manifest.relative_to(campaign).as_posix()
+    manifest_sha = sha256_bytes(manifest.read_bytes())
+    rules_sha = sha256_bytes(rules_path.read_bytes())
+    callbacks = manifest_value.get("callbackOriginIds", [])
+    if not isinstance(callbacks, list) or any(
+        not isinstance(value, str) or value not in contract.origins
+        for value in callbacks
+    ):
+        raise WebContractError(
+            "callbackOriginIds must contain only exact contract origin IDs"
+        )
+    advanced = manifest_value.get("advanced", {})
+    if not isinstance(advanced, dict):
+        raise WebContractError("owned account manifest advanced must be an object")
+    bounded_concurrency = advanced.get("allowBoundedConcurrency", True)
+    http_desynchronization = advanced.get("allowHttpDesynchronization", False)
+    if not isinstance(bounded_concurrency, bool) or not isinstance(
+        http_desynchronization, bool
+    ):
+        raise WebContractError("owned account advanced switches must be Boolean")
+
+    now = utc_now().replace(microsecond=0)
+    updated = json.loads(json.dumps(contract.raw))
+    updated["environmentOwner"] = str(manifest_value["environmentOwner"])
+    updated["program"]["rulesDate"] = str(manifest_value["programRulesDate"])
+    updated["identities"] = accounts
+    for origin in updated["origins"]:
+        origin["allowedMethods"] = sorted(OWNED_FULL_TEST_METHODS)
+
+    action_policies: list[dict[str, Any]] = []
+    for origin_index, origin in enumerate(updated["origins"], start=1):
+        origin_id = str(origin["id"])
+        for prefix_index, prefix in enumerate(origin["allowedPathPrefixes"], start=1):
+            suffix = f"{origin_index}-{prefix_index}"
+            action_policies.extend(
+                [
+                    {
+                        "id": f"full-read-{suffix}",
+                        "originId": origin_id,
+                        "pathPrefix": prefix,
+                        "methods": sorted(OWNED_FULL_TEST_READ_METHODS),
+                        "effectClasses": ["read-only"],
+                        "maxRequestBodyBytes": int(updated["budget"]["maxRequestBodyBytes"]),
+                        "maxResponseBodyBytes": int(updated["budget"]["maxResponseBodyBytes"]),
+                    },
+                    {
+                        "id": f"full-write-{suffix}",
+                        "originId": origin_id,
+                        "pathPrefix": prefix,
+                        "methods": sorted(OWNED_FULL_TEST_WRITE_METHODS),
+                        "effectClasses": ["disposable-write"],
+                        "maxRequestBodyBytes": int(updated["budget"]["maxRequestBodyBytes"]),
+                        "maxResponseBodyBytes": int(updated["budget"]["maxResponseBodyBytes"]),
+                    },
+                    {
+                        "id": f"full-sensitive-{suffix}",
+                        "originId": origin_id,
+                        "pathPrefix": prefix,
+                        "methods": sorted(OWNED_FULL_TEST_METHODS),
+                        "effectClasses": ["sensitive"],
+                        "maxRequestBodyBytes": int(updated["budget"]["maxRequestBodyBytes"]),
+                        "maxResponseBodyBytes": int(updated["budget"]["maxResponseBodyBytes"]),
+                    },
+                ]
+            )
+            if origin_id in callbacks:
+                action_policies.append(
+                    {
+                        "id": f"full-callback-{suffix}",
+                        "originId": origin_id,
+                        "pathPrefix": prefix,
+                        "methods": sorted(OWNED_FULL_TEST_METHODS),
+                        "effectClasses": ["external-side-effect"],
+                        "maxRequestBodyBytes": int(updated["budget"]["maxRequestBodyBytes"]),
+                        "maxResponseBodyBytes": int(updated["budget"]["maxResponseBodyBytes"]),
+                    }
+                )
+    updated["actionPolicies"] = action_policies
+    updated["effectClasses"]["read-only"]["permitted"] = True
+    updated["effectClasses"]["disposable-write"].update(
+        {"permitted": True, "requiresCleanup": True}
+    )
+    updated["effectClasses"]["sensitive"]["permitted"] = True
+    updated["effectClasses"]["external-side-effect"]["permitted"] = bool(callbacks)
+    updated["effectClasses"]["unknown"]["permitted"] = False
+
+    record_relative = Path("web/authorization-approval.json")
+    signature_relative = Path("web/authorization-approval.json.sig")
+    authorization = updated["authorization"]
+    authorization.update(
+        {
+            "confirmed": True,
+            "confirmedBy": str(manifest_value["confirmedBy"]),
+            "confirmedAt": now.isoformat(),
+            "validUntil": parse_time(
+                manifest_value["validUntil"], "validUntil"
+            ).isoformat(),
+            "ownedFixtureNamespace": str(manifest_value["ownedFixtureNamespace"]),
+            "approvalRecord": record_relative.as_posix(),
+            "approvalSignature": signature_relative.as_posix(),
+            "allowCacheMutation": True,
+            "allowDeserializationExperiments": True,
+            "allowBoundedConcurrency": bounded_concurrency,
+            "allowExternalCallbacks": bool(callbacks),
+            "approvedCallbackOriginIds": callbacks,
+            "allowRedirects": True,
+            "allowUploads": True,
+            "allowWebSockets": True,
+            "allowBrowserNavigation": True,
+            "allowBrowserActions": True,
+            "allowStateChangingOperations": True,
+            "allowTerminalExecution": True,
+            "allowNuclei": True,
+            "allowCredentialRefresh": True,
+            "allowOAuthRefresh": True,
+            "allowCsrfHandling": True,
+            "allowRequestSigning": True,
+            "allowHttpDesynchronization": http_desynchronization,
+            "boundedRaceApproval": {
+                "approved": bounded_concurrency,
+                "disposableFixture": (
+                    str(manifest_value["ownedFixtureNamespace"])
+                    if bounded_concurrency
+                    else ""
+                ),
+                "maxParticipants": 2,
+                "availabilityObjective": False,
+            },
+            "ownedFullTesting": {
+                "enabled": True,
+                "ownedAccountsOnly": True,
+                "autoApproveBoundedWorkflows": True,
+                "accountManifest": manifest_relative,
+                "accountManifestSha256": manifest_sha,
+                "accountIds": [str(account["id"]) for account in accounts],
+                "policy": (
+                    "execute all exact-origin, program-permitted experiments on owned "
+                    "accounts and disposable fixtures without further user confirmation"
+                ),
+            },
+        }
+    )
+    if updated.get("nuclei", {}).get("enabled") is not True:
+        updated["nuclei"].update({"enabled": True, "maxTemplates": 25})
+
+    WebCampaignContract(contract_file, updated, "pending-owned-full-testing-record")
+    atomic_json(contract_file, updated)
+    activated = WebCampaignContract.load(contract_file)
+    authority = ensure_authority(campaign)
+    approval_record = {
+        "schemaVersion": 1,
+        "kind": "krineon-web-authorization-approval",
+        "producer": "krineon-coordinator",
+        "approvalMode": "owned-full-testing",
+        "approvedBy": authorization["confirmedBy"],
+        "approvedAt": authorization["confirmedAt"],
+        "validUntil": authorization["validUntil"],
+        "contract": contract_file.relative_to(campaign).as_posix(),
+        "contractSha256Before": contract.digest,
+        "contractSha256After": activated.digest,
+        "programRules": rules_path.relative_to(campaign).as_posix(),
+        "programRulesSha256": rules_sha,
+        "accountManifest": manifest_relative,
+        "accountManifestSha256": manifest_sha,
+        "accountIds": authorization["ownedFullTesting"]["accountIds"],
+        "reviewedChecks": list(AUTHORIZATION_REVIEW_CHECKS),
+        "trafficExecuted": False,
+    }
+    record_path = campaign / record_relative
+    signature_path = campaign / signature_relative
+    atomic_json(record_path, approval_record)
+    private, _ = authority_paths(campaign)
+    sign_file(private, record_path, signature_path)
+
+    campaign_record = load_object(campaign_record_path, "campaign")
+    campaign_record["experimentAuthority"] = {
+        key: value for key, value in authority.items() if key != "privateKey"
+    }
+    campaign_record["authorization"] = {
+        "confirmed": True,
+        "basis": "Program rules plus verified owned-account manifest.",
+        "mode": "owned-full-testing",
+        "approvedBy": authorization["confirmedBy"],
+        "validUntil": authorization["validUntil"],
+        "allowedEnvironment": updated["environmentOwner"],
+        "ownedAccountIds": authorization["ownedFullTesting"]["accountIds"],
+        "stopConditions": authorization["stopConditions"],
+    }
+    atomic_json(campaign_record_path, campaign_record)
+    activated.require_live_authorization()
+    return {
+        "passed": True,
+        "authorizationConfirmed": True,
+        "mode": "owned-full-testing",
+        "contractSha256": activated.digest,
+        "accountIds": authorization["ownedFullTesting"]["accountIds"],
+        "allowedMethods": sorted(OWNED_FULL_TEST_METHODS),
+        "autoApproveBoundedWorkflows": True,
+        "trafficExecuted": False,
+    }
+
+
 def prepare_authorization_review(
     contract_path: Path | str, output_path: Path | str
 ) -> dict[str, Any]:
@@ -1500,6 +1969,16 @@ def build_parser() -> argparse.ArgumentParser:
     authorize.add_argument("campaign")
     authorize.add_argument("contract")
     authorize.add_argument("review")
+    owned = sub.add_parser(
+        "activate-owned-testing",
+        help=(
+            "activate all program-permitted testing for verified owned accounts "
+            "without per-lane user approval"
+        ),
+    )
+    owned.add_argument("campaign")
+    owned.add_argument("contract")
+    owned.add_argument("accounts")
     return parser
 
 
@@ -1512,6 +1991,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "authorize":
             result = authorize_contract(args.campaign, args.contract, args.review)
+            print(json.dumps(result, indent=2))
+            return 0
+        if args.command == "activate-owned-testing":
+            result = activate_owned_full_testing(
+                args.campaign, args.contract, args.accounts
+            )
             print(json.dumps(result, indent=2))
             return 0
         contract = WebCampaignContract.load(args.contract)

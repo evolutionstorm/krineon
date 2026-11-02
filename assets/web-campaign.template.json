@@ -43,6 +43,9 @@
       "bot-evasion"
     ],
     "unknownEffectPolicy": "block-until-reviewed",
+    "ownedFullTesting": {
+      "enabled": false
+    },
     "allowCacheMutation": false,
     "allowDeserializationExperiments": false,
     "allowBoundedConcurrency": false,

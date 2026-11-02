@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "krineon-owned-web-accounts",
+  "confirmedBy": "replace-with-researcher-id",
+  "environmentOwner": "researcher-owned-bug-bounty-trial",
+  "ownedFixtureNamespace": "replace-with-owned-fixture-namespace",
+  "programRulesDate": "2099-01-01",
+  "validUntil": "2099-01-02T00:00:00Z",
+  "ownedAccountsOnly": true,
+  "callbackOriginIds": [],
+  "advanced": {
+    "allowBoundedConcurrency": true,
+    "allowHttpDesynchronization": false
+  },
+  "accounts": [
+    {
+      "id": "owner-admin",
+      "credentialRef": "secret://owner-admin",
+      "secretVersion": "owner-admin-v1",
+      "credentialType": "cookie",
+      "cookieName": "session",
+      "expectedTenant": "owned-tenant",
+      "roles": [
+        "administrator"
+      ],
+      "session": "owned-browser-session",
+      "allowedOriginIds": [
+        "app"
+      ],
+      "allowedPathPrefixes": [
+        "/"
+      ],
+      "allowedTransports": [
+        "http",
+        "browser"
+      ],
+      "verification": {
+        "status": "verified",
+        "method": "owner-assertion",
+        "evidence": "Researcher confirmed that this is an owned test account in the authorized environment."
+      }
+    }
+  ]
+}

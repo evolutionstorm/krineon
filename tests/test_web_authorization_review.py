@@ -15,6 +15,7 @@ from scripts.web_contract import WebCampaignContract, WebContractError
 PROJECT = Path(__file__).resolve().parents[1]
 TOOL = PROJECT / "scripts" / "web_contract.py"
 TEMPLATE = PROJECT / "assets" / "web-campaign.template.json"
+ACCOUNT_TEMPLATE = PROJECT / "assets" / "web-owned-accounts.template.json"
 
 
 @unittest.skipUnless(shutil.which("openssl"), "OpenSSL is required for signed approval")
@@ -94,6 +95,31 @@ class WebAuthorizationReviewTests(unittest.TestCase):
             ):
                 WebCampaignContract.load(contract).require_live_authorization()
 
+    def test_changed_program_rules_invalidate_live_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            campaign, contract, review = self.fixture(Path(directory))
+            self.run_tool("prepare-review", str(contract), "--output", str(review))
+            value = json.loads(review.read_text(encoding="utf-8"))
+            value.update(
+                {
+                    "approvedBy": "coordinator-reviewer",
+                    "programRulesDate": dt.date.today().isoformat(),
+                    "validUntil": (
+                        dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
+                    ).replace(microsecond=0).isoformat(),
+                    "environmentOwner": "researcher-owned-staging",
+                    "ownedFixtureNamespace": "owned-fixture-01",
+                }
+            )
+            value["review"] = {name: True for name in value["review"]}
+            review.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            self.run_tool("authorize", str(campaign), str(contract), str(review))
+            (campaign / "PROGRAM_RULES.md").write_text(
+                "Changed program limits.\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(WebContractError, "current program rules"):
+                WebCampaignContract.load(contract).require_live_authorization()
+
     def test_changed_contract_and_incomplete_review_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             campaign, contract, review = self.fixture(Path(directory))
@@ -124,6 +150,80 @@ class WebAuthorizationReviewTests(unittest.TestCase):
                 "authorize", str(campaign), str(contract), str(review), expected=2
             )
             self.assertIn("authorization review is incomplete", rejected.stderr)
+
+    def test_owned_accounts_activate_the_full_bounded_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            campaign, contract, _ = self.fixture(Path(directory))
+            manifest = campaign / "web" / "owned-accounts.json"
+            manifest.parent.mkdir()
+            value = json.loads(ACCOUNT_TEMPLATE.read_text(encoding="utf-8"))
+            value.update(
+                {
+                    "confirmedBy": "researcher-owner",
+                    "environmentOwner": "researcher-owned-trial",
+                    "ownedFixtureNamespace": "owned-fixture-01",
+                    "programRulesDate": dt.date.today().isoformat(),
+                    "validUntil": (
+                        dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
+                    ).replace(microsecond=0).isoformat(),
+                }
+            )
+            value["accounts"][0]["expectedTenant"] = "owned-trial"
+            manifest.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+            activated = self.run_tool(
+                "activate-owned-testing",
+                str(campaign),
+                str(contract),
+                str(manifest),
+            )
+            result = json.loads(activated.stdout)
+            self.assertTrue(result["authorizationConfirmed"])
+            self.assertEqual(result["mode"], "owned-full-testing")
+            self.assertIn("POST", result["allowedMethods"])
+            self.assertIn("PROPFIND", result["allowedMethods"])
+            self.assertTrue(result["autoApproveBoundedWorkflows"])
+
+            loaded = WebCampaignContract.load(contract)
+            loaded.require_live_authorization()
+            authorization = loaded.raw["authorization"]
+            self.assertTrue(authorization["ownedFullTesting"]["enabled"])
+            self.assertTrue(authorization["allowStateChangingOperations"])
+            self.assertTrue(authorization["allowBrowserActions"])
+            self.assertTrue(authorization["allowUploads"])
+            self.assertTrue(authorization["allowWebSockets"])
+            self.assertFalse(authorization["allowExternalCallbacks"])
+            self.assertTrue(all(identity.verification_status == "verified" for identity in loaded.identities.values()))
+            campaign_record = json.loads((campaign / "campaign.json").read_text())
+            self.assertEqual(campaign_record["authorization"]["mode"], "owned-full-testing")
+
+    def test_owned_accounts_reject_literal_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            campaign, contract, _ = self.fixture(Path(directory))
+            manifest = campaign / "web" / "owned-accounts.json"
+            manifest.parent.mkdir()
+            value = json.loads(ACCOUNT_TEMPLATE.read_text(encoding="utf-8"))
+            value.update(
+                {
+                    "confirmedBy": "researcher-owner",
+                    "environmentOwner": "researcher-owned-trial",
+                    "ownedFixtureNamespace": "owned-fixture-01",
+                    "programRulesDate": dt.date.today().isoformat(),
+                    "validUntil": (
+                        dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
+                    ).replace(microsecond=0).isoformat(),
+                }
+            )
+            value["accounts"][0]["password"] = "must-not-be-retained"
+            manifest.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            rejected = self.run_tool(
+                "activate-owned-testing",
+                str(campaign),
+                str(contract),
+                str(manifest),
+                expected=2,
+            )
+            self.assertIn("contains a literal credential", rejected.stderr)
 
 
 if __name__ == "__main__":

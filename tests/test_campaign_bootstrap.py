@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 import json
 import shutil
 import sqlite3
@@ -243,6 +244,86 @@ Accept: text/html
             self.assertTrue((campaign / "web" / "offline-plan.json").is_file())
             self.assertTrue((campaign / "web" / "inputs" / "request-1.bundle.json").is_file())
             self.assertTrue((campaign / "web" / "inputs" / "request-1.redacted.md").is_file())
+
+    @unittest.skipUnless(shutil.which("openssl"), "OpenSSL is required for signed approval")
+    def test_owned_accounts_start_authorized_full_testing_without_manual_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rules = root / "PROGRAM_RULES.md"
+            rules.write_text(
+                "Owned trial application. All HTTP methods are permitted on the listed trial.\n",
+                encoding="utf-8",
+            )
+            accounts = root / "owned-accounts.json"
+            accounts.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "kind": "krineon-owned-web-accounts",
+                        "confirmedBy": "researcher-owner",
+                        "environmentOwner": "researcher-owned-trial",
+                        "ownedFixtureNamespace": "owned-fixture-01",
+                        "programRulesDate": dt.date.today().isoformat(),
+                        "validUntil": (
+                            dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
+                        ).replace(microsecond=0).isoformat(),
+                        "ownedAccountsOnly": True,
+                        "callbackOriginIds": [],
+                        "advanced": {
+                            "allowBoundedConcurrency": True,
+                            "allowHttpDesynchronization": False,
+                        },
+                        "accounts": [
+                            {
+                                "id": "owner-admin",
+                                "credentialRef": "secret://owner-admin",
+                                "secretVersion": "owner-admin-v1",
+                                "credentialType": "cookie",
+                                "cookieName": "session",
+                                "expectedTenant": "owned-trial",
+                                "roles": ["administrator"],
+                                "session": "owned-browser-session",
+                                "allowedOriginIds": ["app"],
+                                "allowedPathPrefixes": ["/"],
+                                "allowedTransports": ["http", "browser"],
+                                "verification": {
+                                    "status": "verified",
+                                    "method": "owner-assertion",
+                                    "evidence": "Researcher confirmed ownership of the trial account.",
+                                },
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            campaign = root / "campaign"
+            completed = self.run_bootstrap(
+                str(campaign),
+                "--profile",
+                "web-app",
+                "--url",
+                "https://trial.example.test",
+                "--guidelines",
+                str(rules),
+                "--owned-accounts",
+                str(accounts),
+                "--json",
+            )
+            result = json.loads(completed.stdout)
+            self.assertTrue(result["authorizationConfirmed"])
+            self.assertTrue(result["ownedFullTesting"])
+            contract = json.loads((campaign / "web-campaign.json").read_text())
+            self.assertEqual(contract["origins"][0]["allowedMethods"], sorted(contract["origins"][0]["allowedMethods"]))
+            self.assertIn("POST", contract["origins"][0]["allowedMethods"])
+            self.assertTrue(contract["authorization"]["ownedFullTesting"]["enabled"])
+            campaign_record = json.loads((campaign / "campaign.json").read_text())
+            self.assertEqual(campaign_record["authorization"]["mode"], "owned-full-testing")
+            self.assertEqual(campaign_record["authorization"]["ownedAccountIds"], ["owner-admin"])
+            onboarding = json.loads((campaign / "onboarding.json").read_text())
+            self.assertTrue(onboarding["resolved"]["ownedFullTesting"])
 
 
 if __name__ == "__main__":

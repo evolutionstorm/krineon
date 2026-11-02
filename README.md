@@ -245,7 +245,8 @@ Prepare the following information:
 
 - The program rules and exact in-scope URL.
 - Any documented request limits and prohibited actions.
-- Two owned test accounts when testing authorization or tenant isolation.
+- At least one owned test account; two are recommended for authorization or
+  tenant-isolation testing.
 - Disposable test records owned by those accounts.
 - Optional redacted HTTP requests, HAR files, or Burp exports.
 - Optionally, an already-enabled Burp Suite MCP connection exposed by Codex,
@@ -255,6 +256,13 @@ Prepare the following information:
 Do not paste passwords, cookies, API keys, or bearer tokens into the prompt.
 Krineon stores credentials through private references and keeps them out of
 agent-visible evidence.
+
+When program rules, exact origins, and verified owned-account details are all
+available, Krineon activates owned full-test mode. The retained contract then
+authorizes all bounded, in-scope methods and workflows on those accounts,
+including state changes, uploads, browser actions, WebSockets, credential
+lifecycle checks, cache/parser experiments, and small paired-concurrency tests.
+Krineon does not pause for separate approval of each verb or hypothesis.
 
 ### Start the campaign
 
@@ -268,16 +276,17 @@ OpenCode: @krineon Test this authorized web application under the supplied rules
 OMP: /skill:krineon Test this authorized web application under the supplied rules.
 ```
 
-In every client, require an offline plan first and make no requests until you
-review the exact scope, accounts, actions, limits, cleanup, and stop conditions.
-After approval, establish the legitimate baseline and test one hypothesis at a
-time using only owned accounts and disposable data. Require an enforcing
-negative control, authoritative readback, cleanup, and independent replay
-before reporting a finding.
+Krineon creates an offline plan first, then binds the supplied rules and owned
+accounts to an exact signed contract and immediately starts the eligible
+research lanes. It automatically signs each bounded workflow and continues
+through failed hypotheses without another user confirmation. It uses only
+owned accounts and disposable data. Every candidate still requires an enforcing
+negative control, authoritative readback, cleanup, and independent replay before
+reporting.
 
-### Review and approve the plan
+### Verify the generated contract
 
-Check the generated plan before allowing traffic. Confirm that it contains:
+The generated contract must contain:
 
 - Only the intended origins, paths, and HTTP methods.
 - The correct account, role, tenant, and resource ownership for each identity.
@@ -286,8 +295,9 @@ Check the generated plan before allowing traffic. Confirm that it contains:
 - Stop conditions for third-party data, authentication ambiguity, bot
   challenges, unexpected effects, or exhausted limits.
 
-If any item is missing or incorrect, ask Krineon to update the plan. Approve
-the campaign only after the plan matches the program rules.
+If any item is missing or incorrect, Krineon must correct the contract before
+traffic. Once the program rules and owned-account manifest agree, no further
+per-experiment user approval is required.
 
 ### Run and verify the test
 

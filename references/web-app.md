@@ -46,6 +46,16 @@ exhaustion, third-party data, real fund movement, persistence, uncontrolled
 command execution, port scanning, host discovery, and bot-evasion effects.
 Generated work cannot override these exclusions.
 
+`authorization.ownedFullTesting.enabled: true` is the standing-authorization
+mode for a retained program-rules file plus verified researcher-owned account
+manifest. It enables all exact-origin methods and bounded operation classes
+admitted by the contract. The coordinator automatically signs compatible
+workflows and does not return to the user for each verb, lane, or fixture.
+Permanent denials, target budgets, owned-resource bindings, cleanup, stop
+conditions, and evidence gates remain enforced. External callbacks and HTTP
+desynchronization remain unavailable unless their required exact callback or
+isolated-topology authorization is present in the account manifest.
+
 ## Operational intake and approval
 
 Bootstrap creates an unconfirmed contract, imports requests through the
@@ -103,6 +113,15 @@ and the shared budget before dispatch. Nuclei remains separately selected and
 limited to credential-free loopback replay. A surviving minimal sequence needs
 a fresh reviewer identity, fresh credential bindings, rebuilt owned fixtures,
 and full independent replay through `web_sequence_evidence.py`.
+
+For an owned full-test campaign, retain a manifest based on
+`assets/web-owned-accounts.template.json` inside the campaign and activate it
+with `web_contract.py activate-owned-testing`. The manifest contains only
+`secret://` references and reviewed ownership evidence, never password, cookie,
+token, or API-key values. Bootstrap performs this activation automatically when
+`--owned-accounts` is supplied with program guidelines and an exact web origin.
+Once activated, the coordinator dispatches bounded experiments without another
+user prompt and re-plans any lane that was previously planning-only.
 
 An identity with `credentialRef: secret://user-a` must list the exact origin
 IDs that may receive that credential. At execution time, the broker resolves

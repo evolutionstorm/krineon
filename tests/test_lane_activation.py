@@ -190,3 +190,39 @@ def test_web_browser_requires_tool_and_separate_authorization(tmp_path: Path) ->
         "authorization.browser-navigation",
         "tool.chromium",
     }
+
+
+def test_owned_full_testing_exports_runtime_authority_facts(tmp_path: Path) -> None:
+    web_campaign = write(
+        tmp_path / "web-campaign.json",
+        {
+            "authorization": {
+                "allowBrowserNavigation": True,
+                "allowStateChangingOperations": True,
+                "allowUploads": True,
+                "allowWebSockets": True,
+                "allowCacheMutation": True,
+                "allowDeserializationExperiments": True,
+                "allowBoundedConcurrency": True,
+                "ownedFullTesting": {"enabled": True},
+            },
+            "requestInputs": {},
+        },
+    )
+    result = build_activation(
+        campaign_path=campaign(tmp_path, "web-app", confirmed=True),
+        profile_path=ROOT / "profiles" / "web-app.json",
+        tool_inventory_path=tools(tmp_path),
+        web_campaign_path=web_campaign,
+    )
+    for fact_id in (
+        "authorization.owned-full-testing",
+        "authorization.state-changing",
+        "authorization.uploads",
+        "authorization.websockets",
+        "authorization.cache-mutation",
+        "authorization.deserialization-experiments",
+        "authorization.bounded-concurrency",
+    ):
+        assert result["facts"][fact_id]["state"] == "present"
+        assert result["facts"][fact_id]["executionEligible"] is True

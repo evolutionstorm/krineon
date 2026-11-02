@@ -584,15 +584,23 @@ class WebExecutionBroker:
         self.sessions.update(session, origin_id, response_headers)
         identity_id = identity.id if identity else "anonymous"
         tenant = identity.expected_tenant if identity else ""
+        extraction_error: str | None = None
         if access_state["eligibleForSecurityConclusion"]:
-            public_extractions, private_extractions = extract_values(
-                step,
-                response_body,
-                response_headers,
-                identity_id=identity_id,
-                tenant=tenant,
-                origin_id=origin_id,
-            )
+            try:
+                public_extractions, private_extractions = extract_values(
+                    step,
+                    response_body,
+                    response_headers,
+                    identity_id=identity_id,
+                    tenant=tenant,
+                    origin_id=origin_id,
+                )
+            except (ValueError, WebContractError) as exc:
+                # Preserve the complete exchange before returning an inconclusive
+                # observer failure. A stale JSON pointer must not erase the actual
+                # target behavior or make cleanup the only retained step.
+                extraction_error = f"{type(exc).__name__}: {exc}"
+                public_extractions, private_extractions = {}, {}
         else:
             public_extractions, private_extractions = {}, {}
         retained_headers = [[name, "<redacted>" if name.lower() in {"authorization", "cookie", "proxy-authorization", "x-api-key", "api-key", *credential_header_names} else value] for name, value in headers]
@@ -633,6 +641,7 @@ class WebExecutionBroker:
                 "bodySha256": sha256_bytes(response_body), "bodySize": len(response_body),
                 "elapsedMs": elapsed_ms, "contentDecoding": decoded_as,
                 "extractions": private_extractions, "accessState": access_state,
+                "extractionError": extraction_error,
             },
         }
         public = {
@@ -654,10 +663,15 @@ class WebExecutionBroker:
                 "bodySha256": sha256_bytes(response_body), "bodySize": len(response_body),
                 "elapsedMs": elapsed_ms, "contentDecoding": decoded_as,
                 "extractions": public_extractions, "accessState": access_state,
+                "extractionError": extraction_error,
             },
         }
         self.private_steps.append(private)
         self.public_steps.append(public)
+        if extraction_error is not None:
+            raise WebContractError(
+                f"HTTP step {step_id} response extraction failed: {extraction_error}"
+            )
         return str(access_state["state"])
 
     def run(self) -> dict[str, Any]:

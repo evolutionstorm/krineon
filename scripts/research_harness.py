@@ -2623,6 +2623,28 @@ def task_markdown(lane: dict[str, Any], campaign: dict[str, Any]) -> str:
     capability_lines = "\n".join(f"- `{value}`" for value in selected_capabilities) or "- None measured for this lane."
     missing_lines = "\n".join(f"- `{value}`" for value in missing_capabilities) or "- None."
     context_lines = "\n".join(f"- `{value}`" for value in context_files) or "- Use only the campaign and profile base contract."
+    campaign_authorization = (
+        campaign.get("authorization")
+        if isinstance(campaign.get("authorization"), dict)
+        else {}
+    )
+    owned_full_testing = campaign_authorization.get("mode") == "owned-full-testing"
+    full_testing_instructions = (
+        """\n## Owned full-test standing authorization
+
+The researcher supplied retained program rules and verified owned-account
+bindings. The exact contract is the standing authorization for every bounded
+experiment it admits. Do not pause for another user confirmation, downgrade an
+eligible lane to planning-only, or return merely because one request is denied.
+The coordinator must generate and sign the exact workflow automatically,
+execute it through the controlled broker, retain failed exchanges before
+cleanup, revise observer/extraction errors, and continue with the next distinct
+mechanism. Ask the user only when the proposed action would exceed the contract,
+touch non-owned data, incur meaningful cost, or cross an explicit program or
+safety prohibition.\n"""
+        if owned_full_testing
+        else ""
+    )
     if campaign.get("profile") == "web-app":
         profile_references = (
             "Read `KRINEON_REFERENCES/web-app.md`, `KRINEON_WEB_CAMPAIGN.json`, "
@@ -2720,6 +2742,7 @@ Read `KRINEON_CAMPAIGN.json` before taking any dynamic action. If
 not as a source-analysis gate. Live, shared-system, testnet, account, wallet,
 or production actions still require explicit structured authorization in the
 campaign record. Stay within the recorded environment and stop conditions.
+{full_testing_instructions}
 {profile_references}
 Read `KRINEON_REFERENCES/dependencies.md` and `KRINEON_DEPENDENCIES.json` before
 assuming a library boundary ends the chain. Pinned dependency worktrees, when
@@ -3219,8 +3242,16 @@ def cmd_queue(args: argparse.Namespace) -> int:
                 set_metadata(connection, "deadlineAt", future_time(budget) if budget else None)
             inserted = 0
             refreshed = 0
+            authority_promoted = 0
             for task in plan.get("tasks", []):
                 task_id = str(task.get("taskId") or task["lane"])
+                activation = (
+                    task.get("activation")
+                    if isinstance(task.get("activation"), dict)
+                    else {}
+                )
+                activation_key = f"taskActivation:{task_id}"
+                previous_activation = get_metadata(connection, activation_key)
                 resource_requirements = normalize_resource_requirements(
                     task.get("resourceLeases", [])
                 )
@@ -3252,7 +3283,51 @@ def cmd_queue(args: argparse.Namespace) -> int:
                     existing = connection.execute(
                         "SELECT state FROM tasks WHERE task_id=?", (task_id,)
                     ).fetchone()
-                    if existing and existing["state"] == "queued":
+                    promoted = (
+                        existing is not None
+                        and existing["state"]
+                        in {"completed", "blocked", "failed", "timed-out", "cancelled"}
+                        and isinstance(previous_activation, dict)
+                        and previous_activation.get("state") == "planning-only"
+                        and activation.get("state") == "eligible"
+                    )
+                    if promoted:
+                        connection.execute(
+                            "UPDATE tasks SET wave=?,lane=?,title=?,packet=?,state='queued',"
+                            "priority=?,depends_json=?,resource_requirements_json=?,attempt=0,"
+                            "max_attempts=?,timeout_seconds=?,lease_owner=NULL,lease_token=NULL,"
+                            "lease_expires_at=NULL,started_at=NULL,completed_at=NULL,workspace=NULL,"
+                            "result_digest=NULL,last_error=NULL,cancellation_reason=NULL,updated_at=? "
+                            "WHERE task_id=?",
+                            (
+                                int(task["wave"]),
+                                str(task["lane"]),
+                                str(task["title"]),
+                                str(task["task"]),
+                                int(task.get("priority", 0)),
+                                json.dumps(task.get("dependsOn", [])),
+                                json.dumps(resource_requirements, sort_keys=True),
+                                int(plan.get("defaultMaxAttempts", 2)),
+                                int(plan.get("defaultTaskTimeoutSeconds", 7200)),
+                                now,
+                                task_id,
+                            ),
+                        )
+                        authority_promoted += 1
+                        record_event(
+                            connection,
+                            "task-requeued-after-capability-promotion",
+                            task_id=task_id,
+                            payload={
+                                "from": previous_activation,
+                                "to": activation,
+                                "reason": (
+                                    "runtime authority became eligible; prior planning-only "
+                                    "result cannot settle the live research lane"
+                                ),
+                            },
+                        )
+                    elif existing and existing["state"] == "queued":
                         connection.execute(
                             "UPDATE tasks SET wave=?,lane=?,title=?,packet=?,priority=?,depends_json=?,resource_requirements_json=?,"
                             "max_attempts=?,timeout_seconds=?,updated_at=? WHERE task_id=?",
@@ -3271,16 +3346,24 @@ def cmd_queue(args: argparse.Namespace) -> int:
                             ),
                         )
                         refreshed += 1
+                set_metadata(connection, activation_key, activation)
                 set_task_approach_families(
                     connection, task_id, list(task.get("approachFamilies", []))
                 )
             record_event(
                 connection,
                 "queue-reconciled",
-                payload={"inserted": inserted, "refreshed": refreshed},
+                payload={
+                    "inserted": inserted,
+                    "refreshed": refreshed,
+                    "authorityPromoted": authority_promoted,
+                },
             )
             write_approach_family_snapshot(root, connection)
-        print(f"queued {inserted} new tasks; refreshed {refreshed} queued tasks")
+        print(
+            f"queued {inserted} new tasks; refreshed {refreshed} queued tasks; "
+            f"reopened {authority_promoted} lanes after capability promotion"
+        )
         print(f"durable state: {orchestration_path(root)}")
         return 0
     finally:

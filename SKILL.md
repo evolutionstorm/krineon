@@ -91,16 +91,40 @@ customer data, real funds, persistence, uncontrolled commands, broad cache
 pollution, port scanning, and host discovery are prohibited and cannot be
 overridden by a worker task.
 
+When the user supplies retained program rules, exact in-scope origins, and a
+verified owned-account manifest, activate `owned-full-testing` immediately.
+Treat that signed contract as standing authorization for every exact-origin,
+program-permitted method, browser action, upload, WebSocket flow, cache or
+parser experiment, credential lifecycle, bounded paired operation, and
+disposable state change it admits. Do not ask the user to approve each lane,
+HTTP verb, fixture, or experiment again. The coordinator automatically creates
+and signs bounded workflows, executes them through the controlled broker, and
+continues after ordinary denials or inconclusive results. Ask again only when a
+proposed action would expand scope, touch non-owned data, incur meaningful
+cost, require an external callback not listed in the contract, enable an
+isolated desynchronization topology, or cross an explicit program or permanent
+safety prohibition.
+
+`owned-full-testing` does not weaken evidence or cleanup requirements. Retain
+the request and response before extraction or oracle evaluation, including
+observer failures, then run cleanup. A stale JSON pointer, unexpected schema,
+403, or failed hypothesis is evidence for the next experiment, not permission
+to discard the exchange or end the campaign. Re-plan and requeue any lane that
+was completed as planning-only when its required account, browser, MCP, or
+runtime capability later becomes available.
+
 Bootstrap web intake offline with `campaign_bootstrap.py`; `--url` and
 `--requests` are concise aliases for exact application origins and annotated
 Markdown request bundles. Generate the coordinator checklist with
-`web_contract.py prepare-review`. Confirm authority only through
-`web_contract.py authorize` after reviewing every exact scope, identity,
-action, effect, budget, cleanup, stop condition, and third-party-data
-exclusion. That command binds a signed approval to the current contract and
-retained rules hashes without target traffic. A separate
-`web_workflow.py approve` signature remains mandatory for every executable
-experiment. Resolve secret values only through `web_secret_store.py` using a
+`web_contract.py prepare-review`. For an ordinary reviewed campaign, confirm
+authority through `web_contract.py authorize` after reviewing every exact
+scope, identity, action, effect, budget, cleanup, stop condition, and
+third-party-data exclusion. For an owned full-test campaign, the verified
+account manifest activates and signs standing authority without a second user
+review. Changing the rules, account manifest, or contract invalidates that
+approval. A coordinator signature remains mandatory for every executable
+experiment, but Krineon creates it automatically when the experiment fits the
+owned full-test contract. Resolve secret values only through `web_secret_store.py` using a
 no-echo prompt, an environment-variable name, or a mode-`0600` non-symlink
 file; never put a literal value in arguments.
 

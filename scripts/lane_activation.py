@@ -149,6 +149,11 @@ def web_campaign_facts(path: Path) -> list[dict[str, str]]:
     source_hash = sha256(path)
     authorization = raw.get("authorization") if isinstance(raw.get("authorization"), dict) else {}
     request_inputs = raw.get("requestInputs") if isinstance(raw.get("requestInputs"), dict) else {}
+    full_testing = (
+        authorization.get("ownedFullTesting")
+        if isinstance(authorization.get("ownedFullTesting"), dict)
+        else {}
+    )
     result = [
         fact_entry(
             "authorization.browser-navigation",
@@ -157,8 +162,37 @@ def web_campaign_facts(path: Path) -> list[dict[str, str]]:
             source_sha256=source_hash,
             selector="$.authorization.allowBrowserNavigation",
             trust="owner-specified",
-        )
+        ),
+        fact_entry(
+            "authorization.owned-full-testing",
+            "present" if full_testing.get("enabled") is True else "absent",
+            source=path.as_posix(),
+            source_sha256=source_hash,
+            selector="$.authorization.ownedFullTesting.enabled",
+            trust="owner-specified",
+        ),
     ]
+    for field, fact_id in (
+        ("allowStateChangingOperations", "authorization.state-changing"),
+        ("allowUploads", "authorization.uploads"),
+        ("allowWebSockets", "authorization.websockets"),
+        ("allowCacheMutation", "authorization.cache-mutation"),
+        (
+            "allowDeserializationExperiments",
+            "authorization.deserialization-experiments",
+        ),
+        ("allowBoundedConcurrency", "authorization.bounded-concurrency"),
+    ):
+        result.append(
+            fact_entry(
+                fact_id,
+                "present" if authorization.get(field) is True else "absent",
+                source=path.as_posix(),
+                source_sha256=source_hash,
+                selector=f"$.authorization.{field}",
+                trust="owner-specified",
+            )
+        )
     if any(request_inputs.get(field) for field in ("requestBundles", "harFiles", "burpExports")):
         result.append(
             fact_entry(

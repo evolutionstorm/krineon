@@ -319,6 +319,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--web-contract", help="versioned web campaign JSON")
     parser.add_argument(
+        "--owned-accounts",
+        help=(
+            "JSON manifest of verified researcher-owned web accounts; with program "
+            "guidelines this activates full in-scope testing without per-lane approval"
+        ),
+    )
+    parser.add_argument(
         "--requests-markdown",
         "--requests",
         dest="requests_markdown",
@@ -451,6 +458,22 @@ def main(argv: list[str] | None = None) -> int:
                 "the OpenAPI trusted import adapter is not implemented; refusing to copy "
                 "potentially credential-bearing input into the campaign"
             )
+        if args.owned_accounts and profile != "web-app":
+            raise BootstrapError("--owned-accounts requires the web-app profile")
+        if args.owned_accounts and not payload:
+            raise BootstrapError(
+                "--owned-accounts requires retained program guidelines"
+            )
+        owned_accounts_source = (
+            Path(args.owned_accounts).expanduser().resolve()
+            if args.owned_accounts
+            else None
+        )
+        if owned_accounts_source is not None and not owned_accounts_source.is_file():
+            raise BootstrapError(
+                f"owned account manifest does not exist: {owned_accounts_source}"
+            )
+        effective_mode = "authorized-live" if owned_accounts_source else args.mode
 
         repository = args.repo or (repositories[0] if len(repositories) == 1 else "")
         checkout = Path(args.checkout).expanduser().resolve() if args.checkout else None
@@ -511,13 +534,17 @@ def main(argv: list[str] | None = None) -> int:
                 "--profile",
                 profile,
                 "--mode",
-                args.mode,
+                effective_mode,
                 *(["--checkout", str(checkout)] if checkout else []),
                 *(["--program-url", program_url] if program_url else []),
                 *(["--authorization-record"] if args.authorization_record else []),
             ]
         )
         if profile == "web-app":
+            if owned_accounts_source is not None:
+                retained_accounts = campaign_root / "web" / "owned-accounts.json"
+                retained_accounts.write_bytes(owned_accounts_source.read_bytes())
+                retained_accounts.chmod(0o600)
             destination = campaign_root / "web-campaign.json"
             if args.web_contract:
                 source_contract = Path(args.web_contract).expanduser().resolve()
@@ -805,6 +832,33 @@ def main(argv: list[str] | None = None) -> int:
         if scope_payload:
             (campaign_root / "PROGRAM_SCOPE.md").write_bytes(scope_payload)
 
+        owned_full_testing = False
+        if profile == "web-app" and owned_accounts_source is not None:
+            run_checked(
+                [
+                    sys.executable,
+                    str(WEB_CONTRACT_TOOL),
+                    "activate-owned-testing",
+                    str(campaign_root),
+                    str(campaign_root / "web-campaign.json"),
+                    str(campaign_root / "web" / "owned-accounts.json"),
+                ]
+            )
+            validated_web = read_json(campaign_root / "web-campaign.json")
+            web_confirmed = True
+            authorization_confirmed = True
+            owned_full_testing = True
+            run_checked(
+                [
+                    sys.executable,
+                    str(WEB_CONTRACT_TOOL),
+                    "plan",
+                    str(campaign_root / "web-campaign.json"),
+                    "--output",
+                    str(campaign_root / "web" / "offline-plan.json"),
+                ]
+            )
+
         if args.clone:
             source = campaign_root / "source"
             run_checked(["git", "clone", "--", repository, str(source)])
@@ -846,7 +900,10 @@ def main(argv: list[str] | None = None) -> int:
         campaign["authorization"] = {
             "confirmed": authorization_confirmed,
             "basis": (
-                (
+                "Program rules plus verified owned-account manifest; all bounded "
+                "in-scope experiments are standing-authorized."
+                if owned_full_testing
+                else (
                     f"Researcher confirmed the selected source/local-owned campaign against "
                     f"PROGRAM_GUIDELINES.md (SHA-256 {digest})."
                     if digest
@@ -855,11 +912,25 @@ def main(argv: list[str] | None = None) -> int:
                 if authorization_confirmed
                 else "Source-only analysis; live and shared-system actions are not authorized."
             ),
-            "allowedEnvironment": args.allowed_environment,
-            "stopConditions": [
-                "stop before live or shared-system testing without asset-specific authorization",
-                "stop on third-party data exposure, service degradation, or scope ambiguity",
-            ],
+            "mode": "owned-full-testing" if owned_full_testing else "reviewed",
+            "ownedAccountIds": (
+                validated_web["authorization"]["ownedFullTesting"]["accountIds"]
+                if owned_full_testing
+                else []
+            ),
+            "allowedEnvironment": (
+                validated_web.get("environmentOwner")
+                if owned_full_testing
+                else args.allowed_environment
+            ),
+            "stopConditions": (
+                validated_web["authorization"]["stopConditions"]
+                if owned_full_testing
+                else [
+                    "stop before live or shared-system testing without asset-specific authorization",
+                    "stop on third-party data exposure, service degradation, or scope ambiguity",
+                ]
+            ),
         }
         if profile == "web-app":
             campaign["webContract"] = "web-campaign.json"
@@ -920,9 +991,10 @@ def main(argv: list[str] | None = None) -> int:
                 "checkout": str(checkout) if checkout else "",
                 "commit": commit,
                 "profile": profile,
-                "mode": args.mode,
+                "mode": effective_mode,
                 "programUrl": program_url,
                 "authorizationConfirmed": authorization_confirmed,
+                "ownedFullTesting": owned_full_testing,
                 "authorizationRecord": (
                     "AUTHORIZATION.md" if args.authorization_record else None
                 ),
@@ -974,7 +1046,13 @@ def main(argv: list[str] | None = None) -> int:
                 [sys.executable, str(RESEARCH_HARNESS), "queue", str(campaign_root)]
             )
 
-        if profile == "web-app":
+        if profile == "web-app" and owned_full_testing:
+            next_steps = [
+                "Register coordinator and worker identities, then claim the ready queue.",
+                "Automatically sign and execute bounded workflows that fit the owned full-test contract.",
+                "Continue through denials and inconclusive results; retain failed exchanges and pursue the next distinct mechanism.",
+            ]
+        elif profile == "web-app":
             next_steps = [
                 (
                     "python3 scripts/web_contract.py prepare-review "
@@ -1004,6 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
             "repository": repository,
             "commit": commit,
             "authorizationConfirmed": authorization_confirmed,
+            "ownedFullTesting": owned_full_testing,
             "queued": not args.no_queue,
             "unresolved": unresolved,
             "next": next_steps,

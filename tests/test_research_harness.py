@@ -34,6 +34,56 @@ REALITY_RUNNER = PROJECT / "scripts" / "reality_runner.py"
 
 
 class HarnessTests(unittest.TestCase):
+    def test_capability_promotion_reopens_a_settled_planning_only_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            launch_path = campaign / "launch-plan.json"
+            launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            task = launch["tasks"][0]
+            task["activation"] = {
+                **task.get("activation", {}),
+                "state": "planning-only",
+                "runtimeAuthority": False,
+                "missingCapabilities": ["authorization.confirmed"],
+            }
+            launch_path.write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
+            task_id = str(task["taskId"])
+            self.run_cli("queue", str(campaign))
+            with sqlite3.connect(campaign / "orchestration.db") as connection:
+                connection.execute(
+                    "UPDATE tasks SET state='completed',attempt=2,completed_at='now',"
+                    "result_digest='planning-result' WHERE task_id=?",
+                    (task_id,),
+                )
+                connection.commit()
+
+            task["activation"] = {
+                **task["activation"],
+                "state": "eligible",
+                "runtimeAuthority": True,
+                "missingCapabilities": [],
+            }
+            launch_path.write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
+            queued = self.run_cli("queue", str(campaign))
+            self.assertIn("reopened 1 lanes", queued.stdout)
+            with sqlite3.connect(campaign / "orchestration.db") as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    "SELECT state,attempt,result_digest,completed_at FROM tasks WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()
+                event = connection.execute(
+                    "SELECT COUNT(*) FROM events WHERE event_type="
+                    "'task-requeued-after-capability-promotion' AND task_id=?",
+                    (task_id,),
+                ).fetchone()[0]
+            self.assertEqual(row["state"], "queued")
+            self.assertEqual(row["attempt"], 0)
+            self.assertIsNone(row["result_digest"])
+            self.assertIsNone(row["completed_at"])
+            self.assertEqual(event, 1)
+
     def test_typed_chain_feedback_schedules_the_next_missing_edge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaign = self.create_campaign(Path(tmp))
