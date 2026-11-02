@@ -44,6 +44,18 @@ try:
         verify_signed_record,
     )
     from .path_proof import validate_path_proof
+    from .depth_knowledge import (
+        compact_graph as compact_depth_graph,
+        continuation_for_task as depth_continuation_for_task,
+        ensure_schema as ensure_depth_schema,
+        expand_digest as expand_depth_digest,
+        ingest_submission as ingest_depth_submission,
+        mark_feedback_scheduled as mark_depth_feedback_scheduled,
+        search_observations as search_depth_observations,
+        status as depth_status,
+        steer_worker as steer_depth_worker,
+        upsert_continuation as upsert_depth_continuation,
+    )
     from .reality_evidence import (
         evidence_reference,
         safe_campaign_path,
@@ -70,6 +82,18 @@ except ImportError:  # Direct script execution.
         verify_signed_record,
     )
     from path_proof import validate_path_proof
+    from depth_knowledge import (
+        compact_graph as compact_depth_graph,
+        continuation_for_task as depth_continuation_for_task,
+        ensure_schema as ensure_depth_schema,
+        expand_digest as expand_depth_digest,
+        ingest_submission as ingest_depth_submission,
+        mark_feedback_scheduled as mark_depth_feedback_scheduled,
+        search_observations as search_depth_observations,
+        status as depth_status,
+        steer_worker as steer_depth_worker,
+        upsert_continuation as upsert_depth_continuation,
+    )
     from reality_evidence import evidence_reference, safe_campaign_path, validate_attestation
     from web_oracle import evaluate as evaluate_web_oracle
     from web_contract import WebCampaignContract
@@ -490,6 +514,7 @@ def initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
         "ON tasks(lease_owner) "
         "WHERE state IN ('running','verifying') AND lease_owner IS NOT NULL"
     )
+    ensure_depth_schema(connection)
     connection.commit()
 
 
@@ -3774,6 +3799,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
             "UPDATE tasks SET workspace=?,updated_at=? WHERE task_id=?",
             (str(workspace.relative_to(root)), utc_now(), chosen["task_id"]),
         )
+        continuation = depth_continuation_for_task(
+            connection, str(chosen["task_id"])
+        )
         if scheduling_mode:
             set_metadata(connection, "lastSchedulingMode", scheduling_mode)
         record_event(
@@ -3791,6 +3819,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
                     connection, str(chosen["task_id"])
                 ),
                 "resourceLeases": acquired_resources,
+                "continuation": continuation,
             },
         )
         if redirect is not None:
@@ -3824,6 +3853,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
             ),
             "approachRedirect": redirect,
             "resourceLeases": acquired_resources,
+            "continuation": continuation,
             "recovery": recovery,
         }
         if args.json:
@@ -4110,6 +4140,121 @@ def insert_dynamic_task(
         ),
     )
     set_task_approach_families(connection, task_id, approach_families)
+
+
+def schedule_depth_feedback_tasks(
+    root: Path,
+    connection: sqlite3.Connection,
+    *,
+    source_task: sqlite3.Row,
+    worker_id: str,
+    depth_update: dict[str, Any],
+) -> list[str]:
+    """Materialize ready typed-chain edges as bounded coordinator tasks.
+
+    One submission may unlock several chains.  Schedule at most one next step per
+    chain and at most four total so automatic feedback cannot flood the durable
+    queue.  Remaining feedback stays pending and is reconsidered on the next
+    knowledge change.
+    """
+
+    scheduled: list[str] = []
+    seen_chains: set[str] = set()
+    known_families = {
+        str(row["family_id"])
+        for row in connection.execute("SELECT family_id FROM approach_families").fetchall()
+    }
+    inherited_families = task_approach_families(
+        connection, str(source_task["task_id"])
+    )
+    for action in sorted(
+        depth_update.get("plannerActions", []),
+        key=lambda value: (-int(value.get("priority") or 0), str(value.get("feedbackId") or "")),
+    ):
+        if len(scheduled) >= 4 or not isinstance(action, dict):
+            break
+        chain_id = str(action.get("chainId") or "")
+        if not chain_id or chain_id in seen_chains:
+            continue
+        seen_chains.add(chain_id)
+        feedback_id = str(action.get("feedbackId") or "")
+        suffix = re.sub(r"[^A-Za-z0-9_.-]", "-", feedback_id)[:96]
+        task_id = f"depth-{suffix}"
+        if connection.execute(
+            "SELECT 1 FROM tasks WHERE task_id=?", (task_id,)
+        ).fetchone() is not None:
+            mark_depth_feedback_scheduled(
+                connection, feedback_id=feedback_id, task_id=task_id
+            )
+            scheduled.append(task_id)
+            continue
+        requested_families = [
+            str(value)
+            for value in action.get("approachFamilies", [])
+            if str(value) in known_families
+        ]
+        families = list(dict.fromkeys(requested_families + inherited_families))
+        if not families:
+            families = ["chain-composition"]
+        success = "\n".join(
+            f"- {value}" for value in action.get("successCriteria", [])
+        ) or "- Produce an executable, machine-checkable discriminator for this edge."
+        requires = ", ".join(action.get("requires", [])) or "none"
+        produces = ", ".join(action.get("produces", [])) or "unspecified"
+        packet = root / "tasks" / f"dynamic-{task_id}.md"
+        packet.write_text(
+            f"""# Typed attack-chain continuation
+
+Chain: `{chain_id}`
+Step: `{action.get('stepId', '')}`
+Triggered by task: `{source_task['task_id']}`
+
+## Objective
+
+{action.get('objective', '')}
+
+Required capabilities already retained: {requires}
+Capability this experiment must establish: {produces}
+
+## Success criteria
+
+{success}
+
+Search the observation blackboard before starting. Design the cheapest
+experiment that distinguishes the competing explanations. Preserve baseline,
+negative, and positive cases. A failed experiment must record mechanism-scoped
+negative knowledge and a continuation checkpoint; it must not invent the
+missing capability merely to advance the chain.
+""",
+            encoding="utf-8",
+        )
+        insert_dynamic_task(
+            connection,
+            task_id=task_id,
+            wave=max(2, int(source_task["wave"])),
+            lane="typed-chain-continuation",
+            title=f"Establish chain edge: {action.get('title', action.get('stepId', 'step'))}",
+            packet=packet.relative_to(root).as_posix(),
+            priority=int(action.get("priority") or 1000),
+            dependencies=[str(source_task["task_id"])],
+            excluded_workers=[worker_id],
+            max_attempts=max(2, int(source_task["max_attempts"])),
+            timeout_seconds=int(source_task["timeout_seconds"]),
+            approach_families=families,
+            task_kind="focused-chain-investigation",
+        )
+        mark_depth_feedback_scheduled(
+            connection, feedback_id=feedback_id, task_id=task_id
+        )
+        record_event(
+            connection,
+            "depth-feedback-task-scheduled",
+            task_id=task_id,
+            worker_id=worker_id,
+            payload={"sourceTaskId": source_task["task_id"], **action},
+        )
+        scheduled.append(task_id)
+    return scheduled
 
 
 def lead_rank_key(row: sqlite3.Row) -> tuple[int, int, int, int, str]:
@@ -6737,6 +6882,57 @@ def cmd_submit(args: argparse.Namespace) -> int:
             if next_state == "completed" and validated_leads
             else []
         )
+        depth_update: dict[str, Any] | None = None
+        depth_scheduled_tasks: list[str] = []
+        depth_digests: list[str] = []
+        if next_state == "completed":
+            try:
+                depth_update = ingest_depth_submission(
+                    root,
+                    connection,
+                    task_id=str(task["task_id"]),
+                    worker_id=args.worker_id,
+                    result_path=relative_result,
+                    result=result,
+                    validated_leads=validated_leads,
+                    maximum_confidence=(
+                        "independently-replayed"
+                        if replay_of and coordinator_replay is not None
+                        else "coordinator-replayed"
+                        if coordinator_replay is not None
+                        else "runtime-observed"
+                    ),
+                )
+                depth_scheduled_tasks = schedule_depth_feedback_tasks(
+                    root,
+                    connection,
+                    source_task=task,
+                    worker_id=args.worker_id,
+                    depth_update=depth_update,
+                )
+                depth_digests = compact_depth_graph(connection, minimum=12)
+            except ValueError as error:
+                raise SystemExit(f"depth knowledge ingestion rejected the result: {error}") from error
+        else:
+            task_result = (
+                result.get("taskResult")
+                if isinstance(result.get("taskResult"), dict)
+                else {}
+            )
+            continuation = task_result.get("workerContinuation")
+            if isinstance(continuation, dict):
+                try:
+                    upsert_depth_continuation(
+                        root,
+                        connection,
+                        task_id=str(task["task_id"]),
+                        worker_id=args.worker_id,
+                        raw=continuation,
+                    )
+                except ValueError as error:
+                    raise SystemExit(
+                        f"worker continuation rejected the result: {error}"
+                    ) from error
         connection.execute(
             "INSERT INTO submissions(idempotency_key,task_id,worker_id,digest,result_path,"
             "outcome,submitted_at) VALUES(?,?,?,?,?,?,?)",
@@ -6812,6 +7008,9 @@ def cmd_submit(args: argparse.Namespace) -> int:
                     if campaign_graph_update
                     else None
                 ),
+                "depthKnowledge": depth_update,
+                "depthScheduledTasks": depth_scheduled_tasks,
+                "depthDigests": depth_digests,
             },
         )
         if task["unblocks_task_id"] and next_state == "completed":
@@ -8380,6 +8579,159 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 1 if hard_fail or (args.strict and findings) else 0
 
 
+def cmd_depth_status(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        payload = depth_status(connection)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    finally:
+        connection.close()
+
+
+def cmd_observation_search(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        payload = search_depth_observations(
+            connection, args.query, limit=args.limit
+        )
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    finally:
+        connection.close()
+
+
+def cmd_depth_compact(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        digests = compact_depth_graph(connection, minimum=args.minimum)
+        record_event(
+            connection,
+            "depth-graph-compacted",
+            payload={"digests": digests, "minimumMembers": args.minimum},
+        )
+        connection.commit()
+        print(json.dumps({"digests": digests}, indent=2))
+        return 0
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def cmd_depth_expand(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        try:
+            payload = expand_depth_digest(connection, args.digest_id)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    finally:
+        connection.close()
+
+
+def cmd_worker_steer(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        coordinator = connection.execute(
+            "SELECT role,status FROM workers WHERE worker_id=?", (args.worker_id,)
+        ).fetchone()
+        if (
+            coordinator is None
+            or coordinator["role"] != "coordinator"
+            or coordinator["status"] != "active"
+        ):
+            raise SystemExit("worker steering requires an active coordinator identity")
+        revision = steer_depth_worker(connection, args.task_id, args.message)
+        record_event(
+            connection,
+            "worker-steered",
+            task_id=args.task_id,
+            worker_id=args.worker_id,
+            payload={"revision": revision, "message": args.message},
+        )
+        connection.commit()
+        print(json.dumps({"taskId": args.task_id, "steerRevision": revision}, indent=2))
+        return 0
+    except ValueError as error:
+        connection.rollback()
+        raise SystemExit(str(error)) from error
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def cmd_worker_checkpoint(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    raw = read_json(Path(args.checkpoint).expanduser().resolve())
+    if isinstance(raw.get("workerContinuation"), dict):
+        raw = raw["workerContinuation"]
+    connection = connect_orchestration(root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        require_owned_lease(
+            connection,
+            args.task_id,
+            args.worker_id,
+            args.lease_token,
+            states=("running",),
+        )
+        upsert_depth_continuation(
+            root,
+            connection,
+            task_id=args.task_id,
+            worker_id=args.worker_id,
+            raw=raw,
+        )
+        record_event(
+            connection,
+            "worker-checkpoint-updated",
+            task_id=args.task_id,
+            worker_id=args.worker_id,
+            payload={"state": raw.get("state", "active")},
+        )
+        connection.commit()
+        print(
+            json.dumps(
+                {"taskId": args.task_id, "checkpoint": "retained"}, indent=2
+            )
+        )
+        return 0
+    except ValueError as error:
+        connection.rollback()
+        raise SystemExit(str(error)) from error
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def cmd_worker_continuation(args: argparse.Namespace) -> int:
+    root = campaign_root(args.campaign_dir)
+    connection = connect_orchestration(root)
+    try:
+        payload = depth_continuation_for_task(connection, args.task_id)
+        if payload is None:
+            raise SystemExit("task has no continuation checkpoint")
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    finally:
+        connection.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -8653,6 +9005,67 @@ def build_parser() -> argparse.ArgumentParser:
     lead_status.add_argument("campaign_dir")
     lead_status.add_argument("--json", action="store_true")
     lead_status.set_defaults(func=cmd_lead_status)
+
+    depth_status_cmd = sub.add_parser(
+        "depth-status",
+        help="show observation, typed-chain, planner-feedback, asset, and coverage state",
+    )
+    depth_status_cmd.add_argument("campaign_dir")
+    depth_status_cmd.set_defaults(func=cmd_depth_status)
+
+    observation_search = sub.add_parser(
+        "observation-search",
+        help="search structured observations retained by other workers",
+    )
+    observation_search.add_argument("campaign_dir")
+    observation_search.add_argument("query")
+    observation_search.add_argument("--limit", type=int, default=50)
+    observation_search.set_defaults(func=cmd_observation_search)
+
+    depth_compact = sub.add_parser(
+        "depth-compact",
+        help="losslessly compact settled observation families into expandable digests",
+    )
+    depth_compact.add_argument("campaign_dir")
+    depth_compact.add_argument("--minimum", type=int, default=8)
+    depth_compact.set_defaults(func=cmd_depth_compact)
+
+    depth_expand = sub.add_parser(
+        "depth-expand",
+        help="expand a compacted depth-graph digest into its original observations",
+    )
+    depth_expand.add_argument("campaign_dir")
+    depth_expand.add_argument("digest_id")
+    depth_expand.set_defaults(func=cmd_depth_expand)
+
+    worker_steer = sub.add_parser(
+        "worker-steer",
+        help="attach a versioned coordinator correction to a worker continuation",
+    )
+    worker_steer.add_argument("campaign_dir")
+    worker_steer.add_argument("worker_id", type=validate_identity)
+    worker_steer.add_argument("task_id", type=validate_task_id)
+    worker_steer.add_argument("--message", required=True)
+    worker_steer.set_defaults(func=cmd_worker_steer)
+
+    worker_checkpoint = sub.add_parser(
+        "worker-checkpoint",
+        help="persist an in-flight hypothesis and continuation under an active lease",
+    )
+    worker_checkpoint.add_argument("campaign_dir")
+    worker_checkpoint.add_argument("worker_id", type=validate_identity)
+    worker_checkpoint.add_argument("task_id", type=validate_task_id)
+    worker_checkpoint.add_argument("lease_token")
+    worker_checkpoint.add_argument("--checkpoint", required=True)
+    worker_checkpoint.set_defaults(func=cmd_worker_checkpoint)
+
+    worker_continuation = sub.add_parser(
+        "worker-continuation",
+        help="read the retained hypothesis, blocker, next experiment, and steering state",
+    )
+    worker_continuation.add_argument("campaign_dir")
+    worker_continuation.add_argument("task_id", type=validate_task_id)
+    worker_continuation.set_defaults(func=cmd_worker_continuation)
 
     register = sub.add_parser("register", help="register a stable candidate ID")
     register.add_argument("campaign_dir")

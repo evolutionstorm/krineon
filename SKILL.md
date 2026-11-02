@@ -113,6 +113,21 @@ and runtime CDP observations remain separate confidence levels. Never claim
 complete API coverage, execute bundle code in the extractor, probe source-map
 filename lists, or dispatch a candidate before effect and scope review.
 
+Every worker must read [discovery depth and durable knowledge](references/depth-discovery.md)
+before submitting results. Search the observation blackboard first. Submit
+structured observations for facts learned, typed attack-chain todos for missing
+compatible edges, and a continuation checkpoint when useful work remains. The
+coordinator feeds newly satisfied chain prerequisites back into bounded tasks;
+workers must not manufacture an edge to unlock the planner.
+
+The approved CDP journey also builds a recursive retained client-artifact
+graph and a value-free WebSocket/SSE protocol model. Traverse only artifacts
+already retained by Chrome. Treat unresolved chunks as separately approved
+acquisition experiments and treat client-side routes or permission strings as
+discovery hints, never server authorization. Protocol message shapes may guide
+reconnect, tenant-binding, and alternate-consumer tests, but they do not prove
+an access-control failure.
+
 Then run `scripts/web_surface_map.py` and `scripts/web_workflow_model.py` over
 the endpoint catalog and other bounded owned inputs. Build connected
 identity, resource, workflow, and trust/representation models with explicit

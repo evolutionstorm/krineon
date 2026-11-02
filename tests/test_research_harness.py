@@ -34,6 +34,157 @@ REALITY_RUNNER = PROJECT / "scripts" / "reality_runner.py"
 
 
 class HarnessTests(unittest.TestCase):
+    def test_typed_chain_feedback_schedules_the_next_missing_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "chain-worker",
+                "--agent",
+                "codex:chain-worker",
+            )
+            claim = json.loads(
+                self.run_cli("claim", str(campaign), "chain-worker", "--json").stdout
+            )
+            evidence = campaign / "evidence" / "example.json"
+            evidence.write_text('{"sourceSupported":true}\n', encoding="utf-8")
+            result = self.valid_task_result(claim["taskId"])
+            task_result = result["taskResult"]
+            task_result["observations"] = [
+                {
+                    "kind": "source-supported-mechanism",
+                    "mechanism": "producer-consumer-disagreement",
+                    "summary": "the two consumers resolve different resource identities",
+                    "confidence": "source-supported",
+                    "producesCapabilities": ["resource-resolution-disagreement"],
+                    "evidence": ["evidence/example.json"],
+                }
+            ]
+            task_result["attackChainTodos"] = [
+                {
+                    "title": "resolution mismatch to protected resource read",
+                    "terminalCapability": "protected-resource-read",
+                    "steps": [
+                        {
+                            "capability": "resource-resolution-disagreement",
+                            "successCriteria": ["source establishes both consumers"],
+                        },
+                        {
+                            "capability": "protected-resource-read",
+                            "requires": ["resource-resolution-disagreement"],
+                            "successCriteria": [
+                                "owned cross-identity readback proves the terminal"
+                            ],
+                        },
+                    ],
+                }
+            ]
+            result_path = campaign / "typed-chain-result.json"
+            result_path.write_text(json.dumps(result) + "\n", encoding="utf-8")
+            self.run_cli(
+                "submit",
+                str(campaign),
+                "chain-worker",
+                claim["taskId"],
+                "--lease-token",
+                claim["leaseToken"],
+                "--result",
+                str(result_path),
+                "--idempotency-key",
+                "typed-chain-feedback-1",
+            )
+            connection = sqlite3.connect(campaign / "orchestration.db")
+            connection.row_factory = sqlite3.Row
+            typed = connection.execute(
+                "SELECT * FROM tasks WHERE lane='typed-chain-continuation'"
+            ).fetchall()
+            self.assertEqual(len(typed), 1)
+            self.assertEqual(typed[0]["state"], "queued")
+            feedback = connection.execute(
+                "SELECT state,scheduled_task_id FROM depth_planner_feedback"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(feedback["state"], "scheduled")
+            self.assertEqual(feedback["scheduled_task_id"], typed[0]["task_id"])
+            packet = campaign / typed[0]["packet"]
+            self.assertIn("protected-resource-read", packet.read_text(encoding="utf-8"))
+
+    def test_worker_checkpoint_is_lease_bound_and_coordinator_steerable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "depth-worker",
+                "--agent",
+                "codex:depth-worker",
+            )
+            self.run_cli(
+                "worker-register",
+                str(campaign),
+                "root-coordinator",
+                "--agent",
+                "codex:root",
+                "--role",
+                "coordinator",
+            )
+            claim = json.loads(
+                self.run_cli("claim", str(campaign), "depth-worker", "--json").stdout
+            )
+            artifact = campaign / "evidence" / "continuation.json"
+            artifact.write_text('{"retained":true}\n', encoding="utf-8")
+            checkpoint = campaign / "checkpoint.json"
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "state": "active",
+                        "hypothesis": "the consumer uses a different resource identity",
+                        "competingExplanations": ["the route is public"],
+                        "eliminatedMechanisms": [],
+                        "blocker": "",
+                        "nextExperiment": "run one enforcing negative control",
+                        "artifacts": ["evidence/continuation.json"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.run_cli(
+                "worker-checkpoint",
+                str(campaign),
+                "depth-worker",
+                claim["taskId"],
+                claim["leaseToken"],
+                "--checkpoint",
+                str(checkpoint),
+            )
+            retained = json.loads(
+                self.run_cli(
+                    "worker-continuation", str(campaign), claim["taskId"]
+                ).stdout
+            )
+            self.assertIn("different resource", retained["hypothesis"])
+            self.run_cli(
+                "worker-steer",
+                str(campaign),
+                "root-coordinator",
+                claim["taskId"],
+                "--message",
+                "Test the public-route control before widening the lane.",
+            )
+            retained = json.loads(
+                self.run_cli(
+                    "worker-continuation", str(campaign), claim["taskId"]
+                ).stdout
+            )
+            self.assertEqual(retained["steerRevision"], 1)
+            self.assertIn("public-route", retained["steerMessage"])
+
     def test_lead_without_executable_oracle_is_retained_but_not_scheduled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaign = self.create_campaign(Path(tmp))

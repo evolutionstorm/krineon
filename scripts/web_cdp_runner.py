@@ -55,6 +55,8 @@ try:
     from .web_secret_store import SecretStore
     from .web_budget import SharedWebBudget
     from .web_policy import WebPolicyEngine, classify_access_response
+    from .web_artifact_graph import build as build_client_artifact_graph
+    from .web_protocol_model import build as build_protocol_model
 except ImportError:
     from experiment_control import authority_paths, sign_file
     from chromium_replay import (
@@ -82,6 +84,8 @@ except ImportError:
     from web_secret_store import SecretStore
     from web_budget import SharedWebBudget
     from web_policy import WebPolicyEngine, classify_access_response
+    from web_artifact_graph import build as build_client_artifact_graph
+    from web_protocol_model import build as build_protocol_model
 
 
 DISCOVERY_EXPRESSION = r"""
@@ -547,6 +551,7 @@ def discover(
             thread.start()
         websocket: WebSocket | None = None
         client: CDPClient | None = None
+        completed = False
         try:
             endpoint = wait_for_devtools(profile, process, deadline)
             websocket = WebSocket(endpoint, max(0.1, deadline - time.monotonic()), 8 * 1024 * 1024)
@@ -822,6 +827,19 @@ def discover(
             sanitized_events = redact(client.events, [credential] if credential else [])
             event_path = output / "cdp-events.redacted.json"
             atomic_json(event_path, sanitized_events, mode=0o600)
+            artifact_graph = build_client_artifact_graph(client_manifest_path, output)
+            artifact_graph_path = output / "client-artifact-graph.json"
+            atomic_json(artifact_graph_path, artifact_graph, mode=0o600)
+            protocol_model = build_protocol_model(
+                event_path,
+                workflow_id=str(workflow["id"]),
+                step_id=str(step["id"]),
+                identity_id=identity.id if identity else "anonymous",
+                tenant=identity.expected_tenant if identity else "",
+                deployment_epoch=deployment_epoch,
+            )
+            protocol_model_path = output / "web-protocol-model.json"
+            atomic_json(protocol_model_path, protocol_model, mode=0o600)
             artifacts = {
                 "domSnapshotSha256": sha256_bytes(
                     json.dumps(dom_snapshot or {}, sort_keys=True).encode()
@@ -854,6 +872,8 @@ def discover(
                 event_path.stat().st_size
                 + artifact_path.stat().st_size
                 + client_manifest_path.stat().st_size
+                + artifact_graph_path.stat().st_size
+                + protocol_model_path.stat().st_size
                 + int(client_artifacts["totalBytes"])
                 + screenshot_size
             )
@@ -923,8 +943,20 @@ def discover(
                 "clientArtifactManifestSha256": sha256_bytes(
                     client_manifest_path.read_bytes()
                 ),
+                "clientArtifactGraph": artifact_graph_path.name,
+                "clientArtifactGraphSha256": sha256_bytes(
+                    artifact_graph_path.read_bytes()
+                ),
+                "clientArtifactGraphUnresolved": len(
+                    artifact_graph["unresolvedArtifacts"]
+                ),
                 "clientArtifactCount": len(client_artifacts["artifacts"]),
                 "clientArtifactBytes": int(client_artifacts["totalBytes"]),
+                "webProtocolModel": protocol_model_path.name,
+                "webProtocolModelSha256": sha256_bytes(
+                    protocol_model_path.read_bytes()
+                ),
+                "webProtocolCoverage": protocol_model["coverage"],
                 "deploymentEpoch": deployment_epoch,
                 "profileSizeBeforeVerifiedCleanup": profile_size,
                 "downloadsAllowed": False,
@@ -951,8 +983,55 @@ def discover(
             if not private_key.is_file():
                 raise WebContractError("campaign experiment authority is not initialized")
             sign_file(private_key, observation_path, output / "browser-observation.json.sig")
+            completed = True
             return result
         finally:
+            if client is not None and not completed:
+                try:
+                    failure_events = redact(
+                        client.events, [credential] if credential else []
+                    )
+                    failure_event_path = output / "cdp-events.failure.redacted.json"
+                    atomic_json(failure_event_path, failure_events, mode=0o600)
+                    method_counts: dict[str, int] = {}
+                    for event in client.events:
+                        method = str(event.get("method") or "command-response")
+                        method_counts[method] = method_counts.get(method, 0) + 1
+                    failure_diagnostic = {
+                        "schemaVersion": 1,
+                        "kind": "krineon-cdp-failure-diagnostic",
+                        "eventsRetained": len(client.events),
+                        "eventsDropped": client.events_dropped,
+                        "methodCounts": dict(sorted(method_counts.items())),
+                        "blockedExternal": [
+                            evidence_url(value) for value in client.blocked_external
+                        ],
+                        "admissionErrors": redact(
+                            [
+                                {
+                                    **row,
+                                    "url": evidence_url(str(row.get("url") or "")),
+                                }
+                                for row in admission_errors
+                            ],
+                            [credential] if credential else [],
+                        ),
+                        "networkFailureCount": len(client.network_failures),
+                        "lastEvents": [
+                            {
+                                "method": str(event.get("method") or ""),
+                                "sessionIdPresent": bool(event.get("sessionId")),
+                            }
+                            for event in client.events[-50:]
+                        ],
+                    }
+                    atomic_json(
+                        output / "failure-diagnostic.json",
+                        failure_diagnostic,
+                        mode=0o600,
+                    )
+                except (OSError, ValueError, TypeError):
+                    pass
             cancellation_stop.set()
             if websocket is not None:
                 websocket.close()

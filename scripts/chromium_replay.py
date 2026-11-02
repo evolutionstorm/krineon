@@ -314,6 +314,9 @@ class CDPClient:
     allow_redirects: bool = True
     auto_attach_policy: bool = False
     event_observer: Callable[[dict[str, Any]], None] | None = None
+    request_admission_decisions: dict[tuple[str, str, str], bool] = field(
+        default_factory=dict
+    )
 
     def append_capped(self, values: list[Any], value: Any) -> None:
         if len(values) < self.event_limit:
@@ -362,19 +365,24 @@ class CDPClient:
             request_id = str(params.get("requestId") or "")
             request = params.get("request") if isinstance(params.get("request"), dict) else {}
             url = str(request.get("url") or "")
+            request_method = str(request.get("method") or "GET").upper()
+            network_id = str(params.get("networkId") or "")
+            admission_key = (network_id, request_method, url) if network_id else None
             parsed = urlparse(url)
-            if params.get("redirectedRequestId") and not self.allow_redirects:
+            if admission_key is not None and admission_key in self.request_admission_decisions:
+                allowed = self.request_admission_decisions[admission_key]
+            elif params.get("redirectedRequestId") and not self.allow_redirects:
                 allowed = False
             elif self.request_admission is not None:
-                allowed = self.request_admission(
-                    url, str(request.get("method") or "GET").upper()
-                )
+                allowed = self.request_admission(url, request_method)
             else:
                 allowed = url.startswith(self.allowed_origin + "/") or parsed.scheme in {
                     "about",
                     "data",
                     "blob",
                 }
+            if admission_key is not None:
+                self.request_admission_decisions[admission_key] = allowed
             if allowed:
                 continuation: dict[str, Any] = {"requestId": request_id}
                 if self.request_header_injector is not None and parsed.scheme in {
@@ -392,7 +400,7 @@ class CDPClient:
                     )
                     injected = self.request_header_injector(
                         url,
-                        str(request.get("method") or "GET").upper(),
+                        request_method,
                         original_headers,
                     )
                     continuation["headers"] = [

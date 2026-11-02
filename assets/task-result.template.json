@@ -198,6 +198,66 @@
         }
       }
     ],
+    "observations": [
+      {
+        "kind": "runtime-differential",
+        "mechanism": "stable-semantic-mechanism-id",
+        "summary": "One concise, searchable fact learned from this task",
+        "confidence": "runtime-observed",
+        "state": "active",
+        "producesCapabilities": ["typed-capability-observed-by-this-experiment"],
+        "requiresCapabilities": [],
+        "sourceReferences": ["pinned source symbol or target-owned oracle"],
+        "evidence": ["campaign-relative retained evidence file"],
+        "assetRefs": [
+          {
+            "type": "consumer",
+            "name": "stable global asset or operation name",
+            "role": "consumer",
+            "context": {"runtime": "production"}
+          }
+        ],
+        "coverage": [
+          {
+            "boundary": "producer-to-consumer",
+            "consumer": "stable global asset or operation name",
+            "state": "tested"
+          }
+        ]
+      }
+    ],
+    "attackChainTodos": [
+      {
+        "title": "Persistent typed route from the retained primitive to a real authority boundary",
+        "terminalCapability": "process-code-execution-or-other-explicit-critical-terminal",
+        "priority": 1000,
+        "context": {"runtime": "production", "principal": "attacker"},
+        "steps": [
+          {
+            "title": "Establish the next missing compatible edge",
+            "capability": "next-required-capability",
+            "requires": ["already-retained-capability"],
+            "produces": ["next-required-capability"],
+            "objective": "Run the cheapest experiment that distinguishes the competing explanations",
+            "successCriteria": [
+              "Machine evidence proves the capability under one compatible execution state",
+              "An enforcing negative control removes the effect"
+            ],
+            "approachFamilies": ["chain-composition"]
+          }
+        ]
+      }
+    ],
+    "workerContinuation": {
+      "sessionId": "stable external-agent session or task identity",
+      "state": "active",
+      "hypothesis": "Current falsifiable hypothesis",
+      "competingExplanations": ["The strongest alternative explanation"],
+      "eliminatedMechanisms": ["Mechanisms disproved by retained evidence"],
+      "blocker": "Exact current blocker, if any",
+      "nextExperiment": "One concrete next discriminator",
+      "artifacts": ["campaign-relative continuation artifact"]
+    },
     "hypotheses": [],
     "nextTasks": [],
     "replayFindings": [],

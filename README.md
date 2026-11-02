@@ -10,6 +10,13 @@ changelogs, advisories, Git history, or patched-version comparisons to discover
 bugs. It retains partial primitives as research leads, but it promotes a
 finding only after a production-equivalent proof and independent replay.
 
+Krineon keeps a searchable observation blackboard, persistent typed attack
+chains, global asset coverage, and resumable worker checkpoints. New evidence
+automatically unlocks the next compatible chain experiment. Repeated settled
+knowledge is compacted without deleting its members. Approved browser journeys
+also produce recursive client-artifact, permission-hint, WebSocket, and SSE
+graphs without copying message secrets or expanding target scope.
+
 ## Requirements
 
 Install or provide the following components:

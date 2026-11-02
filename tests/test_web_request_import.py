@@ -779,6 +779,37 @@ accept: application/json
         runner_source = (Path(__file__).parents[1] / "scripts" / "web_cdp_runner.py").read_text()
         self.assertNotIn("Network.setExtraHTTPHeaders", runner_source)
 
+    def test_cdp_deduplicates_admission_for_one_request_seen_by_two_sessions(self) -> None:
+        socket = CaptureSocket()
+        client = CDPClient(socket, "http://127.0.0.1:3100", 100)  # type: ignore[arg-type]
+        admissions: list[tuple[str, str]] = []
+
+        def admit(url: str, method: str) -> bool:
+            admissions.append((url, method))
+            return True
+
+        client.request_admission = admit
+        paused = {
+            "method": "Fetch.requestPaused",
+            "params": {
+                "networkId": "one-network-request",
+                "request": {
+                    "url": "http://127.0.0.1:3100/",
+                    "method": "GET",
+                    "headers": {},
+                },
+            },
+        }
+        for session_id, request_id in (("auto-session", "one"), ("manual-session", "two")):
+            event = json.loads(json.dumps(paused))
+            event["params"]["requestId"] = request_id
+            client.handle_event(event, session_id=session_id)
+        self.assertEqual(admissions, [("http://127.0.0.1:3100/", "GET")])
+        self.assertEqual(
+            [message["method"] for message in socket.messages[-2:]],
+            ["Fetch.continueRequest", "Fetch.continueRequest"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
