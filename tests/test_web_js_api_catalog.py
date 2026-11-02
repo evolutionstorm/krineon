@@ -209,6 +209,80 @@ class WebJavaScriptApiCatalogTests(unittest.TestCase):
             )
             self.assertFalse(any(row["safeValidationEligible"] for row in catalog["endpoints"]))
 
+    def test_function_scopes_and_graphql_body_operations_remain_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            bundle = root / "scoped.js"
+            bundle.write_text(
+                "function one(){const route='/api/one';fetch(route+'/share',{"
+                "method:'POST',headers:{'Content-Type':'application/json'},"
+                "body:JSON.stringify({operationName:'CreateOne',"
+                "query:'mutation CreateOne { createOne }'})});}"
+                "function two(){const route='/api/two';fetch(route+'/share',{"
+                "method:'POST',headers:{'Content-Type':'application/json'},"
+                "body:JSON.stringify({operationName:'CreateTwo',"
+                "query:'mutation CreateTwo { createTwo }'})});}"
+                "function unresolved(){let route='/api/stale';route=runtimeRoute();"
+                "fetch(route+'/share',{method:'GET'});}",
+                encoding="utf-8",
+            )
+            manifest = root / "manifest.json"
+            write_json(
+                manifest,
+                {
+                    "schemaVersion": 1,
+                    "deploymentEpoch": "scoped-build-1",
+                    "artifacts": [
+                        {
+                            "path": bundle.name,
+                            "url": "https://app.example.test/assets/scoped.js",
+                            "documentUrl": "https://app.example.test/account",
+                            "sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+                            "kind": "script",
+                            "retrievalOrigin": "approved-browser-session",
+                            "retrievalApproved": True,
+                            "identityId": "owned-user",
+                            "tenant": "owned-tenant",
+                            "session": "owned-session",
+                            "journey": "owned-journey",
+                            "workflowPrerequisites": ["owned-journey"],
+                        }
+                    ],
+                    "runtimeObservations": [],
+                    "journeys": [],
+                    "unavailableArtifacts": [],
+                },
+            )
+            result = extract(manifest, root)
+            graphql = [
+                row
+                for row in result["endpointCandidates"]
+                if row["operationKind"] == "graphql"
+            ]
+            self.assertEqual(
+                {
+                    (row["semanticPathTemplate"], row["graphqlOperation"])
+                    for row in graphql
+                },
+                {
+                    ("/api/one/share", "CreateOne"),
+                    ("/api/two/share", "CreateTwo"),
+                },
+            )
+            self.assertEqual(len({row["endpointId"] for row in graphql}), 2)
+            unresolved = [
+                row
+                for row in result["endpointCandidates"]
+                if row["callee"] == "fetch" and not row["expressionFullyResolved"]
+            ]
+            self.assertTrue(unresolved)
+            self.assertTrue(
+                all(row["semanticPathTemplate"] != "/api/stale/share" for row in unresolved)
+            )
+            self.assertTrue(
+                all(row["confidence"] == "symbolic-candidate" for row in unresolved)
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

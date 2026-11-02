@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run a signed web discovery step in sandboxed Chromium through CDP.
 
-This adapter currently permits only loopback application origins. Remote web
-navigation fails closed until OS-enforced egress confinement can route every
-browser and child-process request through the controlled broker.
+Loopback applications are exercised directly. Remote navigation is admitted
+only through a signed, loopback broker contract whose OS containment blocks
+direct browser and DNS egress.
 """
 
 from __future__ import annotations
@@ -47,10 +47,11 @@ try:
         WebContractError,
         atomic_json,
         canonical_origin,
+        path_matches_prefix,
         redact,
         sha256_bytes,
     )
-    from .web_workflow import load_object, verify
+    from .web_workflow import load_object, verify, validate_browser_actions
     from .web_identity import IdentityBroker
     from .web_secret_store import SecretStore
     from .web_budget import SharedWebBudget
@@ -76,10 +77,11 @@ except ImportError:
         WebContractError,
         atomic_json,
         canonical_origin,
+        path_matches_prefix,
         redact,
         sha256_bytes,
     )
-    from web_workflow import load_object, verify
+    from web_workflow import load_object, verify, validate_browser_actions
     from web_identity import IdentityBroker
     from web_secret_store import SecretStore
     from web_budget import SharedWebBudget
@@ -138,6 +140,65 @@ def evidence_url(value: str) -> str:
         for name, _value in parse_qsl(parsed.query, keep_blank_values=True)
     )
     return urlunsplit((parsed.scheme, host, parsed.path, query, ""))
+
+
+def browser_action_expression(action: dict[str, Any], value: str | None) -> str:
+    """Return fixed driver code with data inserted only as JSON literals."""
+
+    selector = json.dumps(str(action["selector"]))
+    action_type = str(action["type"])
+    if action_type == "wait-for-selector":
+        return (
+            "new Promise(resolve => { const s=" + selector + ";"
+            "const found=()=>document.querySelector(s); if(found()) return resolve({ok:true,type:'wait-for-selector'});"
+            "const observer=new MutationObserver(()=>{if(found()){observer.disconnect();resolve({ok:true,type:'wait-for-selector'});}});"
+            "observer.observe(document,{subtree:true,childList:true});"
+            "setTimeout(()=>{observer.disconnect();resolve({ok:false,reason:'selector-timeout'});},2000); })"
+        )
+    prefix = (
+        "(() => { const element=document.querySelector(" + selector + ");"
+        "if(!element) return {ok:false,reason:'selector-not-found'};"
+    )
+    if action_type == "click":
+        return prefix + "element.click(); return {ok:true,type:'click'}; })()"
+    encoded_value = json.dumps(value if value is not None else "")
+    if action_type == "fill":
+        return (
+            prefix
+            + "const value=" + encoded_value + ";"
+            "const proto=element instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;"
+            "const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;"
+            "if(!setter) return {ok:false,reason:'value-setter-unavailable'};"
+            "setter.call(element,value);element.dispatchEvent(new Event('input',{bubbles:true}));"
+            "element.dispatchEvent(new Event('change',{bubbles:true}));return {ok:true,type:'fill'}; })()"
+        )
+    if action_type == "select":
+        return (
+            prefix
+            + "element.value=" + encoded_value + ";"
+            "element.dispatchEvent(new Event('input',{bubbles:true}));"
+            "element.dispatchEvent(new Event('change',{bubbles:true}));return {ok:true,type:'select'}; })()"
+        )
+    raise WebContractError("unsupported browser action")
+
+
+def browser_network_flags(
+    *, loopback_target: bool, broker: dict[str, Any] | None
+) -> list[str]:
+    if not loopback_target and not isinstance(broker, dict):
+        raise WebContractError("remote Chromium requires a validated browser broker")
+    return [
+        "--proxy-server="
+        + (
+            str(broker["proxyUrl"])
+            if not loopback_target and isinstance(broker, dict)
+            else "http://127.0.0.1:9"
+        ),
+        "--proxy-bypass-list="
+        + ("<-loopback>" if not loopback_target else "127.0.0.1;localhost"),
+        "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    ]
 
 
 def embedded_source_map(value: str, maximum_bytes: int) -> bytes | None:
@@ -396,10 +457,17 @@ def discover(
         operation_class=str(step.get("operationClass") or "browser-discovery"),
     )
     parsed = urlsplit(admitted["url"])
-    if not is_loopback(parsed.hostname):
-        raise WebContractError(
-            "remote CDP navigation is blocked until OS-enforced broker-only egress is available"
-        )
+    loopback_target = is_loopback(parsed.hostname)
+    broker = contract.raw["networkContainment"].get("browserBroker")
+    if not loopback_target:
+        if contract.raw["networkContainment"].get("remoteBrowserTraffic") != "os-egress-enforced":
+            raise WebContractError(
+                "remote CDP navigation is blocked until OS-enforced broker-only egress is available"
+            )
+        if not isinstance(broker, dict) or admitted["originId"] not in set(
+            map(str, broker.get("allowedOriginIds", []))
+        ):
+            raise WebContractError("remote CDP origin is not admitted by the browser broker")
     identities = IdentityBroker(
         contract,
         secret_store=secret_store,
@@ -414,7 +482,7 @@ def discover(
     )
     credential = identities.resolve(identity) if identity is not None else ""
     if admitted["method"] != "GET" or admitted["effectClass"] != "read-only":
-        raise WebContractError("browser discovery permits only read-only GET navigation")
+        raise WebContractError("browser entry navigation must be a read-only GET")
     if not binary.is_file():
         raise WebContractError(f"Chromium binary does not exist: {binary}")
     validate_browser_flags([])
@@ -425,9 +493,31 @@ def discover(
     reserved_operations: list[str] = []
     admission_errors: list[dict[str, str]] = []
     approved_loaded_origins = {admitted["origin"]}
+    browser_actions = validate_browser_actions(step)
+    expected_requests: list[dict[str, Any]] = []
+    active_action = {"id": None}
+    for action in browser_actions:
+        for request in action.get("expectedRequests", []):
+            expected_requests.append({**request, "actionId": action["id"], "used": 0})
 
-    def admit_subrequest(url: str, method: str) -> bool:
+    def expected_request(url: str, method: str, origin_id: str) -> dict[str, Any] | None:
+        path = urlsplit(url).path or "/"
+        for request in expected_requests:
+            if (
+                str(request["actionId"]) == str(active_action["id"])
+                and
+                str(request["originId"]) == origin_id
+                and str(request["method"]).upper() == method.upper()
+                and path_matches_prefix(path, str(request["pathPrefix"]))
+                and int(request["used"]) < int(request["maxCount"])
+            ):
+                return request
+        return None
+
+    def admit_subrequest(request: dict[str, Any]) -> bool:
         nonlocal request_counter
+        url = str(request.get("url") or "")
+        method = str(request.get("method") or "GET").upper()
         parsed_url = urlsplit(url)
         if parsed_url.scheme in {"about", "data", "blob"}:
             return True
@@ -443,12 +533,24 @@ def discover(
                     path_or_url=url,
                     transport="browser",
                 )
+            safe_method = method.upper() in {"GET", "HEAD", "OPTIONS"}
+            expected = expected_request(url, method, matches[0].id)
+            if not safe_method and expected is None:
+                raise WebContractError(
+                    "browser mutation was not declared by a signed action contract"
+                )
+            effect_class = (
+                str(expected["effectClass"])
+                if expected is not None
+                else "read-only"
+            )
+            operation_class = "browser-action" if expected is not None else "browser-discovery"
             policy.admit(
                 origin_id=matches[0].id,
                 url=url,
                 method=method,
-                effect_class="read-only" if method in {"GET", "HEAD", "OPTIONS"} else "unknown",
-                operation_class="browser-discovery",
+                effect_class=effect_class,
+                operation_class=operation_class,
                 intent=str(step.get("intent") or "browser-discovery"),
                 operation="browser",
             )
@@ -460,13 +562,39 @@ def discover(
                 origin_id=matches[0].id,
                 path_or_url=url,
                 method=method,
-                effect_class="read-only" if method in {"GET", "HEAD", "OPTIONS"} else "unknown",
+                effect_class=effect_class,
                 operation="browser",
-                operation_class="browser-discovery",
+                operation_class=operation_class,
+            )
+            post_data = request.get("postData")
+            if post_data is None and request.get("hasPostData") is True:
+                raise WebContractError(
+                    "browser request body is unavailable for byte accounting"
+                )
+            body_bytes = (
+                len(str(post_data).encode("utf-8")) if post_data is not None else 0
+            )
+            if body_bytes > int(subrequest["maxRequestBodyBytes"]):
+                raise WebContractError("browser request body exceeds its action-policy cap")
+            header_bytes = sum(
+                len(str(name).encode("utf-8")) + len(str(value).encode("utf-8")) + 4
+                for name, value in (
+                    request.get("headers", {}).items()
+                    if isinstance(request.get("headers"), dict)
+                    else []
+                )
+            )
+            if expected is not None:
+                expected["used"] = int(expected["used"]) + 1
+            request_bytes = (
+                len(url.encode("utf-8"))
+                + len(method.encode("ascii", "ignore"))
+                + header_bytes
+                + body_bytes
             )
             ledger.reserve(
                 operation_id=operation_id,
-                request_bytes=len(url.encode("utf-8")) + len(method),
+                request_bytes=request_bytes,
                 estimated_response_bytes=int(subrequest["maxResponseBodyBytes"]),
                 cleanup=False,
                 adapter="cdp",
@@ -500,10 +628,10 @@ def discover(
             "--disable-component-update",
             "--disable-sync",
             "--metrics-recording-only",
-            "--proxy-server=http://127.0.0.1:9",
-            "--proxy-bypass-list=127.0.0.1;localhost",
-            "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
-            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            *browser_network_flags(
+                loopback_target=loopback_target,
+                broker=broker if isinstance(broker, dict) else None,
+            ),
             "about:blank",
         ]
         if not headed:
@@ -561,7 +689,7 @@ def discover(
                 int(contract.raw["budget"].get("maxBrowserEvents", 10000)),
             )
             client.auto_attach_policy = True
-            client.request_admission = admit_subrequest
+            client.request_admission_detail = admit_subrequest
             client.allow_redirects = bool(
                 contract.raw["authorization"].get("allowRedirects")
             )
@@ -655,6 +783,59 @@ def discover(
                 "Page.loadEventFired", session_id=session_id, deadline=deadline,
                 after_index=event_index
             )
+            action_results: list[dict[str, Any]] = []
+            for action in browser_actions:
+                active_action["id"] = action["id"]
+                action_value: str | None = None
+                if action.get("secretRef") is not None:
+                    if secret_store is None:
+                        raise WebContractError(
+                            "browser action secretRef requires the private secret broker"
+                        )
+                    action_value = secret_store.get(str(action["secretRef"])).decode(
+                        "utf-8", "strict"
+                    )
+                elif action.get("value") is not None:
+                    action_value = str(action["value"])
+                evaluated_action = client.command(
+                    "Runtime.evaluate",
+                    {
+                        "expression": browser_action_expression(action, action_value),
+                        "awaitPromise": True,
+                        "returnByValue": True,
+                    },
+                    session_id=session_id,
+                    deadline=deadline,
+                )
+                if evaluated_action.get("exceptionDetails"):
+                    raise ChromiumReplayError(
+                        f"fixed browser action failed: {action['id']}"
+                    )
+                action_result = evaluated_action.get("result", {}).get("value")
+                if not isinstance(action_result, dict) or action_result.get("ok") is not True:
+                    raise WebContractError(
+                        f"browser action did not complete: {action['id']}"
+                    )
+                action_results.append(
+                    {
+                        "id": action["id"],
+                        "type": action["type"],
+                        "selectorSha256": sha256_bytes(str(action["selector"]).encode()),
+                        "usedSecretRef": action.get("secretRef") is not None,
+                    }
+                )
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+                active_action["id"] = None
+            missing_expected = [
+                f"{request['actionId']}:{request['method']}:{request['pathPrefix']}"
+                for request in expected_requests
+                if int(request["used"]) == 0
+            ]
+            if missing_expected:
+                raise WebContractError(
+                    "browser actions did not produce their signed expected requests: "
+                    + ", ".join(missing_expected)
+                )
             # Give module-scheduled dynamic imports one bounded observation turn.
             # This does not dispatch an application action or execute bundle text
             # in the extractor; it only lets work already scheduled by the page settle.
@@ -908,7 +1089,7 @@ def discover(
                 "runId": run_id,
                 "workflowId": workflow["id"],
                 "stepId": step["id"],
-                "driver": "direct-cdp",
+                "driver": "direct-cdp" if loopback_target else "brokered-cdp",
                 "mode": "headed" if headed else "headless",
                 "browserBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                 "platform": platform.platform(),
@@ -963,13 +1144,29 @@ def discover(
                 "freshProfile": True,
                 "sandbox": sandbox,
                 "discovery": discovery,
+                "browserActions": action_results,
                 "requestCount": request_counter,
                 "blockedRequests": admission_errors,
                 "cdpBlockedRequests": client.blocked_external,
                 "targetCrashed": client.crashed,
-                "networkContainment": "loopback-only proxy and resolver confinement plus CDP admission",
+                "networkContainment": (
+                    {
+                        "mode": "os-enforced-broker-only",
+                        "brokerId": broker["brokerId"],
+                        "brokerVersion": broker["brokerVersion"],
+                        "directEgressBlocked": True,
+                        "dnsOutsideBrokerBlocked": True,
+                        "evidence": list(broker["evidence"]),
+                    }
+                    if not loopback_target and isinstance(broker, dict)
+                    else "loopback-only proxy and resolver confinement plus CDP admission"
+                ),
                 "limitations": [
-                    "Remote browser traffic remains blocked until an application-aware mediator and OS egress isolation can account response bytes.",
+                    (
+                        "Remote traffic was brokered under OS-enforced direct-egress and DNS containment."
+                        if not loopback_target
+                        else "Remote browser traffic remains blocked until broker-only OS containment is signed."
+                    ),
                     "Loopback browser subrequests are request-counted centrally; only retained client-artifact bytes are exported as response evidence.",
                     "Source maps referenced by loaded scripts are not automatically requested.",
                 ],

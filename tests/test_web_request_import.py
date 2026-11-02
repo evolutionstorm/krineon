@@ -810,6 +810,36 @@ accept: application/json
             ["Fetch.continueRequest", "Fetch.continueRequest"],
         )
 
+    def test_cdp_detailed_admission_observes_the_actual_browser_request(self) -> None:
+        socket = CaptureSocket()
+        client = CDPClient(socket, "https://app.example.test", 100)  # type: ignore[arg-type]
+        observed: list[dict[str, object]] = []
+
+        def admit(request: dict[str, object]) -> bool:
+            observed.append(request)
+            return request.get("postData") == "owned=value"
+
+        client.request_admission_detail = admit
+        client.handle_event(
+            {
+                "method": "Fetch.requestPaused",
+                "params": {
+                    "requestId": "owned-post",
+                    "request": {
+                        "url": "https://app.example.test/owned-submit",
+                        "method": "POST",
+                        "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                        "hasPostData": True,
+                        "postData": "owned=value",
+                    },
+                },
+            },
+            session_id="session",
+        )
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]["method"], "POST")
+        self.assertEqual(socket.messages[-1]["method"], "Fetch.continueRequest")
+
 
 if __name__ == "__main__":
     unittest.main()

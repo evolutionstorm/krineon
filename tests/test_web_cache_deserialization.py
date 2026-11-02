@@ -72,7 +72,9 @@ def cache_observation(
     shared: bool = True,
     generic_shell: bool = False,
     profile_ref: str | None = None,
+    timestamp: str = "2026-11-01T12:00:00Z",
 ) -> dict:
+    canary_sha = "replace-with-private-synthetic-canary-sha256"
     return {
         "id": f"observation-{step['id']}",
         "stepId": step["id"],
@@ -87,7 +89,10 @@ def cache_observation(
         "response": {
             "status": 200,
             "bodySha256": "body-with-canary" if canary or private else "clean-body",
-            "canarySha256": "replace-with-private-synthetic-canary-sha256" if canary or private else None,
+            "canarySha256": canary_sha if canary or private else None,
+            "securityRelevantComponents": {
+                "owned-canary": canary_sha if canary or private else "clean-component"
+            },
             "syntheticCanarySeen": canary,
             "privateCanarySeen": private,
             "genericShell": generic_shell,
@@ -105,7 +110,7 @@ def cache_observation(
             "via": "owned-cache-fixture",
             "vary": "Accept-Encoding",
             "etag": "owned-etag",
-            "timestamp": "2026-11-01T12:00:00Z",
+            "timestamp": timestamp,
             "cookiesPresent": step["actorRef"] == "owned-actor-a",
             "cachePartitionSignals": ["profile", "credential-binding", "resource"],
         },
@@ -114,7 +119,7 @@ def cache_observation(
 
 def cache_document(spec: dict, *, victim_canary: bool = True, victim_layer: str = "cdn") -> dict:
     observations = []
-    for step in spec["steps"]:
+    for index, step in enumerate(spec["steps"]):
         role = step["role"]
         if spec["mode"] == "poisoning":
             canary = role in {"attacker-prime", "victim-fetch"} and (
@@ -140,6 +145,7 @@ def cache_document(spec: dict, *, victim_canary: bool = True, victim_layer: str 
                     if role == "canonical-authenticated"
                     else spec["identities"]["victim"]["profileRef"]
                 ),
+                timestamp=f"2026-11-01T12:00:{index:02d}Z",
             )
         )
     return {
@@ -221,6 +227,43 @@ class CacheAndDeserializationResearchTests(unittest.TestCase):
             evaluate_cache(spec, cache_document(spec, victim_layer="browser-disk"))["outcome"],
             "invariant-preserved",
         )
+
+    def test_cache_result_requires_clean_baseline_order_and_component_reuse(self) -> None:
+        spec = executable_cache_spec()
+        document = cache_document(spec)
+        roles = {step["id"]: step["role"] for step in spec["steps"]}
+        by_role = {
+            roles[observation["stepId"]]: observation
+            for observation in document["observations"]
+        }
+
+        # Unrelated response bytes may vary while the security-relevant cached
+        # component remains identical.
+        by_role["attacker-prime"]["response"]["bodySha256"] = "attacker-wrapper"
+        by_role["victim-fetch"]["response"]["bodySha256"] = "victim-wrapper"
+        result = evaluate_cache(spec, document)
+        self.assertEqual(result["outcome"], "confirmed-cache-poisoning-primitive")
+        self.assertEqual(result["matchedSecurityComponents"], ["owned-canary"])
+
+        dirty_baseline = copy.deepcopy(document)
+        dirty = next(
+            observation
+            for observation in dirty_baseline["observations"]
+            if roles[observation["stepId"]] == "clean-baseline"
+        )
+        dirty["response"]["syntheticCanarySeen"] = True
+        dirty["response"]["canarySha256"] = spec["canary"]["sha256"]
+        dirty["response"]["securityRelevantComponents"]["owned-canary"] = spec["canary"]["sha256"]
+        self.assertEqual(evaluate_cache(spec, dirty_baseline)["outcome"], "invariant-preserved")
+
+        reordered = copy.deepcopy(document)
+        attacker = next(
+            observation
+            for observation in reordered["observations"]
+            if roles[observation["stepId"]] == "attacker-prime"
+        )
+        attacker["cacheMetadata"]["timestamp"] = "2026-11-01T11:59:59Z"
+        self.assertEqual(evaluate_cache(spec, reordered)["outcome"], "invariant-preserved")
 
     def test_cache_isolation_cannot_rely_on_random_marker(self) -> None:
         spec = executable_cache_spec()

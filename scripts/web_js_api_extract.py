@@ -45,7 +45,13 @@ except ImportError:
 
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_ARTIFACTS = 2000
-CONFIDENCE = {"literal-hint", "ast-resolved", "runtime-observed", "independently-replayed"}
+CONFIDENCE = {
+    "literal-hint",
+    "symbolic-candidate",
+    "ast-resolved",
+    "runtime-observed",
+    "independently-replayed",
+}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 SENSITIVE_FIELD = re.compile(r"(?i)(?:authorization|cookie|token|secret|password|api[-_]?key)")
 PATH_HINT = re.compile(r"^(?:https?|wss?)://|^/|^\./|^\.\./")
@@ -135,8 +141,59 @@ def identifiers(tokens: list[Token]) -> list[str]:
     return sorted({token.value for token in tokens if token.kind == "identifier" and token.value not in ignored})
 
 
+class ScopedBindings:
+    """Conservative lexical bindings keyed by token position and brace scope."""
+
+    def __init__(self, tokens: list[Token]):
+        self.scopes: list[int] = []
+        self.parents: dict[int, int | None] = {0: None}
+        self.values: dict[tuple[int, str], list[tuple[int, str | None]]] = {}
+        stack = [0]
+        next_scope = 1
+        for token in tokens:
+            self.scopes.append(stack[-1])
+            if token.value == "{":
+                self.parents[next_scope] = stack[-1]
+                stack.append(next_scope)
+                next_scope += 1
+            elif token.value == "}" and len(stack) > 1:
+                stack.pop()
+
+    def assign(self, index: int, name: str, value: str | None) -> None:
+        scope = self.scopes[min(max(index, 0), len(self.scopes) - 1)] if self.scopes else 0
+        self.values.setdefault((scope, name), []).append((index, value))
+
+    def lookup(self, index: int, name: str) -> str | None:
+        scope = self.scopes[min(max(index, 0), len(self.scopes) - 1)] if self.scopes else 0
+        while scope is not None:
+            candidates = [
+                row for row in self.values.get((scope, name), []) if row[0] < index
+            ]
+            if candidates:
+                return candidates[-1][1]
+            scope = self.parents.get(scope)
+        return None
+
+    def __len__(self) -> int:
+        return sum(len(value) for value in self.values.values())
+
+
+def binding_value(
+    bindings: dict[str, str] | ScopedBindings,
+    name: str,
+    at_index: int | None,
+) -> str | None:
+    if isinstance(bindings, ScopedBindings):
+        return bindings.lookup(at_index if at_index is not None else len(bindings.scopes), name)
+    return bindings.get(name)
+
+
 def resolve_expression(
-    tokens: list[Token], constants: dict[str, str], *, maximum_depth: int = 8
+    tokens: list[Token],
+    constants: dict[str, str] | ScopedBindings,
+    *,
+    maximum_depth: int = 8,
+    at_index: int | None = None,
 ) -> tuple[str, list[str], bool]:
     if maximum_depth < 1 or not tokens:
         return "{dynamic}", identifiers(tokens), False
@@ -146,8 +203,10 @@ def resolve_expression(
         token = tokens[0]
         if token.kind in {"string", "template"} and token.value != "<interpolated>":
             return token.value, [], True
-        if token.kind == "identifier" and token.value in constants:
-            return constants[token.value], [], True
+        if token.kind == "identifier":
+            resolved = binding_value(constants, token.value, at_index)
+            if resolved is not None:
+                return resolved, [], True
         return "{" + token.value + "}", [token.value] if token.kind == "identifier" else [], False
     depth = 0
     pieces: list[list[Token]] = []
@@ -164,21 +223,37 @@ def resolve_expression(
             current.append(token)
     if pieces:
         pieces.append(current)
-        resolved = [resolve_expression(piece, constants, maximum_depth=maximum_depth - 1) for piece in pieces]
+        resolved = [
+            resolve_expression(
+                piece,
+                constants,
+                maximum_depth=maximum_depth - 1,
+                at_index=at_index,
+            )
+            for piece in pieces
+        ]
         return "".join(item[0] for item in resolved), sorted({name for item in resolved for name in item[1]}), all(item[2] for item in resolved)
     if len(tokens) >= 3 and tokens[0].value == "new" and tokens[1].value == "URL" and tokens[2].value == "(":
         args = call_arguments(tokens, 2)
         if args:
-            path, path_deps, path_exact = resolve_expression(args[0], constants, maximum_depth=maximum_depth - 1)
+            path, path_deps, path_exact = resolve_expression(
+                args[0], constants, maximum_depth=maximum_depth - 1, at_index=at_index
+            )
             if len(args) > 1:
-                base, base_deps, base_exact = resolve_expression(args[1], constants, maximum_depth=maximum_depth - 1)
+                base, base_deps, base_exact = resolve_expression(
+                    args[1], constants, maximum_depth=maximum_depth - 1, at_index=at_index
+                )
                 return urljoin(base, path), sorted(set(path_deps + base_deps)), path_exact and base_exact
             return path, path_deps, path_exact
     return "{" + symbolic(tokens) + "}", identifiers(tokens), False
 
 
 def resolve_url_expression(
-    tokens: list[Token], constants: dict[str, str], artifact_url: str
+    tokens: list[Token],
+    constants: dict[str, str] | ScopedBindings,
+    artifact_url: str,
+    *,
+    at_index: int | None = None,
 ) -> tuple[str, list[str], bool]:
     """Resolve URL constructors using module semantics where explicitly stated."""
 
@@ -190,10 +265,12 @@ def resolve_url_expression(
     ):
         args = call_arguments(tokens, 2)
         if args:
-            path, dependencies, exact = resolve_expression(args[0], constants)
+            path, dependencies, exact = resolve_expression(
+                args[0], constants, at_index=at_index
+            )
             if len(args) > 1 and symbolic(args[1]) == "import.meta.url":
                 return urljoin(artifact_url, path), dependencies, exact
-    return resolve_expression(tokens, constants)
+    return resolve_expression(tokens, constants, at_index=at_index)
 
 
 def object_fields(tokens: list[Token]) -> list[str]:
@@ -298,11 +375,13 @@ def literal_kind(value: str) -> str:
     return "literal-candidate"
 
 
-def constants_and_clients(tokens: list[Token]) -> tuple[dict[str, str], dict[str, str]]:
-    constants: dict[str, str] = {}
-    clients: dict[str, str] = {}
+def constants_and_clients(tokens: list[Token]) -> tuple[ScopedBindings, ScopedBindings]:
+    constants = ScopedBindings(tokens)
+    clients = ScopedBindings(tokens)
     for index, token in enumerate(tokens):
         if token.value != "=" or index < 1 or tokens[index - 1].kind != "identifier":
+            continue
+        if index >= 2 and tokens[index - 2].value in {".", "?."}:
             continue
         target = tokens[index - 1].value
         end = index + 1
@@ -316,14 +395,26 @@ def constants_and_clients(tokens: list[Token]) -> tuple[dict[str, str], dict[str
                 break
             end += 1
         expression = tokens[index + 1 : end]
-        value, deps, exact = resolve_expression(expression, constants)
+        value, deps, exact = resolve_expression(
+            expression, constants, at_index=index
+        )
         if exact and not deps and len(value) <= 4096:
-            constants[target] = value
+            constants.assign(index, target, value)
+        else:
+            # An unresolved overwrite hides an earlier binding in this scope.
+            constants.assign(index, target, None)
         text = symbolic(expression)
         if "axios.create(" in text or ".create(" in text:
             base = option_value(expression, "baseURL")
             if base:
-                clients[target] = resolve_expression(base, constants)[0]
+                resolved_base, dependencies, base_exact = resolve_expression(
+                    base, constants, at_index=index
+                )
+                clients.assign(
+                    index,
+                    target,
+                    resolved_base if base_exact and not dependencies else None,
+                )
     return constants, clients
 
 
@@ -357,7 +448,9 @@ def wrapper_names(tokens: list[Token]) -> set[str]:
 
 
 def wrapper_url_templates(
-    tokens: list[Token], constants: dict[str, str], wrappers: set[str]
+    tokens: list[Token],
+    constants: dict[str, str] | ScopedBindings,
+    wrappers: set[str],
 ) -> dict[str, dict[str, Any]]:
     """Resolve small arrow wrappers without evaluating application code."""
 
@@ -397,7 +490,9 @@ def wrapper_url_templates(
             args = call_arguments(body, local_index)
             if not args:
                 continue
-            template, dependencies, _exact = resolve_expression(args[0], constants)
+            template, dependencies, _exact = resolve_expression(
+                args[0], constants, at_index=index
+            )
             if not any(parameter in dependencies for parameter in parameters):
                 continue
             templates[name] = {
@@ -409,11 +504,55 @@ def wrapper_url_templates(
     return templates
 
 
+def graphql_operation_from_tokens(
+    query_tokens: list[Token],
+    operation_name_tokens: list[Token],
+    constants: dict[str, str] | ScopedBindings,
+    *,
+    at_index: int,
+) -> tuple[str, list[str]]:
+    dependencies: list[str] = []
+    if operation_name_tokens:
+        operation_name, deps, exact = resolve_expression(
+            operation_name_tokens, constants, at_index=at_index
+        )
+        dependencies.extend(deps)
+        if exact and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", operation_name):
+            return operation_name, sorted(set(dependencies))
+    if query_tokens:
+        query, deps, exact = resolve_expression(
+            query_tokens, constants, at_index=at_index
+        )
+        dependencies.extend(deps)
+        match = re.search(
+            r"(?i)\b(?:query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            query,
+        )
+        if match:
+            return match.group(1), sorted(set(dependencies))
+        if exact and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query):
+            return query, sorted(set(dependencies))
+    return "", sorted(set(dependencies or identifiers([*operation_name_tokens, *query_tokens])))
+
+
+def body_object_tokens(tokens: list[Token]) -> list[Token]:
+    """Return the object passed to JSON.stringify, or the original body tokens."""
+
+    for index, token in enumerate(tokens):
+        if token.value != "(" or index < 1:
+            continue
+        callee, _ = dotted_name(tokens, index - 1)
+        if callee == "JSON.stringify":
+            arguments = call_arguments(tokens, index)
+            return arguments[0] if arguments else tokens
+    return tokens
+
+
 def call_candidates(
     *,
     tokens: list[Token],
-    constants: dict[str, str],
-    clients: dict[str, str],
+    constants: dict[str, str] | ScopedBindings,
+    clients: dict[str, str] | ScopedBindings,
     wrappers: set[str],
     wrapper_templates: dict[str, dict[str, Any]],
     artifact: dict[str, Any],
@@ -445,6 +584,7 @@ def call_candidates(
         method = ""
         url_tokens: list[Token] = []
         graphql_operation = ""
+        operation_dependencies: list[str] = []
         rpc_action = ""
         if callee == "fetch" or leaf in wrappers:
             kind, method = "http-api", "GET"
@@ -452,7 +592,9 @@ def call_candidates(
             if len(args) > 1:
                 method_tokens = option_value(args[1], "method")
                 if method_tokens:
-                    method_value = resolve_expression(method_tokens, constants)[0].upper()
+                    method_value = resolve_expression(
+                        method_tokens, constants, at_index=index
+                    )[0].upper()
                     if method_value in HTTP_METHODS:
                         method = method_value
         elif callee == "axios" and args:
@@ -460,15 +602,20 @@ def call_candidates(
             url_tokens = option_value(args[0], "url")
             method_tokens = option_value(args[0], "method")
             if method_tokens:
-                method_value = resolve_expression(method_tokens, constants)[0].upper()
+                method_value = resolve_expression(
+                    method_tokens, constants, at_index=index
+                )[0].upper()
                 if method_value in HTTP_METHODS:
                     method = method_value
-        elif leaf.lower() in {value.lower() for value in HTTP_METHODS} and (receiver in clients or receiver in {"axios", "client", "api"}):
+        elif leaf.lower() in {value.lower() for value in HTTP_METHODS} and (
+            binding_value(clients, receiver, index) is not None
+            or receiver in {"axios", "client", "api"}
+        ):
             kind, method = "http-api", leaf.upper()
             url_tokens = args[0] if args else []
         elif leaf == "open" and len(args) >= 2:
             kind = "xhr"
-            method = resolve_expression(args[0], constants)[0].upper()
+            method = resolve_expression(args[0], constants, at_index=index)[0].upper()
             url_tokens = args[1]
         elif leaf in {"WebSocket", "EventSource"}:
             kind = "websocket" if leaf == "WebSocket" else "event-stream"
@@ -479,22 +626,35 @@ def call_candidates(
             method = "POST"
             url_tokens = []
             operation_tokens = option_value(args[0], "query") if args else []
-            graphql_operation = symbolic(operation_tokens)[:500]
+            operation_name_tokens = option_value(args[0], "operationName") if args else []
+            graphql_operation, operation_dependencies = graphql_operation_from_tokens(
+                operation_tokens,
+                operation_name_tokens,
+                constants,
+                at_index=index,
+            )
         elif leaf in {"request", "call", "dispatch", "invoke"} and args:
             method_tokens = option_value(args[0], "method")
             if method_tokens:
                 kind = "rpc"
                 method = "POST"
-                rpc_action = resolve_expression(method_tokens, constants)[0]
+                rpc_action = resolve_expression(
+                    method_tokens, constants, at_index=index
+                )[0]
         if not kind:
             continue
         resolved, dynamic_values, exact = (
-            resolve_url_expression(url_tokens, constants, artifact_url)
+            resolve_url_expression(
+                url_tokens, constants, artifact_url, at_index=index
+            )
             if url_tokens
             else ("", [], False)
         )
         if leaf in wrapper_templates and args:
-            invocation_values = [resolve_expression(argument, constants) for argument in args]
+            invocation_values = [
+                resolve_expression(argument, constants, at_index=index)
+                for argument in args
+            ]
             wrapper = wrapper_templates[leaf]
             wrapper_value = str(wrapper["template"])
             wrapper_dependencies: list[str] = []
@@ -511,8 +671,10 @@ def call_candidates(
             resolved = wrapper_value
             dynamic_values = sorted(set(wrapper_dependencies))
             exact = wrapper_exact and "{" not in wrapper_value
-        if receiver in clients and resolved:
-            resolved = urljoin(clients[receiver].rstrip("/") + "/", resolved.lstrip("/"))
+        dynamic_values = sorted(set(dynamic_values + operation_dependencies))
+        client_base = binding_value(clients, receiver, index)
+        if client_base and resolved:
+            resolved = urljoin(client_base.rstrip("/") + "/", resolved.lstrip("/"))
         origin, path_template, query = normalize_candidate(resolved, document_url)
         option_tokens = args[1] if kind == "http-api" and len(args) > 1 else (args[0] if args else [])
         header_names = [
@@ -522,10 +684,15 @@ def call_candidates(
             name for name in header_names if re.search(r"(?i)(auth|csrf|xsrf|signature|token|cookie)", name)
         )
         content_type_tokens = option_value(option_value(option_tokens, "headers"), "Content-Type") or option_value(option_value(option_tokens, "headers"), "content-type")
-        content_type = resolve_expression(content_type_tokens, constants)[0] if content_type_tokens else ""
+        content_type = (
+            resolve_expression(content_type_tokens, constants, at_index=index)[0]
+            if content_type_tokens
+            else ""
+        )
         body_tokens = option_value(option_tokens, "body")
+        body_object = body_object_tokens(body_tokens)
         query_fields = sorted({item["name"] for item in query})
-        body_fields = object_fields(body_tokens)
+        body_fields = object_fields(body_object)
         query_text = ""
         parsed_resolved = urlsplit(urljoin(document_url, resolved)) if resolved else None
         if parsed_resolved is not None:
@@ -533,7 +700,20 @@ def call_candidates(
                 if name.lower() in {"query", "operation", "operationname"}:
                     query_text = value
                     break
-        if kind == "http-api" and ("graphql" in path_template.lower() or query_text):
+        body_query = option_value(body_object, "query")
+        body_operation_name = option_value(body_object, "operationName")
+        body_graphql_operation, body_graphql_dependencies = graphql_operation_from_tokens(
+            body_query,
+            body_operation_name,
+            constants,
+            at_index=index,
+        )
+        if kind == "http-api" and (
+            "graphql" in path_template.lower()
+            or query_text
+            or body_query
+            or body_operation_name
+        ):
             kind = "graphql"
             operation_match = re.search(
                 r"(?i)\b(?:query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -546,6 +726,23 @@ def call_candidates(
                 if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query_text)
                 else ""
             )
+            if body_graphql_operation:
+                graphql_operation = body_graphql_operation
+            dynamic_values = sorted(
+                set(dynamic_values + body_graphql_dependencies)
+            )
+        if kind == "http-api" and method == "POST":
+            body_rpc_method = option_value(body_object, "method")
+            body_jsonrpc = option_value(body_object, "jsonrpc")
+            if body_rpc_method and ("rpc" in path_template.lower() or body_jsonrpc):
+                candidate_rpc, rpc_dependencies, rpc_exact = resolve_expression(
+                    body_rpc_method, constants, at_index=index
+                )
+                if rpc_exact:
+                    kind = "rpc"
+                    rpc_action = candidate_rpc
+                else:
+                    dynamic_values = sorted(set(dynamic_values + rpc_dependencies))
         option_text = symbolic(option_tokens)
         persisted_match = re.search(
             r"(?i)(?:sha256Hash|persistedQuery)[^a-f0-9]{0,64}([a-f0-9]{64})",
@@ -600,8 +797,9 @@ def call_candidates(
                 "csrfDependencies": [name for name in auth_deps if re.search(r"(?i)(csrf|xsrf)", name)],
                 "signingDependencies": [name for name in auth_deps if "sign" in name.lower()],
                 "dynamicValueDependencies": dynamic_values,
-                "confidence": "ast-resolved",
+                "confidence": "ast-resolved" if exact else "symbolic-candidate",
                 "expressionFullyResolved": exact,
+                "unresolvedExpression": symbolic(url_tokens) if not exact else "",
                 "effectClassification": "unknown",
                 "scopeApprovalStatus": "candidate-not-authorized",
                 "deploymentEpoch": deployment_epoch,

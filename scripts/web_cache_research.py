@@ -10,6 +10,7 @@ browser state, content negotiation, or stale deployment output.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from pathlib import Path
@@ -250,6 +251,17 @@ def validate_observation(value: Any, step_ids: set[str]) -> dict[str, Any]:
     ):
         if not isinstance(response.get(field), bool):
             raise WebContractError(f"cache response {field} must be Boolean")
+    components = response.get("securityRelevantComponents", {})
+    if not isinstance(components, dict) or any(
+        not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(component, str)
+        or not component.strip()
+        for name, component in components.items()
+    ):
+        raise WebContractError(
+            "cache response securityRelevantComponents must map component names to retained digests"
+        )
     provenance = response.get("provenance")
     if not isinstance(provenance, dict) or provenance.get("layer") not in CACHE_LAYERS:
         raise WebContractError("cache response requires classified provenance")
@@ -258,6 +270,45 @@ def validate_observation(value: Any, step_ids: set[str]) -> dict[str, Any]:
     string_list(provenance.get("evidence"), "response.provenance.evidence")
     validate_cache_metadata(value.get("cacheMetadata"), "observation.cacheMetadata")
     return dict(value)
+
+
+def observation_time(value: dict[str, Any]) -> dt.datetime:
+    raw = str(value["cacheMetadata"]["timestamp"])
+    try:
+        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise WebContractError("cache observation timestamp must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise WebContractError("cache observation timestamp requires a timezone")
+    return parsed
+
+
+def component_match(
+    attacker: dict[str, Any], victim: dict[str, Any], canary_sha256: str
+) -> tuple[bool, list[str]]:
+    attacker_components = attacker.get("securityRelevantComponents", {})
+    victim_components = victim.get("securityRelevantComponents", {})
+    matched = sorted(
+        name
+        for name in set(attacker_components).intersection(victim_components)
+        if attacker_components[name] == victim_components[name]
+        and attacker_components[name] == canary_sha256
+    )
+    if matched:
+        return True, matched
+    return (
+        attacker.get("canarySha256") == canary_sha256
+        and victim.get("canarySha256") == canary_sha256,
+        ["synthetic-canary"],
+    )
+
+
+def response_contains_canary(response: dict[str, Any], canary_sha256: str) -> bool:
+    return (
+        response.get("canarySha256") == canary_sha256
+        or canary_sha256
+        in set(response.get("securityRelevantComponents", {}).values())
+    )
 
 
 def evaluate(spec_raw: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:
@@ -292,6 +343,7 @@ def evaluate(spec_raw: dict[str, Any], document: dict[str, Any]) -> dict[str, An
     attacker = by_role["attacker-prime"]
     victim = by_role["victim-fetch"]
     control = by_role["enforcing-control"]
+    baseline = by_role["clean-baseline"]
     expected_profiles = {
         "attacker-prime": spec["identities"]["attacker"]["profileRef"],
         "victim-fetch": spec["identities"]["victim"]["profileRef"],
@@ -306,6 +358,8 @@ def evaluate(spec_raw: dict[str, Any], document: dict[str, Any]) -> dict[str, An
     if attacker["profileRef"] == victim["profileRef"]:
         return {"outcome": "inconclusive", "reason": "victim-profile-not-independent"}
     victim_response = victim["response"]
+    baseline_response = baseline["response"]
+    attacker_response = attacker["response"]
     provenance = victim_response["provenance"]
     shared = provenance["layer"] in SHARED_LAYERS and provenance["sharedReuseProved"] is True
     if spec["observedCacheLayer"] != "unknown" and provenance["layer"] != spec["observedCacheLayer"]:
@@ -322,12 +376,28 @@ def evaluate(spec_raw: dict[str, Any], document: dict[str, Any]) -> dict[str, An
     control_enforces = not control["response"][
         "syntheticCanarySeen" if spec["mode"] == "poisoning" else "privateCanarySeen"
     ]
+    temporal_order = (
+        observation_time(baseline)
+        < observation_time(attacker)
+        < observation_time(victim)
+    )
+    component_reused, matched_components = component_match(
+        attacker_response, victim_response, spec["canary"]["sha256"]
+    )
     if spec["mode"] == "poisoning":
+        baseline_absent = (
+            not baseline_response["syntheticCanarySeen"]
+            and not response_contains_canary(
+                baseline_response, spec["canary"]["sha256"]
+            )
+        )
         proved = (
-            attacker["response"]["syntheticCanarySeen"]
+            baseline_absent
+            and temporal_order
+            and attacker_response["syntheticCanarySeen"]
             and victim_response["syntheticCanarySeen"]
             and victim_response["canarySha256"] == spec["canary"]["sha256"]
-            and victim_response["bodySha256"] == attacker["response"]["bodySha256"]
+            and component_reused
             and victim["resourceIdentity"] == attacker["resourceIdentity"]
             and victim["ordinaryRequest"]
             and not victim["disputedInputPresent"]
@@ -342,18 +412,29 @@ def evaluate(spec_raw: dict[str, Any], document: dict[str, Any]) -> dict[str, An
             "sharedReuseProved": shared,
             "independentVictim": True,
             "confounderObserved": confounder,
+            "baselineCanaryAbsent": baseline_absent,
+            "temporalOrderProved": temporal_order,
+            "matchedSecurityComponents": matched_components if component_reused else [],
             "note": "RCE, XSS, account compromise, or cross-tenant impact requires separate proof.",
         }
     canonical = by_role["canonical-authenticated"]
     anonymous = by_role["canonical-anonymous-control"]
+    baseline_absent = (
+        not baseline_response["privateCanarySeen"]
+        and not response_contains_canary(
+            baseline_response, spec["canary"]["sha256"]
+        )
+    )
     proved = (
-        canonical["response"]["privateCanarySeen"]
+        baseline_absent
+        and temporal_order
+        and canonical["response"]["privateCanarySeen"]
         and canonical["response"]["canarySha256"] == spec["canary"]["sha256"]
         and not anonymous["response"]["privateCanarySeen"]
         and attacker["response"]["privateCanarySeen"]
         and victim_response["privateCanarySeen"]
         and victim_response["canarySha256"] == spec["canary"]["sha256"]
-        and victim_response["bodySha256"] == attacker["response"]["bodySha256"]
+        and component_reused
         and victim["resourceIdentity"] == attacker["resourceIdentity"]
         and victim["ordinaryRequest"]
         and not victim["disputedInputPresent"]
@@ -368,6 +449,9 @@ def evaluate(spec_raw: dict[str, Any], document: dict[str, Any]) -> dict[str, An
         "sharedReuseProved": shared,
         "independentVictim": True,
         "confounderObserved": confounder,
+        "baselineCanaryAbsent": baseline_absent,
+        "temporalOrderProved": temporal_order,
+        "matchedSecurityComponents": matched_components if component_reused else [],
     }
 
 

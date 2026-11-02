@@ -615,12 +615,112 @@ def validate_goal(raw: Any, graph: dict[str, Any]) -> dict[str, Any]:
     return goal
 
 
-def producer_map(operations: dict[str, dict[str, Any]]) -> dict[str, str]:
-    result = {}
+def producer_map(operations: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    """Index every producer of a value instead of silently keeping the last one."""
+
+    result: dict[str, list[str]] = {}
     for operation in operations.values():
         for value in operation["produces"]:
-            result[value["id"]] = operation["id"]
+            result.setdefault(value["id"], []).append(operation["id"])
+    for producers in result.values():
+        producers.sort()
     return result
+
+
+def _requirement_facts(requirement: dict[str, Any]) -> list[dict[str, Any]]:
+    if requirement["operator"] == "fact":
+        return [requirement]
+    return [
+        fact
+        for clause in requirement["clauses"]
+        for fact in _requirement_facts(clause)
+    ]
+
+
+def _kind_satisfies(fact_type: str, produced_kind: str) -> bool:
+    if fact_type == "server-value":
+        return True
+    if fact_type == "approval":
+        return produced_kind == "approval"
+    if fact_type in {"capability", "authority"}:
+        return produced_kind in {"approval", "capability", "authority"}
+    if fact_type == "relationship":
+        return produced_kind == "relationship"
+    if fact_type == "state":
+        return produced_kind == "state"
+    return False
+
+
+def _value_compatible_with_consumer(
+    value: dict[str, Any], consumer: dict[str, Any]
+) -> bool:
+    bindings = {item["id"] for item in consumer["resourceBindings"]}
+    if value["resourceBinding"] not in bindings:
+        return False
+    matching_consumed = [
+        item for item in consumer["consumes"] if item["id"] == value["id"]
+    ]
+    if matching_consumed:
+        return any(
+            all(
+                item[field] == value[field]
+                for field in ("kind", "resourceBinding", "version")
+            )
+            and (
+                value["transferPolicy"] == "application-observed"
+                or item["actorBinding"] == value["intendedConsumer"]
+            )
+            for item in matching_consumed
+        )
+    consumer_actors = {
+        consumer["actorRef"]["id"],
+        consumer["actorRef"]["effectiveActor"],
+    }
+    return (
+        value["transferPolicy"] == "application-observed"
+        or value["intendedConsumer"] in consumer_actors
+    )
+
+
+def prerequisite_producers(
+    consumer: dict[str, Any],
+    operations: dict[str, dict[str, Any]],
+    goal: dict[str, Any],
+) -> set[str]:
+    """Resolve typed requirements to all context-compatible producers."""
+
+    dependencies: set[str] = set()
+    for fact in _requirement_facts(consumer["requires"]):
+        if fact.get("expected", True) is not True:
+            continue
+        fact_type = str(fact["type"])
+        reference = str(fact["ref"])
+        if fact_type == "operation":
+            if reference in operations:
+                dependencies.add(reference)
+            continue
+        for producer in operations.values():
+            for value in producer["produces"]:
+                if (
+                    value["id"] == reference
+                    and _kind_satisfies(fact_type, value["kind"])
+                    and _value_compatible_with_consumer(value, consumer)
+                ):
+                    dependencies.add(producer["id"])
+            semantics = goal["operationSemantics"].get(producer["id"], {})
+            if fact_type in {"relationship", "state"}:
+                for transition in semantics.get("resourceTransitions", []):
+                    after = transition.get("to", {})
+                    if reference in {
+                        str(after.get("relationship") or ""),
+                        str(after.get("version") or ""),
+                        str(after.get("generation") or ""),
+                    } and any(
+                        binding["id"] == transition.get("resourceId")
+                        for binding in consumer["resourceBindings"]
+                    ):
+                        dependencies.add(producer["id"])
+    return dependencies
 
 
 def history_change_operation_ids(change: dict[str, Any]) -> set[str]:
@@ -649,14 +749,16 @@ def backward_relevant_operations(
             raise WebContractError(f"goal references unknown operation: {operation_id}")
         dependencies = set(operation["ordering"]["after"])
         dependencies.update(
-            producer_map(operations).get(value["id"], "")
+            producer
             for value in operation["consumes"]
+            for producer in produced_by.get(value["id"], [])
+            if any(
+                produced["id"] == value["id"]
+                and _value_compatible_with_consumer(produced, operation)
+                for produced in operations[producer]["produces"]
+            )
         )
-        dependencies.update(
-            ref
-            for ref in requirement_refs(operation["requires"])
-            if ref in operations
-        )
+        dependencies.update(prerequisite_producers(operation, operations, goal))
         for dependency in dependencies.difference({""}):
             if dependency not in relevant:
                 relevant.add(dependency)
@@ -681,6 +783,7 @@ def initial_state(goal: dict[str, Any]) -> dict[str, Any]:
         "actors": list(goal["startingAuthority"]["actorRefs"]),
         "resources": goal["startingAuthority"]["resources"],
         "serverValues": list(goal["startingAuthority"]["serverValueRefs"]),
+        "serverValueContracts": {},
         "invalidatedValues": list(goal["startingAuthority"]["invalidatedValueRefs"]),
         "consumptionCounts": dict(goal["startingAuthority"]["consumptionCounts"]),
         "capabilities": list(goal["startingAuthority"]["capabilityRefs"]),
@@ -886,6 +989,12 @@ def apply_operation(
         reference = value["id"]
         if reference not in state["serverValues"]:
             return None
+        contracts = state.get("serverValueContracts", {}).get(reference, [])
+        if contracts and not any(
+            _value_compatible_with_consumer(candidate, operation)
+            for candidate in contracts
+        ):
+            return None
         if reference in state["invalidatedValues"] and reference not in set(
             goal["counterfactualExceptions"]["invalidatedValueRefs"]
         ):
@@ -906,6 +1015,11 @@ def apply_operation(
     for reference in produced_values:
         if reference not in updated["serverValues"]:
             updated["serverValues"].append(reference)
+    updated.setdefault("serverValueContracts", {})
+    for value in operation["produces"]:
+        contracts = updated["serverValueContracts"].setdefault(value["id"], [])
+        if value not in contracts:
+            contracts.append(value)
     for value in operation["produces"]:
         if value["kind"] in {"approval", "capability"} and value["id"] not in updated["capabilities"]:
             updated["capabilities"].append(value["id"])
@@ -944,6 +1058,7 @@ def semantic_core(state: dict[str, Any]) -> str:
             "actors": state["actors"],
             "resources": state["resources"],
             "serverValues": state["serverValues"],
+            "serverValueContracts": state.get("serverValueContracts", {}),
             "invalidatedValues": state["invalidatedValues"],
             "consumptionCounts": state["consumptionCounts"],
             "capabilities": state["capabilities"],
@@ -994,8 +1109,14 @@ def causal_minimization(
     for operation_id in sequence:
         operation = operations[operation_id]
         for value in operation["consumes"]:
-            if value["id"] in produced_by:
-                required.add(produced_by[value["id"]])
+            required.update(
+                producer
+                for producer in produced_by.get(value["id"], [])
+                if producer in sequence
+            )
+        required.update(
+            prerequisite_producers(operation, operations, goal).intersection(sequence)
+        )
     return [
         {
             "operationId": value,

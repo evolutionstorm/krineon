@@ -156,6 +156,70 @@ class DepthKnowledgeTest(unittest.TestCase):
         self.assertEqual(search[0]["kind"], "compacted-observation-digest")
         self.assertTrue(search[0]["losslessExpansion"])
 
+    def test_context_incompatible_capability_cannot_complete_chain(self) -> None:
+        result = {
+            "taskResult": {
+                "observations": [
+                    {
+                        "kind": "runtime-differential",
+                        "mechanism": "tenant-bound-capability",
+                        "summary": "development tenant A capability",
+                        "confidence": "runtime-observed",
+                        "context": {
+                            "tenant": "tenant-a",
+                            "environment": "development",
+                            "runtime": "development",
+                        },
+                        "producesCapabilities": ["privileged-route-access"],
+                        "evidence": ["evidence/runtime.json"],
+                    }
+                ],
+                "attackChainTodos": [
+                    {
+                        "id": "context-bound-chain",
+                        "title": "production tenant B authority",
+                        "terminalCapability": "privileged-route-access",
+                        "context": {
+                            "tenant": "tenant-b",
+                            "environment": "production",
+                            "runtime": "production",
+                        },
+                        "steps": [
+                            {
+                                "id": "production-capability",
+                                "title": "obtain production authority",
+                                "capability": "privileged-route-access",
+                                "successCriteria": ["runtime evidence in tenant B production"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+        ingest_submission(
+            self.root,
+            self.connection,
+            task_id="task-context",
+            worker_id="worker-context",
+            result_path="results/task-context.json",
+            result=result,
+            validated_leads=[],
+        )
+        chain = self.connection.execute(
+            "SELECT state FROM depth_chain_plans WHERE chain_id='context-bound-chain'"
+        ).fetchone()
+        step = self.connection.execute(
+            "SELECT state,resolution_json FROM depth_chain_steps "
+            "WHERE chain_id='context-bound-chain'"
+        ).fetchone()
+        self.assertEqual(chain["state"], "active")
+        self.assertNotEqual(step["state"], "satisfied")
+        resolution = json.loads(step["resolution_json"])
+        self.assertEqual(resolution["outputs"][0]["status"], "incompatible")
+        self.assertTrue(
+            any("tenant" in reason for reason in resolution["outputs"][0]["reasons"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

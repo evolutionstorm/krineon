@@ -110,7 +110,29 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(feedback["state"], "scheduled")
             self.assertEqual(feedback["scheduled_task_id"], typed[0]["task_id"])
             packet = campaign / typed[0]["packet"]
-            self.assertIn("protected-resource-read", packet.read_text(encoding="utf-8"))
+            packet_text = packet.read_text(encoding="utf-8")
+            self.assertIn("resource-resolution-disagreement", packet_text)
+            self.assertNotIn(
+                "Capability this experiment must establish: protected-resource-read",
+                packet_text,
+            )
+            # Source support makes the first edge compatible, not observed.
+            # The coordinator must validate it at runtime before scheduling the
+            # protected-resource-read consumer.
+            connection = sqlite3.connect(campaign / "orchestration.db")
+            connection.row_factory = sqlite3.Row
+            steps = connection.execute(
+                "SELECT capability,state,resolution_json FROM depth_chain_steps "
+                "ORDER BY ordinal"
+            ).fetchall()
+            connection.close()
+            self.assertEqual(steps[0]["capability"], "resource-resolution-disagreement")
+            self.assertEqual(steps[0]["state"], "running")
+            self.assertEqual(
+                json.loads(steps[0]["resolution_json"])["outputs"][0]["status"],
+                "compatible",
+            )
+            self.assertEqual(steps[1]["state"], "pending")
 
     def test_worker_checkpoint_is_lease_bound_and_coordinator_steerable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

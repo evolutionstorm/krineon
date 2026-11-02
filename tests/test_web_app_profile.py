@@ -20,9 +20,15 @@ from scripts.research_harness import (
     verified_web_observation,
     web_gate_result,
 )
-from scripts.web_blind_evaluation import enroll, score
+from scripts.web_blind_evaluation import (
+    discover as blind_discover,
+    enroll,
+    mechanism_fingerprint,
+    score,
+    score_discovery,
+)
 from scripts.web_business_logic import compile_business_logic
-from scripts.web_cdp_runner import discover
+from scripts.web_cdp_runner import browser_network_flags, discover
 from scripts.web_contract import (
     BudgetLedger,
     ExecutionLease,
@@ -1049,6 +1055,227 @@ http:
                     output=root / "browser-output",
                     timeout=1,
                 )
+
+    def test_remote_browser_requires_broker_and_actions_are_explicitly_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote = contract_value("https://example.test", confirmed=True)
+            remote["origins"][0]["allowedMethods"].append("POST")
+            remote["authorization"].update(
+                {
+                    "allowBrowserNavigation": True,
+                    "allowBrowserActions": True,
+                    "allowStateChangingOperations": True,
+                }
+            )
+            remote["effectClasses"]["disposable-write"]["permitted"] = True
+            remote["actionPolicies"].append(
+                {
+                    "id": "owned-browser-write",
+                    "originId": "app",
+                    "pathPrefix": "/owned-submit",
+                    "methods": ["POST"],
+                    "effectClasses": ["disposable-write"],
+                    "maxRequestBodyBytes": 4096,
+                    "maxResponseBodyBytes": 16384,
+                }
+            )
+            remote["networkContainment"].update(
+                {
+                    "remoteBrowserTraffic": "os-egress-enforced",
+                    "evidence": {"namespace": "owned-browser-netns"},
+                    "browserBroker": {
+                        "mode": "os-enforced-broker-only",
+                        "proxyUrl": "http://127.0.0.1:18080",
+                        "brokerId": "owned-browser-broker",
+                        "brokerVersion": "fixture-v1",
+                        "directEgressBlocked": True,
+                        "dnsOutsideBrokerBlocked": True,
+                        "allowedOriginIds": ["app"],
+                        "evidence": ["evidence/browser-netns.json"],
+                    },
+                }
+            )
+            contract_path = root / "remote.json"
+            contract_path.write_text(json.dumps(remote, indent=2) + "\n")
+            contract = WebCampaignContract.load(contract_path)
+            flags = browser_network_flags(
+                loopback_target=False,
+                broker=remote["networkContainment"]["browserBroker"],
+            )
+            self.assertIn("--proxy-server=http://127.0.0.1:18080", flags)
+            self.assertIn("--proxy-bypass-list=<-loopback>", flags)
+            self.assertFalse(any("example.test" in flag for flag in flags))
+            workflow = workflow_value()
+            step = workflow["steps"][0]
+            step.update(
+                {
+                    "type": "browser",
+                    "identityId": "anonymous",
+                    "session": "anonymous",
+                    "path": "/",
+                    "operationClass": "browser-action",
+                    "browserActions": [
+                        {
+                            "id": "owned-submit",
+                            "type": "click",
+                            "selector": "#owned-submit",
+                            "expectedRequests": [
+                                {
+                                    "originId": "app",
+                                    "pathPrefix": "/owned-submit",
+                                    "method": "POST",
+                                    "effectClass": "disposable-write",
+                                    "maxCount": 1,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+            # A state-changing browser step needs an explicit compensating step.
+            cleanup = dict(workflow["cleanupSteps"][0]) if workflow["cleanupSteps"] else None
+            if cleanup is None:
+                cleanup = dict(step)
+                cleanup.update(
+                    {
+                        "id": "owned-submit-cleanup",
+                        "type": "http",
+                        "method": "POST",
+                        "path": "/owned-submit",
+                        "operationClass": "ordinary-http",
+                        "effectClass": "disposable-write",
+                        "browserActions": [],
+                    }
+                )
+                workflow["cleanupSteps"] = [cleanup]
+            validate_workflow(workflow, contract, dynamic=False)
+            with self.assertRaisesRegex(WebContractError, "Chromium binary does not exist"):
+                discover(
+                    campaign=root,
+                    binary=root / "missing-chrome",
+                    contract=contract,
+                    workflow=workflow,
+                    step=step,
+                    ledger=BudgetLedger(contract, root / "remote-ledger.json"),
+                    output=root / "browser-output",
+                    timeout=1,
+                )
+
+            invalid = json.loads(json.dumps(remote))
+            invalid["networkContainment"]["browserBroker"]["proxyUrl"] = "https://proxy.example.test:443"
+            invalid_path = root / "invalid-remote.json"
+            invalid_path.write_text(json.dumps(invalid, indent=2) + "\n")
+            with self.assertRaisesRegex(WebContractError, "explicit loopback proxy"):
+                WebCampaignContract.load(invalid_path)
+
+    def test_blind_discovery_derives_authorization_hypothesis_without_prepared_oracle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaign = self.initialize_campaign(root)
+            contract_path = campaign / "web-campaign.json"
+            contract_path.write_text(
+                json.dumps(contract_value(self.origin, confirmed=True), indent=2) + "\n"
+            )
+            observations = {
+                "schemaVersion": 1,
+                "kind": "krineon-web-blind-observations",
+                "prerequisiteVersion": "owned-fixture-v1",
+                "observations": [
+                    {
+                        "id": "owner-reads-b",
+                        "actorRef": "user-b",
+                        "actorTenant": "tenant-b",
+                        "resourceRef": "record-b",
+                        "resourceOwnerRef": "user-b",
+                        "resourceTenant": "tenant-b",
+                        "action": "read-private-record",
+                        "outcome": "allowed",
+                        "securityRelevantSha256": "sha256:owned-b",
+                        "resourceVisibility": "private",
+                        "authoritative": True,
+                        "ownedFixture": True,
+                        "evidenceRef": "evidence/owner-b.json",
+                    },
+                    {
+                        "id": "a-reads-a",
+                        "actorRef": "user-a",
+                        "actorTenant": "tenant-a",
+                        "resourceRef": "record-a",
+                        "resourceOwnerRef": "user-a",
+                        "resourceTenant": "tenant-a",
+                        "action": "read-private-record",
+                        "outcome": "allowed",
+                        "securityRelevantSha256": "sha256:owned-a",
+                        "resourceVisibility": "private",
+                        "authoritative": True,
+                        "ownedFixture": True,
+                        "evidenceRef": "evidence/owner-a.json",
+                    },
+                    {
+                        "id": "a-reads-b",
+                        "actorRef": "user-a",
+                        "actorTenant": "tenant-a",
+                        "resourceRef": "record-b",
+                        "resourceOwnerRef": "user-b",
+                        "resourceTenant": "tenant-b",
+                        "action": "read-private-record",
+                        "outcome": "allowed",
+                        "securityRelevantSha256": "sha256:owned-b",
+                        "resourceVisibility": "private",
+                        "authoritative": True,
+                        "ownedFixture": True,
+                        "evidenceRef": "evidence/cross-owner.json",
+                    },
+                ],
+            }
+            observations_path = campaign / "evidence" / "blind-observations.json"
+            observations_path.parent.mkdir(parents=True, exist_ok=True)
+            observations_path.write_text(json.dumps(observations, indent=2) + "\n")
+            discovery_path = campaign / "evidence" / "autonomous-discovery.json"
+            result = blind_discover(campaign, contract_path, observations_path, discovery_path)
+            self.assertFalse(result["preparedHypothesisUsed"])
+            self.assertFalse(result["preparedWorkflowUsed"])
+            self.assertFalse(result["preparedOracleUsed"])
+            self.assertEqual(result["candidateCount"], 1)
+
+            heldout_path = root / "heldout-discovery.json"
+            heldout_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "evaluationId": "owned-autonomous-discovery",
+                        "evaluationMode": "autonomous-discovery",
+                        "contractSha256": WebCampaignContract.load(contract_path).digest,
+                        "minimumPrecision": 1.0,
+                        "minimumRecall": 1.0,
+                        "cases": [
+                            {
+                                "mechanismFingerprint": mechanism_fingerprint(
+                                    "object-authorization", "read-private-record"
+                                ),
+                                "expectedOutcome": "confirmed-invariant-disagreement",
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            enrollment_path = campaign / "evidence" / "blind-enrollment.json"
+            enroll(campaign, contract_path, heldout_path, enrollment_path)
+            score_path = campaign / "evidence" / "blind-score.json"
+            evaluation = score_discovery(
+                campaign,
+                contract_path,
+                heldout_path,
+                enrollment_path,
+                discovery_path,
+                score_path,
+            )
+            self.assertTrue(evaluation["passed"], evaluation)
+            self.assertEqual(evaluation["precision"], 1.0)
+            self.assertEqual(evaluation["recall"], 1.0)
 
     def test_business_sequence_executes_signed_multi_actor_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

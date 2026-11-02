@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Commit to evaluator-held web oracles, then score signed broker observations."""
+"""Evaluate prepared oracles and autonomous discovery on held-out web fixtures."""
 
 from __future__ import annotations
 
@@ -63,11 +63,18 @@ def validate_heldout(value: dict[str, Any], contract_digest: str) -> None:
     cases = value.get("cases")
     if not isinstance(cases, list) or not cases:
         raise WebContractError("held-out evaluation requires cases")
+    evaluation_mode = str(value.get("evaluationMode") or "prepared-oracle")
+    if evaluation_mode not in {"prepared-oracle", "autonomous-discovery"}:
+        raise WebContractError("held-out evaluationMode is unsupported")
     seen: set[tuple[str, str]] = set()
     for item in cases:
         if not isinstance(item, dict):
             raise WebContractError("held-out case must be an object")
-        key = (str(item.get("workflowId") or ""), str(item.get("oracleId") or ""))
+        key = (
+            (str(item.get("workflowId") or ""), str(item.get("oracleId") or ""))
+            if evaluation_mode == "prepared-oracle"
+            else (str(item.get("mechanismFingerprint") or ""), "autonomous-discovery")
+        )
         if not all(key) or key in seen:
             raise WebContractError("held-out workflow/oracle pairs must be unique")
         seen.add(key)
@@ -83,6 +90,230 @@ def validate_heldout(value: dict[str, Any], contract_digest: str) -> None:
             raise WebContractError(f"{field} must be a number") from exc
         if not 0 <= score <= 1:
             raise WebContractError(f"{field} must be between zero and one")
+
+
+def validate_discovery_input(value: dict[str, Any]) -> list[dict[str, Any]]:
+    if value.get("schemaVersion") != 1 or value.get("kind") != "krineon-web-blind-observations":
+        raise WebContractError("autonomous discovery input has an invalid schema")
+    prerequisite = str(value.get("prerequisiteVersion") or "")
+    if not prerequisite or prerequisite in {"unknown", "unspecified"}:
+        raise WebContractError("autonomous discovery requires a stable prerequisiteVersion")
+    observations = value.get("observations")
+    if not isinstance(observations, list) or len(observations) < 3:
+        raise WebContractError("autonomous discovery requires at least three observations")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in observations:
+        if not isinstance(raw, dict):
+            raise WebContractError("autonomous discovery observation must be an object")
+        required = (
+            "id",
+            "actorRef",
+            "actorTenant",
+            "resourceRef",
+            "resourceOwnerRef",
+            "resourceTenant",
+            "action",
+            "outcome",
+            "securityRelevantSha256",
+            "resourceVisibility",
+            "evidenceRef",
+        )
+        if any(not str(raw.get(field) or "").strip() for field in required):
+            raise WebContractError("autonomous discovery observation lacks typed ownership evidence")
+        observation_id = str(raw["id"])
+        if observation_id in seen:
+            raise WebContractError("autonomous discovery observation ids must be unique")
+        seen.add(observation_id)
+        if raw["outcome"] not in {"allowed", "denied"}:
+            raise WebContractError("autonomous discovery outcome must be allowed or denied")
+        if raw["resourceVisibility"] not in {"private", "public"}:
+            raise WebContractError("resourceVisibility must be private or public")
+        if raw.get("authoritative") is not True or raw.get("ownedFixture") is not True:
+            raise WebContractError("autonomous discovery accepts only authoritative owned-fixture observations")
+        normalized.append(dict(raw))
+    return normalized
+
+
+def mechanism_fingerprint(family: str, action: str) -> str:
+    material = f"{family}\0{action}".encode("utf-8")
+    return "sha256:" + hashlib.sha256(material).hexdigest()
+
+
+def discover(
+    campaign: Path,
+    contract_path: Path,
+    observations_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Derive candidates without accepting a supplied hypothesis, workflow, or oracle."""
+
+    contract = WebCampaignContract.load(contract_path)
+    source = load_object(observations_path)
+    observations = validate_discovery_input(source)
+    own_allowed = [
+        item
+        for item in observations
+        if item["outcome"] == "allowed"
+        and item["actorRef"] == item["resourceOwnerRef"]
+        and item["actorTenant"] == item["resourceTenant"]
+    ]
+    own_by_resource = {str(item["resourceRef"]): item for item in own_allowed}
+    actor_controls = {
+        (str(item["actorRef"]), str(item["action"]))
+        for item in own_allowed
+    }
+    candidates: list[dict[str, Any]] = []
+    for item in observations:
+        if (
+            item["outcome"] != "allowed"
+            or item["resourceVisibility"] != "private"
+            or item["actorRef"] == item["resourceOwnerRef"]
+        ):
+            continue
+        owner_baseline = own_by_resource.get(str(item["resourceRef"]))
+        if owner_baseline is None:
+            continue
+        if (str(item["actorRef"]), str(item["action"])) not in actor_controls:
+            continue
+        if item["securityRelevantSha256"] != owner_baseline["securityRelevantSha256"]:
+            continue
+        family = "object-authorization"
+        candidates.append(
+            {
+                "family": family,
+                "mechanismFingerprint": mechanism_fingerprint(family, str(item["action"])),
+                "stage": "runtime-differential",
+                "generatedHypothesis": (
+                    "The resource consumer may authorize the operation without binding "
+                    "the selected resource to its current owner and tenant."
+                ),
+                "generatedOracle": {
+                    "expected": "an actor cannot consume another owner's private resource",
+                    "observed": "the cross-owner response matched the authoritative owner baseline",
+                },
+                "minimalObservationIds": [
+                    str(owner_baseline["id"]),
+                    next(
+                        str(control["id"])
+                        for control in own_allowed
+                        if control["actorRef"] == item["actorRef"]
+                        and control["action"] == item["action"]
+                    ),
+                    str(item["id"]),
+                ],
+                "actorRef": item["actorRef"],
+                "resourceOwnerRef": item["resourceOwnerRef"],
+                "actorTenant": item["actorTenant"],
+                "resourceTenant": item["resourceTenant"],
+                "resourceRef": item["resourceRef"],
+                "securityRelevantSha256": item["securityRelevantSha256"],
+            }
+        )
+    authority = record_authority(campaign)
+    record = {
+        "schemaVersion": 1,
+        "kind": "krineon-autonomous-web-discovery",
+        "contractSha256": contract.digest,
+        "observationsSha256": sha256(observations_path),
+        "prerequisiteVersion": source["prerequisiteVersion"],
+        "preparedHypothesisUsed": False,
+        "preparedWorkflowUsed": False,
+        "preparedOracleUsed": False,
+        "candidateCount": len(candidates),
+        "candidates": candidates,
+        "generatedAt": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+    }
+    atomic_json(output, record)
+    sign_file(Path(authority["privateKey"]), output, output.with_suffix(output.suffix + ".sig"))
+    return record
+
+
+def score_discovery(
+    campaign: Path,
+    contract_path: Path,
+    heldout: Path,
+    enrollment_path: Path,
+    discovery_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    contract = WebCampaignContract.load(contract_path)
+    heldout_value = load_object(heldout)
+    validate_heldout(heldout_value, contract.digest)
+    if heldout_value.get("evaluationMode") != "autonomous-discovery":
+        raise WebContractError("held-out evaluation is not autonomous-discovery mode")
+    enrollment = load_object(enrollment_path)
+    public = control_public_key(campaign)
+    if not verify_file(public, enrollment_path, enrollment_path.with_suffix(enrollment_path.suffix + ".sig")):
+        raise WebContractError("evaluation enrollment signature is invalid")
+    if enrollment.get("heldoutSha256") != sha256(heldout):
+        raise WebContractError("held-out specification changed after enrollment")
+    if not verify_file(public, discovery_path, discovery_path.with_suffix(discovery_path.suffix + ".sig")):
+        raise WebContractError("autonomous discovery signature is invalid")
+    discovery = load_object(discovery_path)
+    if discovery.get("contractSha256") != contract.digest:
+        raise WebContractError("autonomous discovery targets a different contract")
+    if any(
+        discovery.get(field) is not False
+        for field in ("preparedHypothesisUsed", "preparedWorkflowUsed", "preparedOracleUsed")
+    ):
+        raise WebContractError("autonomous discovery used prepared research material")
+    actual = {
+        str(item.get("mechanismFingerprint"))
+        for item in discovery.get("candidates", [])
+        if isinstance(item, dict) and item.get("stage") == "runtime-differential"
+    }
+    results = []
+    tp = fp = fn = tn = 0
+    expected_fingerprints = {
+        str(item["mechanismFingerprint"]) for item in heldout_value["cases"]
+    }
+    for case in heldout_value["cases"]:
+        fingerprint = str(case["mechanismFingerprint"])
+        expected_positive = case["expectedOutcome"] == "confirmed-invariant-disagreement"
+        actual_positive = fingerprint in actual
+        if expected_positive and actual_positive:
+            tp += 1
+        elif expected_positive:
+            fn += 1
+        elif actual_positive:
+            fp += 1
+        else:
+            tn += 1
+        results.append(
+            {
+                "mechanismFingerprint": fingerprint,
+                "expectedOutcome": case["expectedOutcome"],
+                "observedOutcome": (
+                    "confirmed-invariant-disagreement"
+                    if actual_positive
+                    else "observed-invariant-preservation"
+                ),
+                "matched": expected_positive == actual_positive,
+            }
+        )
+    fp += len(actual.difference(expected_fingerprints))
+    precision = tp / (tp + fp) if tp + fp else 1.0
+    recall = tp / (tp + fn) if tp + fn else 1.0
+    passed = (
+        all(item["matched"] for item in results)
+        and precision >= float(heldout_value["minimumPrecision"])
+        and recall >= float(heldout_value["minimumRecall"])
+    )
+    record = {
+        "schemaVersion": 1,
+        "evaluationId": heldout_value["evaluationId"],
+        "mode": "autonomous-discovery",
+        "counts": {"truePositive": tp, "falsePositive": fp, "falseNegative": fn, "trueNegative": tn},
+        "precision": precision,
+        "recall": recall,
+        "results": results,
+        "passed": passed,
+    }
+    atomic_json(output, record)
+    private, _ = authority_paths(campaign)
+    sign_file(private, output, output.with_suffix(output.suffix + ".sig"))
+    return record
 
 
 def record_authority(campaign: Path) -> dict[str, str]:
@@ -266,21 +497,52 @@ def main(argv: list[str] | None = None) -> int:
     score_parser.add_argument("enrollment")
     score_parser.add_argument("manifest")
     score_parser.add_argument("--output", required=True)
+    discover_parser = sub.add_parser("discover")
+    discover_parser.add_argument("campaign")
+    discover_parser.add_argument("contract")
+    discover_parser.add_argument("observations")
+    discover_parser.add_argument("--output", required=True)
+    score_discovery_parser = sub.add_parser("score-discovery")
+    score_discovery_parser.add_argument("campaign")
+    score_discovery_parser.add_argument("contract")
+    score_discovery_parser.add_argument("heldout")
+    score_discovery_parser.add_argument("enrollment")
+    score_discovery_parser.add_argument("discovery")
+    score_discovery_parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
         campaign = Path(args.campaign).expanduser().resolve()
         contract = Path(args.contract).expanduser().resolve()
-        heldout = Path(args.heldout).expanduser().resolve()
+        heldout = Path(args.heldout).expanduser().resolve() if hasattr(args, "heldout") else None
         output = Path(args.output).expanduser().resolve()
         if args.command == "enroll":
+            assert heldout is not None
             result = enroll(campaign, contract, heldout, output)
-        else:
+        elif args.command == "score":
+            assert heldout is not None
             result = score(
                 campaign,
                 contract,
                 heldout,
                 Path(args.enrollment).expanduser().resolve(),
                 Path(args.manifest).expanduser().resolve(),
+                output,
+            )
+        elif args.command == "discover":
+            result = discover(
+                campaign,
+                contract,
+                Path(args.observations).expanduser().resolve(),
+                output,
+            )
+        else:
+            assert heldout is not None
+            result = score_discovery(
+                campaign,
+                contract,
+                heldout,
+                Path(args.enrollment).expanduser().resolve(),
+                Path(args.discovery).expanduser().resolve(),
                 output,
             )
         print(json.dumps(result, indent=2))

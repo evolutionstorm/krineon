@@ -22,10 +22,15 @@ capabilities to an explicit Critical authority boundary. Every step states its
 typed prerequisites, output capability, objective, success criteria, and
 approach families.
 
-When an observation satisfies a step, Krineon evaluates the remaining graph.
-It schedules the highest-priority ready edge as a bounded coordinator task and
-keeps unscheduled edges durable. It does not convert an unproved edge into a
-capability.
+All chain tracking uses the same typed capability and context contract as the
+main composition engine. Each connection is `hypothetical`, `compatible`,
+`runtime-observed`, or `independently-verified`; a tenant, environment,
+runtime, actor, resource, version, or epoch mismatch is `incompatible`.
+Source support can make an edge compatible, but only runtime evidence can
+satisfy it. When an observation satisfies a step, Krineon evaluates the
+remaining graph. It schedules the highest-priority ready edge as a bounded
+coordinator task and keeps unscheduled edges durable. It does not convert an
+unproved or merely name-matching edge into a capability.
 
 ## Continue and steer workers
 

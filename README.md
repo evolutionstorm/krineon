@@ -407,6 +407,7 @@ Krineon includes focused support for these targets and techniques:
 - Fresh-agent runtime replay with a separate observer process
 - Authenticated, loopback-only, read-only operator workbench
 - Real-Chromium session discovery with browser-generated request context
+- Broker-contained external Chromium journeys with declarative approved actions
 - Offline identity, resource, lifecycle, and trust-representation mapping
 - Business-rule coverage by actor, resource, action, and state
 - Typed observation subscriptions with coordinator-reviewed experiment proposals

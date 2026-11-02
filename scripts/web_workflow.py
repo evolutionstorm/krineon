@@ -18,7 +18,7 @@ try:
         sign_file,
         verify_file,
     )
-    from .web_contract import WebCampaignContract, WebContractError, atomic_json
+    from .web_contract import SECRET_REF, WebCampaignContract, WebContractError, atomic_json
     from .web_oracle import validate_oracle
     from .web_identity import IdentityBroker
     from .web_policy import validate_http_replay_headers, validate_step_envelope
@@ -31,7 +31,7 @@ except ImportError:
         sign_file,
         verify_file,
     )
-    from web_contract import WebCampaignContract, WebContractError, atomic_json
+    from web_contract import SECRET_REF, WebCampaignContract, WebContractError, atomic_json
     from web_oracle import validate_oracle
     from web_identity import IdentityBroker
     from web_policy import validate_http_replay_headers, validate_step_envelope
@@ -44,6 +44,61 @@ def load_object(path: Path | str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise WebContractError(f"expected a JSON object in {resolved}")
     return value
+
+
+BROWSER_ACTION_TYPES = {"click", "fill", "select", "wait-for-selector"}
+
+
+def validate_browser_actions(step: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate declarative actions without accepting arbitrary browser code."""
+
+    actions = step.get("browserActions", [])
+    if not isinstance(actions, list):
+        raise WebContractError("browserActions must be an array")
+    seen: set[str] = set()
+    for action in actions:
+        if not isinstance(action, dict):
+            raise WebContractError("browser action must be an object")
+        action_id = str(action.get("id") or "")
+        action_type = str(action.get("type") or "")
+        selector = str(action.get("selector") or "")
+        if not action_id or action_id in seen:
+            raise WebContractError("browser action ids must be nonempty and unique")
+        seen.add(action_id)
+        if action_type not in BROWSER_ACTION_TYPES:
+            raise WebContractError("browser action type is unsupported")
+        if not selector or len(selector.encode("utf-8")) > 2048:
+            raise WebContractError("browser actions require a bounded selector")
+        value = action.get("value")
+        secret_ref = action.get("secretRef")
+        if action_type in {"fill", "select"}:
+            if (value is None) == (secret_ref is None):
+                raise WebContractError(
+                    "fill/select actions require exactly one of value or secretRef"
+                )
+            if value is not None and (
+                not isinstance(value, str) or len(value.encode("utf-8")) > 4096
+            ):
+                raise WebContractError("browser action value must be a bounded string")
+            if secret_ref is not None and not SECRET_REF.fullmatch(str(secret_ref)):
+                raise WebContractError("browser action secretRef must use secret://")
+        elif value is not None or secret_ref is not None:
+            raise WebContractError("this browser action type does not accept a value")
+        requests = action.get("expectedRequests", [])
+        if not isinstance(requests, list):
+            raise WebContractError("browser action expectedRequests must be an array")
+        for request in requests:
+            if not isinstance(request, dict):
+                raise WebContractError("expected browser request must be an object")
+            for field in ("originId", "pathPrefix", "method", "effectClass"):
+                if not str(request.get(field) or "").strip():
+                    raise WebContractError(f"expected browser request requires {field}")
+            if not str(request["pathPrefix"]).startswith("/"):
+                raise WebContractError("expected browser request pathPrefix must start with /")
+            maximum = request.get("maxCount")
+            if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 20:
+                raise WebContractError("expected browser request maxCount must be 1..20")
+    return actions
 
 
 def validate_workflow(
@@ -131,6 +186,11 @@ def validate_workflow(
             operation_class = str(
                 step.get("operationClass") or default_operation_class
             )
+            browser_actions = validate_browser_actions(step) if step_type == "browser" else []
+            if browser_actions and operation_class != "browser-action":
+                raise WebContractError("browserActions require operationClass browser-action")
+            if operation_class == "browser-action" and not browser_actions:
+                raise WebContractError("browser-action steps require browserActions")
             if effect == "disposable-write":
                 writes += 1
             if cleanup and effect != "disposable-write":
@@ -145,6 +205,19 @@ def validate_workflow(
                 operation_class=operation_class,
                 require_live_authorization=dynamic,
             )
+            for action in browser_actions:
+                for expected_request in action.get("expectedRequests", []):
+                    if expected_request["effectClass"] == "disposable-write":
+                        writes += 1
+                    contract.admitted_request(
+                        origin_id=str(expected_request["originId"]),
+                        path_or_url=str(expected_request["pathPrefix"]),
+                        method=str(expected_request["method"]),
+                        effect_class=str(expected_request["effectClass"]),
+                        operation="browser",
+                        operation_class="browser-action",
+                        require_live_authorization=dynamic,
+                    )
             identity = contract.identity_for_origin(
                 str(step.get("identityId") or "anonymous"),
                 str(step.get("originId") or ""),

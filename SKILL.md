@@ -148,7 +148,7 @@ rotating proxies, challenge-token harvesting, or fingerprint impersonation.
 Before wide dynamic testing, API extraction is mandatory. Use the approved
 browser or HTTP path to retain content-hashed client artifacts, then run
 `scripts/web_js_api_extract.py` and `scripts/web_endpoint_catalog.py`.
-Literal strings are hints, AST-resolved calls are source-supported candidates,
+Literal strings are hints, scope-aware AST-resolved calls are source-supported candidates,
 and runtime CDP observations remain separate confidence levels. Never claim
 complete API coverage, execute bundle code in the extractor, probe source-map
 filename lists, or dispatch a candidate before effect and scope review.
@@ -167,6 +167,12 @@ structured observations for facts learned, typed attack-chain todos for missing
 compatible edges, and a continuation checkpoint when useful work remains. The
 coordinator feeds newly satisfied chain prerequisites back into bounded tasks;
 workers must not manufacture an edge to unlock the planner.
+
+Resolve every typed chain prerequisite through the canonical capability and
+context contract. Keep hypothetical, compatible, runtime-observed, and
+independently verified connections distinct. Tenant, environment, runtime,
+resource, version, and actor mismatches cannot satisfy a chain merely because
+the capability names match.
 
 Use the [event-driven swarm control](references/swarm-control.md) for durable
 specialist subscriptions. A subscription may create an experiment proposal,
@@ -205,6 +211,12 @@ acquisition experiments and treat client-side routes or permission strings as
 discovery hints, never server authorization. Protocol message shapes may guide
 reconnect, tenant-binding, and alternate-consumer tests, but they do not prove
 an access-control failure.
+
+Remote CDP journeys require a coordinator-signed broker-only containment
+contract with a loopback proxy and OS evidence that direct egress and external
+DNS are blocked. Use only declarative bounded browser actions. Every mutation
+must match a signed expected request and an admitted effect policy; arbitrary
+browser JavaScript and copied browser fingerprints remain prohibited.
 
 Then run `scripts/web_surface_map.py` and `scripts/web_workflow_model.py` over
 the endpoint catalog and other bounded owned inputs. Build connected
@@ -283,7 +295,9 @@ dimension at a time. A random marker is not isolation, response headers are not
 proof of reuse, and browser or service-worker reuse is not shared-cache
 poisoning. Require an owned fixture or exact owner approval, an independent
 victim profile, an enforcing control, shared-cache provenance, and cleanup of
-only the owned entry. Treat a harmless marker as a primitive rather than
+only the owned entry. Require baseline absence, baseline-before-prime-before-
+victim ordering, and equality of the named security-relevant component rather
+than only the whole response body. Treat a harmless marker as a primitive rather than
 Critical impact.
 
 For deserialization research, use

@@ -308,6 +308,7 @@ class CDPClient:
     crashed: bool = False
     events_dropped: int = 0
     request_admission: Callable[[str, str], bool] | None = None
+    request_admission_detail: Callable[[dict[str, Any]], bool] | None = None
     request_header_injector: (
         Callable[[str, str, dict[str, str]], dict[str, str]] | None
     ) = None
@@ -373,6 +374,8 @@ class CDPClient:
                 allowed = self.request_admission_decisions[admission_key]
             elif params.get("redirectedRequestId") and not self.allow_redirects:
                 allowed = False
+            elif self.request_admission_detail is not None:
+                allowed = self.request_admission_detail(request)
             elif self.request_admission is not None:
                 allowed = self.request_admission(url, request_method)
             else:

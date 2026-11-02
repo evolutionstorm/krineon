@@ -20,6 +20,21 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from .chain_reasoning import (
+        capability_match,
+        context_match,
+        normalize_capability,
+        normalize_context,
+    )
+except ImportError:
+    from chain_reasoning import (
+        capability_match,
+        context_match,
+        normalize_capability,
+        normalize_context,
+    )
+
 
 ORCHESTRATION_DB = "orchestration.db"
 OBSERVATION_STATES = {"active", "promoted", "refuted", "superseded", "compacted"}
@@ -33,6 +48,13 @@ CONFIDENCE_RANK = {
     "runtime-observed": 3,
     "coordinator-replayed": 4,
     "independently-replayed": 5,
+}
+CONNECTION_STAGE_RANK = {
+    "incompatible": -1,
+    "hypothetical": 0,
+    "compatible": 1,
+    "runtime-observed": 2,
+    "independently-verified": 3,
 }
 
 
@@ -119,6 +141,7 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
           success_json TEXT NOT NULL,
           approach_families_json TEXT NOT NULL,
           evidence_json TEXT NOT NULL,
+          resolution_json TEXT NOT NULL DEFAULT '{}',
           scheduled_task_id TEXT,
           revision INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
@@ -211,6 +234,14 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
           ON depth_asset_coverage(state, boundary, consumer);
         """
     )
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(depth_chain_steps)").fetchall()
+    }
+    if "resolution_json" not in columns:
+        connection.execute(
+            "ALTER TABLE depth_chain_steps ADD COLUMN resolution_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def _safe_evidence(root: Path, values: list[str]) -> list[str]:
@@ -227,9 +258,30 @@ def _safe_evidence(root: Path, values: list[str]) -> list[str]:
     return list(dict.fromkeys(result))
 
 
-def _normalize_capabilities(value: Any, field: str) -> list[str]:
-    rows = string_list(value, field)
-    return sorted(set(rows))
+def _normalize_capabilities(value: Any, field: str) -> list[Any]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list")
+    rows: list[Any] = []
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            rows.append(text(item, f"{field}[{index}]"))
+            continue
+        if not isinstance(item, dict):
+            raise ValueError(f"{field}[{index}] must be text or a typed capability")
+        try:
+            rows.append(
+                normalize_capability(
+                    item,
+                    f"{field}[{index}]",
+                    require_binding=True,
+                )
+            )
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+    unique = {canonical(item): item for item in rows}
+    return [unique[key] for key in sorted(unique)]
 
 
 def normalize_observation(
@@ -298,6 +350,7 @@ def normalize_observation(
         "sourceReferences": source_refs,
         "assetRefs": raw.get("assetRefs", []),
         "coverage": raw.get("coverage", []),
+        "context": raw.get("context") if isinstance(raw.get("context"), dict) else {},
         "payload": raw,
         "resultPath": result_path,
     }
@@ -483,6 +536,7 @@ def _normalize_chain(root: Path, raw: dict[str, Any], origin_task_id: str) -> di
     if not isinstance(steps, list) or not steps:
         raise ValueError("attackChainTodo.steps must be non-empty")
     normalized_steps = []
+    step_contexts: dict[str, dict[str, Any]] = {}
     for ordinal, step in enumerate(steps, 1):
         if not isinstance(step, dict):
             raise ValueError("attackChainTodo steps must be objects")
@@ -513,6 +567,11 @@ def _normalize_chain(root: Path, raw: dict[str, Any], origin_task_id: str) -> di
                 ),
             }
         )
+        step_contexts[step_id] = (
+            step.get("context") if isinstance(step.get("context"), dict) else {}
+        )
+    chain_context = raw.get("context") if isinstance(raw.get("context"), dict) else {}
+    chain_context = {**chain_context, "stepContexts": step_contexts}
     return {
         "id": chain_id,
         "title": title,
@@ -520,7 +579,7 @@ def _normalize_chain(root: Path, raw: dict[str, Any], origin_task_id: str) -> di
         "state": state,
         "priority": int(raw.get("priority") or 1000),
         "originTaskId": origin_task_id,
-        "context": raw.get("context") if isinstance(raw.get("context"), dict) else {},
+        "context": chain_context,
         "steps": normalized_steps,
     }
 
@@ -540,63 +599,250 @@ def upsert_chain(connection: sqlite3.Connection, chain: dict[str, Any]) -> None:
     for step in chain["steps"]:
         connection.execute(
             "INSERT INTO depth_chain_steps(chain_id,step_id,ordinal,title,capability,state,requires_json,"
-            "produces_json,objective,success_json,approach_families_json,evidence_json,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,step_id) DO UPDATE SET "
+            "produces_json,objective,success_json,approach_families_json,evidence_json,resolution_json,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,step_id) DO UPDATE SET "
             "ordinal=excluded.ordinal,title=excluded.title,capability=excluded.capability,"
             "requires_json=excluded.requires_json,produces_json=excluded.produces_json,objective=excluded.objective,"
             "success_json=excluded.success_json,approach_families_json=excluded.approach_families_json,"
-            "evidence_json=excluded.evidence_json,revision=depth_chain_steps.revision+1,updated_at=excluded.updated_at",
+            "evidence_json=excluded.evidence_json,resolution_json=excluded.resolution_json,"
+            "revision=depth_chain_steps.revision+1,updated_at=excluded.updated_at",
             (
                 chain["id"], step["id"], step["ordinal"], step["title"], step["capability"],
                 step["state"], canonical(step["requires"]), canonical(step["produces"]),
                 step["objective"], canonical(step["successCriteria"]),
-                canonical(step["approachFamilies"]), canonical(step["evidence"]), now, now,
+                canonical(step["approachFamilies"]), canonical(step["evidence"]),
+                canonical({"status": "hypothetical", "connections": []}), now, now,
             ),
         )
 
 
-def _all_produced(connection: sqlite3.Connection) -> tuple[set[str], dict[str, list[str]]]:
-    produced: set[str] = set()
-    evidence: dict[str, list[str]] = {}
+def _all_produced(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    produced: list[dict[str, Any]] = []
     rows = connection.execute(
-        "SELECT observation_id,produces_json,evidence_json FROM depth_observations "
-        "WHERE state IN ('active','promoted') AND confidence IN "
-        "('source-supported','observed','runtime-observed','coordinator-replayed','independently-replayed')"
+        "SELECT observation_id,produces_json,evidence_json,payload_json,confidence "
+        "FROM depth_observations WHERE state IN ('active','promoted')"
     ).fetchall()
     for row in rows:
+        payload = json.loads(row["payload_json"])
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
         for capability in json.loads(row["produces_json"]):
-            produced.add(capability)
-            evidence.setdefault(capability, []).extend(json.loads(row["evidence_json"]))
-    return produced, evidence
+            produced.append(
+                {
+                    "observationId": str(row["observation_id"]),
+                    "capability": capability,
+                    "confidence": str(row["confidence"]),
+                    "context": context,
+                    "evidence": json.loads(row["evidence_json"]),
+                }
+            )
+    return produced
+
+
+def _capability_type(value: Any) -> str:
+    return str(value.get("type") or "") if isinstance(value, dict) else str(value)
+
+
+def _confidence_stage(confidence: str) -> str:
+    if confidence == "independently-replayed":
+        return "independently-verified"
+    if confidence in {"observed", "runtime-observed", "coordinator-replayed"}:
+        return "runtime-observed"
+    if confidence == "source-supported":
+        return "compatible"
+    return "hypothetical"
+
+
+def _context_resolution(
+    produced: dict[str, Any], required: dict[str, Any]
+) -> tuple[str, list[str]]:
+    meaningful = {
+        key: value
+        for key, value in required.items()
+        if key != "stepContexts"
+        and not isinstance(value, (dict, list))
+        and value not in {None, "", "any", "unknown"}
+    }
+    mismatches: list[str] = []
+    missing: list[str] = []
+    for key, expected in meaningful.items():
+        actual = produced.get(key)
+        if actual in {None, "", "any", "unknown"}:
+            missing.append(key)
+        elif str(actual) != str(expected):
+            mismatches.append(f"{key}:{actual!s}!={expected!s}")
+    if mismatches:
+        return "incompatible", mismatches
+    if missing:
+        return "hypothetical", [f"missing-context:{key}" for key in missing]
+
+    # Use the main chain engine's context contract for its canonical fields.
+    canonical_fields = (
+        "principal", "actorSession", "tenant", "process", "namespace",
+        "runtime", "origin", "cacheLayer", "observationEpoch",
+    )
+    if any(key in produced or key in required for key in canonical_fields):
+        producer_context = {key: str(produced.get(key) or "any") for key in canonical_fields}
+        consumer_context = {key: str(required.get(key) or "any") for key in canonical_fields}
+        try:
+            status, reasons = context_match(
+                {"context": normalize_context(producer_context, "producer")},
+                {"context": normalize_context(consumer_context, "consumer")},
+            )
+        except RuntimeError as exc:
+            return "hypothetical", [str(exc)]
+        if status == "impossible":
+            return "incompatible", reasons
+        if status == "unknown":
+            return "hypothetical", reasons
+    return "compatible", []
+
+
+def _resolve_capability(
+    requirement: Any,
+    produced: list[dict[str, Any]],
+    required_context: dict[str, Any],
+) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    for row in produced:
+        capability = row["capability"]
+        if _capability_type(capability) != _capability_type(requirement):
+            continue
+        match_status = "compatible"
+        reasons: list[str] = []
+        if isinstance(requirement, dict) and isinstance(capability, dict):
+            matched, reason = capability_match(capability, requirement)
+            if not matched:
+                match_status = "incompatible"
+                reasons.append(reason)
+        elif isinstance(requirement, dict) != isinstance(capability, dict):
+            match_status = "hypothetical"
+            reasons.append("typed-capability-binding-missing")
+        context_status, context_reasons = _context_resolution(
+            row.get("context", {}), required_context
+        )
+        if "incompatible" in {match_status, context_status}:
+            stage = "incompatible"
+        elif "hypothetical" in {match_status, context_status}:
+            stage = "hypothetical"
+        else:
+            stage = _confidence_stage(row["confidence"])
+        candidates.append(
+            {
+                "status": stage,
+                "observationId": row["observationId"],
+                "confidence": row["confidence"],
+                "evidence": row["evidence"],
+                "reasons": [*reasons, *context_reasons],
+            }
+        )
+    if not candidates:
+        return {
+            "capability": _capability_type(requirement),
+            "status": "hypothetical",
+            "observationId": None,
+            "evidence": [],
+            "reasons": ["no-producer"],
+        }
+    best = max(
+        candidates,
+        key=lambda item: (
+            CONNECTION_STAGE_RANK[item["status"]],
+            CONFIDENCE_RANK.get(item["confidence"], -1),
+        ),
+    )
+    return {"capability": _capability_type(requirement), **best}
+
+
+def _resolve_set(
+    requirements: list[Any],
+    produced: list[dict[str, Any]],
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        _resolve_capability(requirement, produced, context)
+        for requirement in requirements
+    ]
 
 
 def evaluate_chains(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-    produced, evidence_by_capability = _all_produced(connection)
+    produced = _all_produced(connection)
     actions: list[dict[str, Any]] = []
     chains = connection.execute(
         "SELECT * FROM depth_chain_plans WHERE state='active' ORDER BY priority DESC,created_at"
     ).fetchall()
     now = utc_now()
     for chain in chains:
+        chain_context = json.loads(chain["context_json"])
+        step_contexts = chain_context.get("stepContexts", {})
+        base_context = {
+            key: value for key, value in chain_context.items() if key != "stepContexts"
+        }
         steps = connection.execute(
             "SELECT * FROM depth_chain_steps WHERE chain_id=? ORDER BY ordinal,step_id",
             (chain["chain_id"],),
         ).fetchall()
         for step in steps:
             state = str(step["state"])
-            if state in {"satisfied", "refuted", "running"}:
+            if state == "refuted":
                 continue
-            outputs = set(json.loads(step["produces_json"]))
-            requirements = set(json.loads(step["requires_json"]))
-            if outputs and outputs.issubset(produced):
-                ev = sorted({item for cap in outputs for item in evidence_by_capability.get(cap, [])})
+            requirements = json.loads(step["requires_json"])
+            outputs = json.loads(step["produces_json"])
+            required_context = {
+                **base_context,
+                **(
+                    step_contexts.get(str(step["step_id"]), {})
+                    if isinstance(step_contexts, dict)
+                    and isinstance(step_contexts.get(str(step["step_id"]), {}), dict)
+                    else {}
+                ),
+            }
+            output_resolution = _resolve_set(outputs, produced, required_context)
+            requirement_resolution = _resolve_set(
+                requirements, produced, required_context
+            )
+            resolution = {
+                "status": min(
+                    (
+                        item["status"]
+                        for item in [*requirement_resolution, *output_resolution]
+                    ),
+                    key=lambda value: CONNECTION_STAGE_RANK[value],
+                    default="hypothetical",
+                ),
+                "requirements": requirement_resolution,
+                "outputs": output_resolution,
+                "context": required_context,
+            }
+            connection.execute(
+                "UPDATE depth_chain_steps SET resolution_json=?,updated_at=? "
+                "WHERE chain_id=? AND step_id=?",
+                (canonical(resolution), now, chain["chain_id"], step["step_id"]),
+            )
+            outputs_observed = bool(output_resolution) and all(
+                CONNECTION_STAGE_RANK[item["status"]]
+                >= CONNECTION_STAGE_RANK["runtime-observed"]
+                for item in output_resolution
+            )
+            requirements_observed = all(
+                CONNECTION_STAGE_RANK[item["status"]]
+                >= CONNECTION_STAGE_RANK["runtime-observed"]
+                for item in requirement_resolution
+            )
+            if outputs_observed:
+                ev = sorted(
+                    {
+                        evidence
+                        for item in output_resolution
+                        for evidence in item.get("evidence", [])
+                    }
+                )
                 connection.execute(
-                    "UPDATE depth_chain_steps SET state='satisfied',evidence_json=?,updated_at=? "
+                    "UPDATE depth_chain_steps SET state='satisfied',evidence_json=?,resolution_json=?,updated_at=? "
                     "WHERE chain_id=? AND step_id=?",
-                    (canonical(ev), now, chain["chain_id"], step["step_id"]),
+                    (canonical(ev), canonical(resolution), now, chain["chain_id"], step["step_id"]),
                 )
                 continue
-            if requirements.issubset(produced):
+            if requirements_observed:
                 next_state = "running" if step["scheduled_task_id"] else "ready"
                 connection.execute(
                     "UPDATE depth_chain_steps SET state=?,updated_at=? WHERE chain_id=? AND step_id=?",
@@ -612,8 +858,9 @@ def evaluate_chains(connection: sqlite3.Connection) -> list[dict[str, Any]]:
                         "objective": str(step["objective"]),
                         "successCriteria": json.loads(step["success_json"]),
                         "approachFamilies": json.loads(step["approach_families_json"]),
-                        "requires": sorted(requirements),
-                        "produces": sorted(outputs),
+                        "requires": sorted(_capability_type(item) for item in requirements),
+                        "produces": sorted(_capability_type(item) for item in outputs),
+                        "capabilityResolution": resolution,
                         "priority": int(chain["priority"]) + max(0, 100 - int(step["ordinal"])),
                     }
                     connection.execute(
@@ -621,7 +868,7 @@ def evaluate_chains(connection: sqlite3.Connection) -> list[dict[str, Any]]:
                         "reason,payload_json,created_at,updated_at) VALUES(?,?,?,'schedule-experiment','pending',?,?,?,?)",
                         (
                             feedback_id, chain["chain_id"], step["step_id"],
-                            "all typed prerequisites are present; execute the next missing edge",
+                            "all context-compatible typed prerequisites are runtime-observed; execute the next missing edge",
                             canonical(action), now, now,
                         ),
                     )

@@ -22,9 +22,10 @@ except ImportError:
 
 CONFIDENCE_RANK = {
     "literal-hint": 0,
-    "ast-resolved": 1,
-    "runtime-observed": 2,
-    "independently-replayed": 3,
+    "symbolic-candidate": 1,
+    "ast-resolved": 2,
+    "runtime-observed": 3,
+    "independently-replayed": 4,
 }
 AUTHORITY_HINTS = re.compile(
     r"(?i)(?:invit|grant|member|approv|final|import|export|job|share|redeem|token|serializ|private|admin|permission|role)"

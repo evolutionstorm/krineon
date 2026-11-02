@@ -308,10 +308,22 @@ negotiated CDP capabilities, network and Fetch events, target relationships,
 DOM and accessibility hashes, console exceptions, bounded screenshots,
 storage discovery, and service workers. It installs scope interception before
 navigation and auto-attaches to new targets before resuming them. It never
-attaches to a personal browser. Remote navigation is blocked because a proxy
-and CDP interception alone cannot confine every browser and child-process
-channel. Loopback-owned application fixtures have real-Chromium acceptance
-coverage; fake-CDP coverage is not treated as sufficient.
+attaches to a personal browser. Remote navigation remains blocked unless the
+signed campaign selects `os-enforced-broker-only` containment, an explicit
+loopback proxy, admitted origins, and retained evidence that direct egress and
+out-of-broker DNS are blocked. Chrome then removes the implicit loopback bypass
+and sends all target traffic through that broker while CDP independently
+intercepts every request. A proxy, copied browser headers, or CDP interception
+alone is insufficient. Loopback-owned application fixtures have real-Chromium
+acceptance coverage; fake-CDP coverage is not treated as sufficient.
+
+Browser steps may contain declarative `click`, `fill`, `select`, and
+`wait-for-selector` actions. They cannot contain JavaScript. Fill and select
+values are bounded literals or private `secret://` references. Every expected
+network request names its exact origin, path prefix, method, effect class, and
+maximum count in the signed workflow. Undeclared mutation is blocked, and a
+declared request that never occurs fails the experiment. Disposable writes
+still require a compensating cleanup step.
 
 Use real Chromium CDP as the default browser-session and browser-only behavior
 observer. Chrome generates its own User-Agent, client hints, Fetch Metadata,
@@ -422,9 +434,13 @@ scripts/web_endpoint_catalog.py CAMPAIGN/web/api-extraction.json \
 ```
 
 The extractor never evaluates bundle code. It combines literal hints, a
-bounded call/expression AST, framework module and call facts, source-map
-mapping, symbolic dynamic values, and CDP initiator evidence. Unknown calls do
-not become endpoints. Query values and credential values do not enter the
+bounded call/expression AST, function- and block-scoped bindings, framework
+module and call facts, source-map mapping, symbolic dynamic values, and CDP
+initiator evidence. Reused local variable names do not leak across functions.
+An unresolved overwrite remains unresolved instead of reviving an older value.
+GraphQL operation names and JSON-RPC methods are extracted from request bodies,
+so two operations using the same path and method remain distinct. Unknown calls
+do not become endpoints. Query values and credential values do not enter the
 model-visible catalog.
 
 The catalog deduplicates by operation, not path alone, and keeps method,
@@ -489,7 +505,11 @@ For poisoning, establish a clean owned baseline, prime one bounded attacker
 representation with a synthetic canary, and fetch the ordinary representation
 through a fresh victim profile. The oracle requires victim reuse from an
 application, reverse-proxy, or CDN cache plus an enforcing control and isolated
-cleanup. Browser memory or disk, Cache API, service-worker state, reflection,
+cleanup. The baseline must precede the prime and contain neither the canary nor
+its security-relevant component digest. The evaluator compares named protected
+components, not only whole-response hashes, so unrelated wrappers may vary
+without hiding or manufacturing the disputed reuse. Browser memory or disk,
+Cache API, service-worker state, reflection,
 content negotiation, redirects, public content, generic shells, and stale
 deployments do not satisfy it. A harmless marker is a primitive; prove RCE,
 XSS, account compromise, or cross-tenant impact separately.
@@ -592,6 +612,12 @@ joins paths only when the same concrete actor, tenant, resource, version,
 generation, relationship, permission version, single-use value, and observation
 epoch survive. It retains scoped refutations and incomplete frontiers rather
 than treating a failed chain as a safe result.
+
+Backward relevance resolves every typed prerequisite and consumed server value
+to all compatible producers. It preserves actor transfer, resource binding,
+value kind, version, relationship, and state constraints. A researcher does
+not have to place the missing producer in `candidateOperationIds`; that field
+can narrow an approved run but cannot make a valid dependency visible.
 
 The initial local benchmark permits at most eight actions, two executions of a
 reusable operation, and no concurrency unless the paired-concurrency family is
@@ -802,6 +828,14 @@ evaluator keeps the held-out specification outside the campaign directory and
 enrolls its hash before target execution. The specification identifies exact
 workflow and oracle pairs and their expected three-way outcomes. Research
 workers receive neither the file nor its contents.
+
+The autonomous-discovery mode instead receives only authoritative owned-fixture
+observations with actor, tenant, resource owner, visibility, action, and a
+security-relevant digest. It derives the hypothesis, minimal three-observation
+sequence, and oracle itself. Its signed record explicitly states that no
+prepared hypothesis, workflow, or oracle was used. The evaluator scores stable
+mechanism fingerprints held outside the campaign. This measures discovery; it
+does not turn a runtime differential into a reportable finding.
 
 Scoring accepts only signed workflows and signed broker observations whose
 contract and exact budget snapshot are independently verified. It rejects

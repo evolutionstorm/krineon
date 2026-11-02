@@ -52,6 +52,7 @@
     "allowUploads": false,
     "allowWebSockets": false,
     "allowBrowserNavigation": false,
+    "allowBrowserActions": false,
     "allowStateChangingOperations": false,
     "allowTerminalExecution": false,
     "allowNuclei": false,
@@ -151,7 +152,8 @@
     "ownedInternalLabCidrs": [],
     "allowedDestinationCidrs": [],
     "deniedDestinationCidrs": [],
-    "evidence": null
+    "evidence": null,
+    "browserBroker": null
   },
   "nuclei": {
     "enabled": false,

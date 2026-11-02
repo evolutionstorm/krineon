@@ -245,6 +245,127 @@ class ForbiddenCompositionSearchTests(unittest.TestCase):
         result = search(graph, goal())
         self.assertNotIn("unrelated", result["backwardRelevantOperationIds"])
 
+    def test_typed_prerequisite_discovers_compatible_producer_without_candidate_hint(self) -> None:
+        graph = fixture_graph()
+        producer = operation(
+            "issue-read-token",
+            "actor-b",
+            "record-a",
+            "actor-a",
+            "token-issued",
+            [],
+        )
+        producer["produces"] = [
+            {
+                "id": "server-token:record-a",
+                "kind": "server-value",
+                "provenance": "owned fixture response",
+                "actorBinding": "actor-b",
+                "resourceBinding": "record-a",
+                "version": "v1",
+                "transferPolicy": "same-actor",
+                "transferEvidence": [],
+                "issuer": "actor-b",
+                "intendedConsumer": "actor-b",
+                "expiryPolicy": "operation-bounded",
+                "expiryValue": None,
+                "singleUse": False,
+                "lifecycleExplicit": True,
+            }
+        ]
+        graph["operations"].append(producer)
+        consumer = next(
+            item for item in graph["operations"] if item["id"] == "b-reads-a"
+        )
+        consumer["requires"] = {
+            "operator": "and",
+            "clauses": [
+                {
+                    "operator": "fact",
+                    "type": "server-value",
+                    "ref": "server-token:record-a",
+                    "expected": True,
+                    "evidence": ["normal route requires a server-issued token"],
+                },
+                {
+                    "operator": "fact",
+                    "type": "approval",
+                    "ref": "approval:record-a",
+                    "expected": True,
+                    "evidence": ["normal workflow requires approval"],
+                },
+            ],
+        }
+        value = goal()
+        value["operationSemantics"]["issue-read-token"] = {
+            "attackerCanAttempt": True,
+            "referencePolicy": "allowed",
+            "observationEpoch": EPOCH,
+            "evidence": ["owned fixture normal route"],
+            "resourceTransitions": [],
+            "permissionTransitions": [],
+        }
+        result = search(graph, value)
+        self.assertIn("issue-read-token", result["backwardRelevantOperationIds"])
+        self.assertNotIn("issue-read-token", value["candidateOperationIds"])
+        self.assertEqual(
+            result["plans"][0]["attackerSequence"],
+            ["issue-read-token", "b-reads-a"],
+        )
+
+    def test_consumed_value_preserves_resource_and_version_compatibility(self) -> None:
+        def value(version: str) -> dict:
+            return {
+                "id": "server-token:record-a",
+                "kind": "server-value",
+                "provenance": "owned fixture response",
+                "actorBinding": "actor-b",
+                "resourceBinding": "record-a",
+                "version": version,
+                "transferPolicy": "same-actor",
+                "transferEvidence": [],
+                "issuer": "actor-b",
+                "intendedConsumer": "actor-b",
+                "expiryPolicy": "operation-bounded",
+                "expiryValue": None,
+                "singleUse": False,
+                "lifecycleExplicit": True,
+            }
+
+        graph = fixture_graph()
+        producer = operation(
+            "issue-read-token",
+            "actor-b",
+            "record-a",
+            "actor-a",
+            "token-issued",
+            [],
+        )
+        producer["produces"] = [value("v1")]
+        graph["operations"].append(producer)
+        consumer = next(
+            item for item in graph["operations"] if item["id"] == "b-reads-a"
+        )
+        consumer["consumes"] = [value("v1")]
+        goal_value = goal()
+        goal_value["operationSemantics"]["issue-read-token"] = {
+            "attackerCanAttempt": True,
+            "referencePolicy": "allowed",
+            "observationEpoch": EPOCH,
+            "evidence": ["owned fixture normal route"],
+            "resourceTransitions": [],
+            "permissionTransitions": [],
+        }
+        compatible = search(graph, goal_value)
+        self.assertEqual(
+            compatible["plans"][0]["attackerSequence"],
+            ["issue-read-token", "b-reads-a"],
+        )
+
+        producer["produces"] = [value("v2")]
+        incompatible = search(graph, goal_value)
+        self.assertEqual(incompatible["plans"], [])
+
     def test_incompatible_generation_cannot_be_composed(self) -> None:
         value = goal()
         value["startingAuthority"]["resources"][0]["generation"] = "g2"

@@ -64,6 +64,7 @@ EFFECT_CLASSES = {
 OPERATION_CLASSES = {
     "ordinary-http",
     "browser-discovery",
+    "browser-action",
     "nuclei-read",
     "cache-experiment",
     "deserialization-experiment",
@@ -872,6 +873,47 @@ class WebCampaignContract:
             raise WebContractError(
                 "claimed OS egress enforcement requires structured containment evidence"
             )
+        browser_broker = containment.get("browserBroker")
+        if containment.get("remoteBrowserTraffic") == "os-egress-enforced":
+            if not isinstance(browser_broker, dict):
+                raise WebContractError(
+                    "remote browser traffic requires a broker-only containment contract"
+                )
+            if browser_broker.get("mode") != "os-enforced-broker-only":
+                raise WebContractError("browser broker mode must be os-enforced-broker-only")
+            proxy_url = str(browser_broker.get("proxyUrl") or "")
+            parsed_proxy = urlsplit(proxy_url)
+            if parsed_proxy.scheme not in {"http", "https"} or parsed_proxy.hostname not in {
+                "127.0.0.1",
+                "localhost",
+                "::1",
+            }:
+                raise WebContractError("browser broker proxyUrl must be an explicit loopback proxy")
+            if parsed_proxy.port is None or parsed_proxy.username or parsed_proxy.password:
+                raise WebContractError("browser broker proxyUrl requires a port and no embedded credentials")
+            if browser_broker.get("directEgressBlocked") is not True:
+                raise WebContractError("browser broker must prove direct egress is blocked")
+            if browser_broker.get("dnsOutsideBrokerBlocked") is not True:
+                raise WebContractError("browser broker must prove DNS outside the broker is blocked")
+            broker_id = str(browser_broker.get("brokerId") or "")
+            broker_version = str(browser_broker.get("brokerVersion") or "")
+            if not IDENTIFIER.fullmatch(broker_id) or not broker_version:
+                raise WebContractError("browser broker requires stable brokerId and brokerVersion")
+            allowed_origins = browser_broker.get("allowedOriginIds")
+            if not isinstance(allowed_origins, list) or not allowed_origins:
+                raise WebContractError("browser broker requires allowedOriginIds")
+            unknown_origins = set(map(str, allowed_origins)).difference(self.origins)
+            if unknown_origins:
+                raise WebContractError("browser broker references unknown origins")
+            evidence = browser_broker.get("evidence")
+            if not isinstance(evidence, list) or not evidence or any(
+                not isinstance(item, str) or not item.strip() for item in evidence
+            ):
+                raise WebContractError("browser broker requires OS-enforcement evidence")
+        elif browser_broker is not None and browser_broker != {}:
+            raise WebContractError(
+                "browserBroker is only valid when remote browser traffic is OS-enforced"
+            )
 
     @property
     def authorization_confirmed(self) -> bool:
@@ -1025,8 +1067,11 @@ class WebCampaignContract:
             authorization.get("approvedCallbackOriginIds", [])
         ):
             raise WebContractError("callback destination is not independently approved")
-        if operation == "browser" and operation_class != "browser-discovery":
-            raise WebContractError("browser steps must use browser-discovery")
+        if operation == "browser" and operation_class not in {
+            "browser-discovery",
+            "browser-action",
+        }:
+            raise WebContractError("browser steps must use a browser operation class")
         if operation == "nuclei" and operation_class != "nuclei-read":
             raise WebContractError("Nuclei steps must use nuclei-read")
         if operation == "http" and operation_class in {"browser-discovery", "nuclei-read"}:
@@ -1042,6 +1087,10 @@ class WebCampaignContract:
             raise WebContractError("state-changing methods cannot be labelled read-only")
         if operation == "browser" and authorization.get("allowBrowserNavigation") is not True:
             raise WebContractError("browser navigation is not authorized")
+        if operation_class == "browser-action" and authorization.get(
+            "allowBrowserActions"
+        ) is not True:
+            raise WebContractError("browser actions are not authorized")
         if operation == "websocket" and authorization.get("allowWebSockets") is not True:
             raise WebContractError("WebSockets are not authorized")
         if operation == "nuclei" and authorization.get("allowNuclei") is not True:
