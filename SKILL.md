@@ -113,6 +113,15 @@ to discard the exchange or end the campaign. Re-plan and requeue any lane that
 was completed as planning-only when its required account, browser, MCP, or
 runtime capability later becomes available.
 
+Do not let authentication or authorization consume the web campaign. Treat
+them as one access-control family. While distinct non-access-control tasks are
+ready, keep that family below the profile's dynamic active-share limit and
+prefer parser/representation, workflow/state, cache, browser/client,
+integration/capability, upload/storage, asynchronous, and protocol boundaries.
+Do not manufacture a fixed worker allocation. A concrete verified
+access-control primitive may use the normal bounded focused-chain slot, after
+which scheduling returns to approach-diverse exploration.
+
 Bootstrap web intake offline with `campaign_bootstrap.py`; `--url` and
 `--requests` are concise aliases for exact application origins and annotated
 Markdown request bundles. Generate the coordinator checklist with

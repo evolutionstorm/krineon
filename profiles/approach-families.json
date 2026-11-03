@@ -234,7 +234,7 @@
       "web-workflow-state-modeling": ["web-workflow-business-logic"],
       "web-cache-serialization-tools": ["web-cache-partition", "representation-parser", "capability-code-loading"],
       "web-cheapest-discriminators": ["blocker-alternative-route", "web-controlled-broker"],
-      "web-business-logic-oracles": ["web-workflow-business-logic", "web-authorization-isolation"],
+      "web-business-logic-oracles": ["web-workflow-business-logic"],
       "web-business-sequence-planning": ["web-workflow-business-logic", "chain-composition"],
       "web-forbidden-composition-search": ["web-workflow-business-logic", "chain-composition", "blocker-alternative-route"],
       "web-controlled-execution": ["web-controlled-broker", "validation-replay"],
@@ -242,10 +242,10 @@
       "web-cache-semantic-research": ["web-cache-partition", "web-controlled-broker", "validation-replay"],
       "web-deserialization-semantic-research": ["representation-parser", "ingress-authority", "validation-replay"],
       "web-bounded-boundary-adapters": ["representation-parser", "web-browser-api", "web-controlled-broker"],
-      "web-chain-composition": ["chain-composition", "web-authorization-isolation", "web-workflow-business-logic"],
+      "web-chain-composition": ["chain-composition", "web-workflow-business-logic"],
       "web-independent-replay": ["validation-replay", "web-controlled-broker"],
       "web-blinded-evaluation": ["validation-replay", "web-controlled-broker"],
-      "web-evidence-finding-gate": ["validation-replay", "web-controlled-broker", "web-authorization-isolation"],
+      "web-evidence-finding-gate": ["validation-replay", "web-controlled-broker"],
       "web-root-synthesis": ["chain-composition", "validation-replay"]
     }
   }

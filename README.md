@@ -263,6 +263,10 @@ authorizes all bounded, in-scope methods and workflows on those accounts,
 including state changes, uploads, browser actions, WebSockets, credential
 lifecycle checks, cache/parser experiments, and small paired-concurrency tests.
 Krineon does not pause for separate approval of each verb or hypothesis.
+It treats authentication and authorization as one research family and keeps
+that family below roughly one third of active exploration whenever parser,
+workflow, cache, browser, integration, storage, asynchronous, or protocol work
+is ready.
 
 ### Start the campaign
 

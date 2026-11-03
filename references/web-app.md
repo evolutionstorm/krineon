@@ -56,6 +56,14 @@ conditions, and evidence gates remain enforced. External callbacks and HTTP
 desynchronization remain unavailable unless their required exact callback or
 isolated-topology authorization is present in the account manifest.
 
+Authentication and authorization form one access-control research family, not
+the default subject of every web lane. When other mechanisms are ready, the
+scheduler limits access-control work to roughly one third of active exploration
+and prefers representation/parser, workflow, cache, browser/client,
+integration/capability, upload/storage, asynchronous, and protocol boundaries.
+This is a dynamic share, not a fixed agent assignment. A verified access-control
+primitive can still receive one evidence-unlocked focused slot.
+
 ## Operational intake and approval
 
 Bootstrap creates an unconfirmed contract, imports requests through the

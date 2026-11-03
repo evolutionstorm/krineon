@@ -599,6 +599,12 @@ def task_approach_families(connection: sqlite3.Connection, task_id: str) -> list
 
 
 def approach_family_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
+    scheduling_policy = get_metadata(connection, "schedulingPolicy", {})
+    family_share_limits = (
+        scheduling_policy.get("familyShareLimits", {})
+        if isinstance(scheduling_policy, dict)
+        else {}
+    )
     families: list[dict[str, Any]] = []
     for family in connection.execute(
         "SELECT * FROM approach_families ORDER BY family_id"
@@ -672,6 +678,7 @@ def approach_family_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
                 "task-priority",
             ],
             "promisingOrSuspiciousDoesNotOverrideDiversity": True,
+            "familyShareLimits": family_share_limits,
         },
         "underexploredFamilies": underexplored,
         "convergedFamilies": converged,
@@ -3646,6 +3653,115 @@ def diversity_rank_ready_tasks(
     }
 
 
+def rank_by_family_share_limits(
+    rows: list[Any],
+    *,
+    task_families: dict[str, list[str]],
+    family_active_agents: dict[str, int],
+    active_exploration_agents: int,
+    limits: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any] | None]:
+    """Defer overrepresented families while compatible alternatives are ready.
+
+    Limits are proportional rather than fixed worker assignments. A family is
+    never blocked when it is the only runnable mechanism, and focused-chain
+    tasks are handled separately by the exploration/focus alternator.
+    """
+
+    if len(rows) < 2 or not limits:
+        return rows, None
+    parsed: dict[str, float] = {}
+    for family_id, raw in limits.items():
+        if not isinstance(raw, dict) or raw.get("whenAlternativesReady") != "defer":
+            continue
+        value = raw.get("maxActiveShare")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        share = float(value)
+        if 0 < share <= 1:
+            parsed[str(family_id)] = share
+    if not parsed:
+        return rows, None
+
+    projected_total = max(1, int(active_exploration_agents) + 1)
+
+    def violations(row: Any) -> list[dict[str, Any]]:
+        task_id = str(row["task_id"])
+        result: list[dict[str, Any]] = []
+        for family_id in task_families.get(task_id, []):
+            if family_id not in parsed:
+                continue
+            active = int(family_active_agents.get(family_id, 0))
+            projected_share = (active + 1) / projected_total
+            if projected_share > parsed[family_id] + 1e-12:
+                result.append(
+                    {
+                        "family": family_id,
+                        "activeAgents": active,
+                        "projectedActiveAgents": active + 1,
+                        "projectedTotalAgents": projected_total,
+                        "projectedShare": round(projected_share, 6),
+                        "maxActiveShare": parsed[family_id],
+                    }
+                )
+        return result
+
+    compliant: list[Any] = []
+    deferred: list[Any] = []
+    reasons: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        row_violations = violations(row)
+        if row_violations:
+            deferred.append(row)
+            reasons[str(row["task_id"])] = row_violations
+        else:
+            compliant.append(row)
+    if not compliant or not deferred or rows[0] in compliant:
+        return rows, None
+    ranked = compliant + deferred
+    return ranked, {
+        "reason": "dynamic family share limit deferred an overrepresented mechanism",
+        "fromTaskId": str(rows[0]["task_id"]),
+        "toTaskId": str(ranked[0]["task_id"]),
+        "deferredTasks": [str(row["task_id"]) for row in deferred],
+        "limits": parsed,
+        "violations": reasons,
+        "fixedWorkerAssignment": False,
+        "onlyRunnableFamilyMayProceed": True,
+    }
+
+
+def apply_family_share_limits(
+    connection: sqlite3.Connection, rows: list[sqlite3.Row]
+) -> tuple[list[sqlite3.Row], dict[str, Any] | None]:
+    if len(rows) < 2:
+        return rows, None
+    policy = get_metadata(connection, "schedulingPolicy", {})
+    limits = policy.get("familyShareLimits", {}) if isinstance(policy, dict) else {}
+    if not isinstance(limits, dict) or not limits:
+        return rows, None
+    snapshot = approach_family_snapshot(connection)
+    family_stats = {value["id"]: value for value in snapshot["families"]}
+    task_families = {
+        str(row["task_id"]): task_approach_families(
+            connection, str(row["task_id"])
+        )
+        for row in rows
+    }
+    return rank_by_family_share_limits(
+        rows,
+        task_families=task_families,
+        family_active_agents={
+            family_id: int(value["activeAgents"])
+            for family_id, value in family_stats.items()
+        },
+        active_exploration_agents=int(
+            snapshot["policy"]["activeExplorationAgents"]
+        ),
+        limits=limits,
+    )
+
+
 def alternate_exploration_and_focus(
     connection: sqlite3.Connection, rows: list[sqlite3.Row]
 ) -> tuple[list[sqlite3.Row], dict[str, Any] | None, str | None]:
@@ -3664,7 +3780,8 @@ def alternate_exploration_and_focus(
                 "toMode": "focused",
             }, "focused"
         ranked, redirect = diversity_rank_ready_tasks(connection, exploration)
-        return ranked + focus, redirect or {
+        ranked, share_redirect = apply_family_share_limits(connection, ranked)
+        return ranked + focus, share_redirect or redirect or {
             "reason": "return to approach-diverse exploration after one focused-chain slot",
             "fromMode": last,
             "toMode": "exploration",
@@ -3672,7 +3789,8 @@ def alternate_exploration_and_focus(
     if focus:
         return focus, None, "focused"
     ranked, redirect = diversity_rank_ready_tasks(connection, exploration)
-    return ranked, redirect, "exploration" if ranked else None
+    ranked, share_redirect = apply_family_share_limits(connection, ranked)
+    return ranked, share_redirect or redirect, "exploration" if ranked else None
 
 
 def worker_is_eligible_for_round_task(

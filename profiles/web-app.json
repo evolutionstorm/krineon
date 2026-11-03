@@ -12,6 +12,13 @@
     "approachFamilyBalancing": "active-load-then-coverage-before-priority",
     "allowPromiseBasedDominance": false,
     "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link",
+    "familyShareLimits": {
+      "web-authorization-isolation": {
+        "maxActiveShare": 0.34,
+        "whenAlternativesReady": "defer",
+        "focusedEvidenceSlotExempt": true
+      }
+    },
     "internalObjective": "rank independently observed invariant disagreements, verified authorization or state primitives, and compatible multi-step chain edges",
     "filingObjective": "independently replayed application-specific High, Critical, or RCE impact",
     "partialEvidenceAdvancesQueue": true
@@ -77,7 +84,7 @@
         "baseline and enforcing-negative controls",
         "automatic three-way interpretations"
       ],
-      "priority": 125,
+      "priority": 116,
       "dependsOn": [
         "web-contract-coordinator",
         "web-identity-resource-inventory",
