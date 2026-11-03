@@ -893,6 +893,15 @@ LEAD_PROMOTION_ORDER = {
     "compatible-chain-edge": 4,
     "complete-terminal": 5,
 }
+NEXT_PROMOTION_LEVEL = {
+    "observation": "source-supported-mechanism",
+    "mechanism-supported": "runtime-differential",
+    "source-supported-mechanism": "runtime-differential",
+    "runtime-differential": "verified-primitive",
+    "verified-primitive": "compatible-chain-edge",
+    "compatible-chain-edge": "complete-terminal",
+    "complete-terminal": "independent-replay",
+}
 DEFAULT_LEAD_POLICY = {
     "maxActiveLeads": 25,
     "maxActivePerMechanism": 3,
@@ -1179,7 +1188,14 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
         "negativeKnowledge": negative_knowledge,
         "executableOracle": executable_oracle,
     }
-    if raw.get("profile") == "web-app":
+    campaign_profile = ""
+    campaign_record = root / "campaign.json"
+    if campaign_record.is_file():
+        try:
+            campaign_profile = str(read_json(campaign_record).get("profile") or "")
+        except (OSError, ValueError, json.JSONDecodeError):
+            campaign_profile = ""
+    if raw.get("profile") == "web-app" or campaign_profile == "web-app":
         normalized["profile"] = "web-app"
         normalized["mechanismSupported"] = raw.get("mechanismSupported") is True
         if normalized["mechanismSupported"] and executable_oracle is None:
@@ -1373,6 +1389,78 @@ def validate_research_lead(root: Path, raw: Any) -> dict[str, Any]:
             "researchLead.mechanismFingerprint must be 8-128 stable identifier characters"
         )
     normalized["promotionLevel"] = lead_promotion_level(normalized)
+    if normalized.get("profile") == "web-app" and status == "active":
+        plan = raw.get("promotionPlan")
+        if not isinstance(plan, dict):
+            raise SystemExit("active web research leads require promotionPlan")
+        current = require_string(
+            plan.get("currentLevel"), "researchLead.promotionPlan.currentLevel"
+        )
+        if current != normalized["promotionLevel"]:
+            raise SystemExit(
+                "researchLead.promotionPlan.currentLevel must match the measured promotion level"
+            )
+        expected_next = NEXT_PROMOTION_LEVEL[current]
+        next_level = require_string(
+            plan.get("nextLevel"), "researchLead.promotionPlan.nextLevel"
+        )
+        if next_level != expected_next:
+            raise SystemExit(
+                f"researchLead.promotionPlan.nextLevel must be {expected_next}"
+            )
+        missing = require_string(
+            plan.get("missingEvidence"),
+            "researchLead.promotionPlan.missingEvidence",
+        )
+        fixture = require_string(
+            plan.get("requiredFixture"),
+            "researchLead.promotionPlan.requiredFixture",
+        )
+        observer_ids = require_string_list(
+            plan.get("requiredObserverIds"),
+            "researchLead.promotionPlan.requiredObserverIds",
+        )
+        if not observer_ids:
+            raise SystemExit(
+                "researchLead.promotionPlan requires at least one authoritative observer"
+            )
+        contract_path = root / "web-campaign.json"
+        if not contract_path.is_file():
+            raise SystemExit("web research lead promotion requires web-campaign.json")
+        contract = read_json(contract_path)
+        admitted_observers = {
+            str(value.get("id") or "")
+            for value in contract.get("authoritativeObservers", [])
+            if isinstance(value, dict) and value.get("independentReadback") is True
+        }
+        unknown_observers = sorted(set(observer_ids) - admitted_observers)
+        if unknown_observers:
+            raise SystemExit(
+                "researchLead.promotionPlan references unknown authoritative observers: "
+                + ", ".join(unknown_observers)
+            )
+        estimated_requests = plan.get("estimatedRequests")
+        if (
+            isinstance(estimated_requests, bool)
+            or not isinstance(estimated_requests, int)
+            or not 1 <= estimated_requests <= 1000
+        ):
+            raise SystemExit(
+                "researchLead.promotionPlan.estimatedRequests must be between 1 and 1000"
+            )
+        if plan.get("cleanupRequired") is not True:
+            raise SystemExit(
+                "active web research leads require cleanupRequired=true"
+            )
+        normalized["promotionPlan"] = {
+            "currentLevel": current,
+            "nextLevel": next_level,
+            "missingEvidence": missing,
+            "requiredObserverIds": observer_ids,
+            "requiredFixture": fixture,
+            "estimatedRequests": estimated_requests,
+            "cleanupRequired": True,
+        }
     return normalized
 
 
@@ -4915,6 +5003,8 @@ def ingest_research_leads(
                     ):
                         if field in lead:
                             payload[field] = lead[field]
+                if "promotionPlan" in lead:
+                    payload["promotionPlan"] = lead["promotionPlan"]
             prior_promotion = str(payload.get("promotionLevel") or "observation")
             if LEAD_PROMOTION_ORDER.get(lead["promotionLevel"], 0) > LEAD_PROMOTION_ORDER.get(
                 prior_promotion, 0
@@ -4960,6 +5050,7 @@ def ingest_research_leads(
                 "experiment": lead["nextExperiment"],
                 "grade": lead["evidenceGrade"],
                 "oracle": lead.get("executableOracle"),
+                "promotionPlan": lead.get("promotionPlan"),
             }
         )
         row = connection.execute(
@@ -4991,6 +5082,8 @@ def ingest_research_leads(
                 if isinstance(lead.get("criticalBoundary"), dict)
                 else "- Critical boundary: not mapped yet\n- Intermediate capability: not claimed yet\n"
             )
+            promotion_plan = lead.get("promotionPlan") or {}
+            replay_mode = lead["promotionLevel"] == "runtime-differential"
             packet.write_text(
                 f"""# Research-lead experiment: {lead_id}
 
@@ -5003,6 +5096,15 @@ def ingest_research_leads(
 - Title: {lead['title']}
 {boundary_lines.rstrip()}
 - Chain progress score: `{lead['chainProgressScore']}`
+
+## Promotion contract
+
+- Current level: `{promotion_plan.get('currentLevel', lead['promotionLevel'])}`
+- Required next level: `{promotion_plan.get('nextLevel', 'unspecified')}`
+- Missing evidence: {promotion_plan.get('missingEvidence', lead['nextExperiment'])}
+- Required authoritative observers: {', '.join(promotion_plan.get('requiredObserverIds', [])) or 'not supplied'}
+- Required owned fixture: {promotion_plan.get('requiredFixture', 'not supplied')}
+- Estimated target requests: `{promotion_plan.get('estimatedRequests', 'unknown')}`
 
 ## Next experiment
 
@@ -5020,6 +5122,7 @@ control falsifies it.
 Checked-in tests, assertions, comments that state invariants, and test fixtures
 from the pinned target revision are valid local oracles. Do not inspect patch
 history, security commits, advisories, or other revisions to locate a bug.
+{'This is a runtime-differential replay. Rebuild a fresh owned fixture and fresh canary, use the admitted alternate observer, replay baseline/negative/positive through the coordinator-controlled broker, and do not reuse the originator evidence.' if replay_mode else 'Execute the cheapest admitted baseline/negative/positive experiment. If a prerequisite contract is absent, acquire that exact contract instead of adding another prose hypothesis.'}
 """,
                 encoding="utf-8",
             )
@@ -5027,8 +5130,16 @@ history, security commits, advisories, or other revisions to locate a bug.
                 connection,
                 task_id=scheduled_task,
                 wave=max(1, int(task["wave"])),
-                lane="research-lead-validation",
-                title=f"Validate {lead_id}: {lead['title']}",
+                lane=(
+                    "research-lead-independent-runtime-replay"
+                    if replay_mode
+                    else "research-lead-validation"
+                ),
+                title=(
+                    f"Independently replay {lead_id}: {lead['title']}"
+                    if replay_mode
+                    else f"Validate {lead_id}: {lead['title']}"
+                ),
                 packet=packet.relative_to(root).as_posix(),
                 priority=(
                     1600
@@ -5039,13 +5150,18 @@ history, security commits, advisories, or other revisions to locate a bug.
                         if value_per_cost["status"] == "measured"
                         else 0
                     )
+                    + (500 if replay_mode else 0)
                 ),
                 dependencies=[],
-                excluded_workers=[],
+                excluded_workers=[worker_id] if replay_mode else [],
                 max_attempts=2,
                 timeout_seconds=int(task["timeout_seconds"]),
                 approach_families=list(lead["approachFamilies"]),
-                task_kind="research-lead-validation",
+                task_kind=(
+                    "runtime-primitive-replay"
+                    if replay_mode
+                    else "research-lead-validation"
+                ),
             )
             connection.execute(
                 "UPDATE tasks SET lead_id=? WHERE task_id=?", (lead_id, scheduled_task)
@@ -5328,6 +5444,46 @@ def cmd_round_plan(args: argparse.Namespace) -> int:
                 ):
                     raise SystemExit(
                         "the previous root synthesis did not authorize another research round"
+                    )
+                readiness = web_runtime_readiness(
+                    root,
+                    connection,
+                    research_round=research_round - 1,
+                )
+                if (
+                    readiness.get("applicable") is True
+                    and readiness.get("available") is not True
+                    and int(readiness.get("runtimeDifferentials") or 0) == 0
+                ):
+                    set_metadata(connection, "runtimeBlockedCheckpoint", readiness)
+                    record_event(
+                        connection,
+                        "research-round-refused-runtime-unavailable",
+                        task_id=previous_synthesis_id,
+                        worker_id=args.worker_id,
+                        payload=readiness,
+                    )
+                    raise SystemExit(
+                        "target execution is unavailable and no runtime differential exists; "
+                        "retain promotion experiments and start a newly authorized execution epoch"
+                    )
+                if (
+                    readiness.get("applicable") is True
+                    and int(readiness.get("roundCompletedTargetDispatches") or 0) == 0
+                    and int(readiness.get("runtimeDifferentials") or 0) == 0
+                ):
+                    set_metadata(connection, "runtimeBlockedCheckpoint", readiness)
+                    record_event(
+                        connection,
+                        "research-round-refused-no-target-experiment",
+                        task_id=previous_synthesis_id,
+                        worker_id=args.worker_id,
+                        payload=readiness,
+                    )
+                    raise SystemExit(
+                        "the previous web round completed no target experiment and produced "
+                        "no runtime differential; execute the retained promotion experiment "
+                        "instead of launching another source-only round"
                     )
             definitions = {
                 row["family_id"]: row
@@ -6496,6 +6652,95 @@ to end the route or campaign.
     return task_id
 
 
+def web_runtime_readiness(
+    root: Path,
+    connection: sqlite3.Connection,
+    *,
+    research_round: int | None = None,
+) -> dict[str, Any]:
+    """Return whether another web round can still obtain target evidence."""
+
+    contract_path = root / "web-campaign.json"
+    if not contract_path.is_file():
+        return {"applicable": False, "available": True}
+    try:
+        contract = read_json(contract_path)
+        authorization = contract.get("authorization") or {}
+        valid_until = parse_time(str(authorization.get("validUntil")))
+        authorization_valid = valid_until > dt.datetime.now(dt.timezone.utc)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        authorization_valid = False
+    ledger_path = root / "evidence" / "web" / "budget-ledger.sqlite3"
+    ledger_state = "missing"
+    active_seconds = 0.0
+    completed_source_tasks: set[str] = set()
+    maximum = float((contract.get("budget") or {}).get("maxActiveExecutionSeconds") or (contract.get("budget") or {}).get("maxWallSeconds") or 0)
+    if ledger_path.is_file():
+        try:
+            ledger = sqlite3.connect(f"file:{ledger_path}?mode=ro", uri=True)
+            ledger.row_factory = sqlite3.Row
+            meta = {
+                row["key"]: row["value"]
+                for row in ledger.execute("SELECT key,value FROM meta")
+            }
+            ledger_state = str(meta.get("state") or "unknown")
+            now = dt.datetime.now(dt.timezone.utc).timestamp()
+            for row in ledger.execute(
+                "SELECT reserved_at,finished_at,lease_until,status,target_dispatch,source_task_id "
+                "FROM operations"
+            ):
+                if int(row["target_dispatch"] or 0) != 1:
+                    continue
+                started = float(row["reserved_at"])
+                if row["finished_at"] is not None:
+                    finished = float(row["finished_at"])
+                elif row["status"] == "running":
+                    finished = min(now, float(row["lease_until"]))
+                else:
+                    finished = started
+                active_seconds += max(0.0, finished - started)
+                if row["status"] == "completed" and row["source_task_id"]:
+                    completed_source_tasks.add(str(row["source_task_id"]))
+            ledger.close()
+        except sqlite3.Error:
+            ledger_state = "unreadable"
+    runtime_differentials = int(
+        connection.execute(
+            "SELECT COUNT(*) AS count FROM research_leads WHERE state='active' "
+            "AND json_extract(payload_json,'$.promotionLevel') IN "
+            "('runtime-differential','verified-primitive','compatible-chain-edge','complete-terminal')"
+        ).fetchone()["count"]
+    )
+    available = bool(
+        authorization_valid
+        and ledger_state == "active"
+        and maximum > 0
+        and active_seconds < maximum
+    )
+    round_target_dispatches = 0
+    if research_round is not None and completed_source_tasks:
+        placeholders = ",".join("?" for _ in completed_source_tasks)
+        round_target_dispatches = int(
+            connection.execute(
+                f"SELECT COUNT(*) AS count FROM tasks WHERE research_round=? "
+                f"AND task_id IN ({placeholders})",
+                (research_round, *sorted(completed_source_tasks)),
+            ).fetchone()["count"]
+        )
+    return {
+        "applicable": True,
+        "available": available,
+        "authorizationValid": authorization_valid,
+        "ledgerState": ledger_state,
+        "activeExecutionSeconds": round(active_seconds, 6),
+        "maximumActiveExecutionSeconds": maximum,
+        "runtimeDifferentials": runtime_differentials,
+        "researchRound": research_round,
+        "roundCompletedTargetDispatches": round_target_dispatches,
+        "disposition": "runtime-ready" if available else "runtime-blocked",
+    }
+
+
 def schedule_next_round_planning_task(
     root: Path,
     connection: sqlite3.Connection,
@@ -6505,6 +6750,39 @@ def schedule_next_round_planning_task(
 ) -> str | None:
     synthesis = synthesis_result.get("roundSynthesis")
     if not isinstance(synthesis, dict) or synthesis.get("launchNextRound") is not True:
+        return None
+    readiness = web_runtime_readiness(
+        root,
+        connection,
+        research_round=int(synthesis_task["research_round"]),
+    )
+    if (
+        readiness.get("applicable") is True
+        and readiness.get("available") is not True
+        and int(readiness.get("runtimeDifferentials") or 0) == 0
+    ):
+        set_metadata(connection, "runtimeBlockedCheckpoint", readiness)
+        record_event(
+            connection,
+            "next-round-blocked-runtime-unavailable",
+            task_id=str(synthesis_task["task_id"]),
+            worker_id=coordinator_worker,
+            payload=readiness,
+        )
+        return None
+    if (
+        readiness.get("applicable") is True
+        and int(readiness.get("roundCompletedTargetDispatches") or 0) == 0
+        and int(readiness.get("runtimeDifferentials") or 0) == 0
+    ):
+        set_metadata(connection, "runtimeBlockedCheckpoint", readiness)
+        record_event(
+            connection,
+            "next-round-blocked-no-target-experiment",
+            task_id=str(synthesis_task["task_id"]),
+            worker_id=coordinator_worker,
+            payload=readiness,
+        )
         return None
     from_round = int(synthesis_task["research_round"])
     target_round = from_round + 1
@@ -6538,7 +6816,9 @@ mechanism exists, and allocate fresh routes to underexplored boundaries. Do not
 complete this task merely by writing a plan: invoke `round-plan` and verify that
 round {target_round}'s development, adversarial, and root-synthesis tasks exist.
 Submit `nextRoundPlanning` with the retained plan path and launched task IDs.
-"No findings" is not permission to return without launching this round.
+If target execution is unavailable and the previous round produced no runtime
+differential, checkpoint the exact promotion experiments instead of launching
+another prose-only round.
 """,
         encoding="utf-8",
     )

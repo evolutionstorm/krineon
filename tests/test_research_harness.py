@@ -23,6 +23,7 @@ from scripts.research_harness import (
     schedule_experiment_frontier,
     scoped_negative_matches_experiment,
     validate_research_lead,
+    web_runtime_readiness,
 )
 
 
@@ -310,6 +311,126 @@ class HarnessTests(unittest.TestCase):
                     payload["schedulingDecision"]["reason"],
                     "no machine-executable oracle",
                 )
+            finally:
+                connection.close()
+
+    def test_web_lead_requires_an_executable_promotion_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / "campaign"
+            (campaign / "evidence").mkdir(parents=True)
+            (campaign / "campaign.json").write_text(
+                json.dumps({"profile": "web-app"}) + "\n"
+            )
+            (campaign / "web-campaign.json").write_text(
+                json.dumps(
+                    {
+                        "authoritativeObservers": [
+                            {
+                                "id": "resource-readback",
+                                "kind": "resource-identity",
+                                "basis": "owned API readback",
+                                "independentReadback": True,
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            (campaign / "evidence" / "observation.json").write_text(
+                '{"expected":"same","observed":"different"}\n'
+            )
+            raw = {
+                "profile": "web-app",
+                "kind": "observation",
+                "title": "Two consumers disagree",
+                "status": "active",
+                "sourceReferences": ["src/consumer.js:10"],
+                "evidence": ["evidence/observation.json"],
+                "approachFamilies": ["representation-parser"],
+                "nextExperiment": "Run one bounded target differential.",
+                "observation": {
+                    "invariant": "both consumers resolve one resource",
+                    "expected": "same resource",
+                    "observed": "different resources",
+                    "reproducible": False,
+                },
+            }
+            with self.assertRaisesRegex(SystemExit, "require promotionPlan"):
+                validate_research_lead(campaign, raw)
+            raw["promotionPlan"] = {
+                "currentLevel": "observation",
+                "nextLevel": "source-supported-mechanism",
+                "missingEvidence": "source path and runtime differential",
+                "requiredObserverIds": ["resource-readback"],
+                "requiredFixture": "fresh owned resource",
+                "estimatedRequests": 3,
+                "cleanupRequired": True,
+            }
+            lead = validate_research_lead(campaign, raw)
+            self.assertEqual(
+                lead["promotionPlan"]["requiredObserverIds"],
+                ["resource-readback"],
+            )
+
+    def test_web_round_requires_a_completed_target_experiment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self.create_campaign(Path(tmp))
+            self.run_cli("plan", str(campaign))
+            self.run_cli("queue", str(campaign))
+            (campaign / "web-campaign.json").write_text(
+                json.dumps(
+                    {
+                        "authorization": {
+                            "validUntil": "2099-01-01T00:00:00+00:00"
+                        },
+                        "budget": {
+                            "maxActiveExecutionSeconds": 100,
+                            "maxWallSeconds": 100,
+                        },
+                    }
+                )
+                + "\n"
+            )
+            ledger_path = campaign / "evidence" / "web" / "budget-ledger.sqlite3"
+            ledger_path.parent.mkdir(parents=True)
+            ledger = sqlite3.connect(ledger_path)
+            ledger.executescript(
+                """
+                CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                INSERT INTO meta VALUES('state','active');
+                CREATE TABLE operations(
+                  reserved_at REAL,finished_at REAL,lease_until REAL,status TEXT,
+                  target_dispatch INTEGER,source_task_id TEXT
+                );
+                """
+            )
+            ledger.commit()
+            ledger.close()
+            connection = connect_orchestration(campaign)
+            try:
+                source_task = connection.execute(
+                    "SELECT task_id FROM tasks ORDER BY task_id LIMIT 1"
+                ).fetchone()["task_id"]
+                connection.execute(
+                    "UPDATE tasks SET research_round=1 WHERE task_id=?",
+                    (source_task,),
+                )
+                connection.commit()
+                blocked = web_runtime_readiness(
+                    campaign, connection, research_round=1
+                )
+                self.assertEqual(blocked["roundCompletedTargetDispatches"], 0)
+                ledger = sqlite3.connect(ledger_path)
+                ledger.execute(
+                    "INSERT INTO operations VALUES(?,?,?,?,?,?)",
+                    (1.0, 2.0, 3.0, "completed", 1, source_task),
+                )
+                ledger.commit()
+                ledger.close()
+                ready = web_runtime_readiness(
+                    campaign, connection, research_round=1
+                )
+                self.assertEqual(ready["roundCompletedTargetDispatches"], 1)
             finally:
                 connection.close()
 
@@ -1686,12 +1807,17 @@ class HarnessTests(unittest.TestCase):
             connection = sqlite3.connect(campaign / "orchestration.db")
             try:
                 rows = connection.execute(
-                    "SELECT task_id,packet FROM tasks WHERE lane='research-lead-validation'"
+                    "SELECT task_id,packet,lane FROM tasks WHERE lane IN "
+                    "('research-lead-validation','research-lead-independent-runtime-replay')"
                 ).fetchall()
             finally:
                 connection.close()
             self.assertEqual(len(rows), 2)
-            for _, packet_path in rows:
+            self.assertIn(
+                "research-lead-independent-runtime-replay",
+                {row[2] for row in rows},
+            )
+            for _, packet_path, _ in rows:
                 packet = (campaign / packet_path).read_text()
                 self.assertIn("RCE chain is **not** required", packet)
 

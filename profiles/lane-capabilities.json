@@ -153,6 +153,7 @@
         "web-app"
       ],
       "laneIds": [
+        "web-normal-workflow-acquisition",
         "web-controlled-execution",
         "web-business-sequence-execution",
         "web-cache-semantic-research",

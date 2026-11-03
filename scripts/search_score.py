@@ -265,6 +265,108 @@ def chain_progress_metrics(root: Path) -> dict[str, Any]:
     }
 
 
+def web_discovery_metrics(root: Path) -> dict[str, Any]:
+    """Measure execution and promotion, not completed-task volume."""
+
+    database = root / "orchestration.db"
+    ledger_path = root / "evidence" / "web" / "budget-ledger.sqlite3"
+    metrics: dict[str, Any] = {
+        "completedTargetDispatches": 0,
+        "runtimeFamiliesExercised": 0,
+        "promotionTransitions": 0,
+        "runtimeDifferentials": 0,
+        "verifiedPrimitives": 0,
+        "completeTerminals": 0,
+        "coordinatorReplays": 0,
+        "offlineRoundsAfterLastTargetDispatch": 0,
+        "runtimeEvidenceScore": 0,
+    }
+    last_target_time = 0.0
+    if ledger_path.is_file():
+        ledger = sqlite3.connect(f"file:{ledger_path}?mode=ro", uri=True)
+        ledger.row_factory = sqlite3.Row
+        try:
+            rows = ledger.execute(
+                "SELECT approach_family,status,finished_at FROM operations "
+                "WHERE target_dispatch=1"
+            ).fetchall()
+            completed = [row for row in rows if row["status"] == "completed"]
+            metrics["completedTargetDispatches"] = len(completed)
+            metrics["runtimeFamiliesExercised"] = len(
+                {str(row["approach_family"]) for row in completed if row["approach_family"]}
+            )
+            last_target_time = max(
+                (float(row["finished_at"] or 0) for row in rows), default=0.0
+            )
+        except sqlite3.DatabaseError:
+            pass
+        finally:
+            ledger.close()
+    if not database.is_file():
+        return metrics
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    try:
+        for row in connection.execute(
+            "SELECT payload_json FROM research_leads WHERE state='active'"
+        ):
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            level = str(payload.get("promotionLevel") or "observation")
+            history = payload.get("promotionHistory")
+            if isinstance(history, list):
+                metrics["promotionTransitions"] += max(0, len(history) - 1)
+            if level in {
+                "runtime-differential",
+                "verified-primitive",
+                "compatible-chain-edge",
+                "complete-terminal",
+            }:
+                metrics["runtimeDifferentials"] += 1
+            if level in {"verified-primitive", "compatible-chain-edge", "complete-terminal"}:
+                metrics["verifiedPrimitives"] += 1
+            if level == "complete-terminal":
+                metrics["completeTerminals"] += 1
+        for row in connection.execute(
+            "SELECT payload_json FROM events WHERE event_type='task-submitted'"
+        ):
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get("coordinatorReplay"):
+                metrics["coordinatorReplays"] += 1
+        if last_target_time:
+            cutoff = dt.datetime.fromtimestamp(
+                last_target_time, tz=dt.timezone.utc
+            ).isoformat()
+            metrics["offlineRoundsAfterLastTargetDispatch"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM tasks WHERE "
+                    "task_kind='root-round-synthesis' AND state='completed' "
+                    "AND completed_at>?",
+                    (cutoff,),
+                ).fetchone()["count"]
+            )
+    except sqlite3.DatabaseError:
+        pass
+    finally:
+        connection.close()
+    metrics["runtimeEvidenceScore"] = (
+        metrics["completedTargetDispatches"]
+        + (2 * metrics["runtimeFamiliesExercised"])
+        + (3 * metrics["promotionTransitions"])
+        + (10 * metrics["runtimeDifferentials"])
+        + (25 * metrics["verifiedPrimitives"])
+        + (100 * metrics["completeTerminals"])
+        + (10 * metrics["coordinatorReplays"])
+        - (10 * metrics["offlineRoundsAfterLastTargetDispatch"])
+    )
+    return metrics
+
+
 def score_vector(root: Path, profile: str, benchmark: str) -> dict[str, Any]:
     coverage = latest_coverage(root, profile)
     metrics = coverage.get("metrics") if isinstance(coverage, dict) else {}
@@ -280,6 +382,7 @@ def score_vector(root: Path, profile: str, benchmark: str) -> dict[str, Any]:
         **validated_root_cause_metrics(root),
         **semantic_information_metrics(root),
         **chain_progress_metrics(root),
+        **web_discovery_metrics(root),
     }
 
 
@@ -302,6 +405,15 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
             "chainProgressScore": "higher-is-better",
             "compatiblePrimitiveEdges": "higher-is-better",
             "chainUncertaintiesResolved": "higher-is-better",
+            "completedTargetDispatches": "higher-is-better",
+            "runtimeFamiliesExercised": "higher-is-better",
+            "promotionTransitions": "higher-is-better",
+            "runtimeDifferentials": "higher-is-better",
+            "verifiedPrimitives": "higher-is-better",
+            "completeTerminals": "higher-is-better-primary",
+            "coordinatorReplays": "higher-is-better",
+            "offlineRoundsAfterLastTargetDispatch": "lower-is-better",
+            "runtimeEvidenceScore": "higher-is-better",
         },
     }
     output = (
@@ -365,13 +477,49 @@ def cmd_compare(args: argparse.Namespace) -> int:
             before.get("chainUncertaintiesResolved"),
             after.get("chainUncertaintiesResolved"),
         ),
+        "completedTargetDispatches": improved(
+            before.get("completedTargetDispatches"), after.get("completedTargetDispatches")
+        ),
+        "runtimeFamiliesExercised": improved(
+            before.get("runtimeFamiliesExercised"), after.get("runtimeFamiliesExercised")
+        ),
+        "promotionTransitions": improved(
+            before.get("promotionTransitions"), after.get("promotionTransitions")
+        ),
+        "runtimeDifferentials": improved(
+            before.get("runtimeDifferentials"), after.get("runtimeDifferentials")
+        ),
+        "verifiedPrimitives": improved(
+            before.get("verifiedPrimitives"), after.get("verifiedPrimitives")
+        ),
+        "completeTerminals": improved(
+            before.get("completeTerminals"), after.get("completeTerminals")
+        ),
+        "coordinatorReplays": improved(
+            before.get("coordinatorReplays"), after.get("coordinatorReplays")
+        ),
+        "offlineRoundsAfterLastTargetDispatch": improved(
+            before.get("offlineRoundsAfterLastTargetDispatch"),
+            after.get("offlineRoundsAfterLastTargetDispatch"),
+            lower=True,
+        ),
+        "runtimeEvidenceScore": improved(
+            before.get("runtimeEvidenceScore"), after.get("runtimeEvidenceScore")
+        ),
     }
-    primary_moved = deltas["validatedRootCausesPerCpuHour"] or deltas["validatedRootCauses"]
+    primary_moved = (
+        deltas["validatedRootCausesPerCpuHour"]
+        or deltas["validatedRootCauses"]
+        or deltas["completeTerminals"]
+    )
     proxy_moved = any(
         value for key, value in deltas.items()
         if key not in {"validatedRootCausesPerCpuHour", "validatedRootCauses"}
     )
-    moved = primary_moved or proxy_moved
+    offline_regressed = int(
+        after.get("offlineRoundsAfterLastTargetDispatch") or 0
+    ) > int(before.get("offlineRoundsAfterLastTargetDispatch") or 0)
+    moved = primary_moved or (proxy_moved and not offline_regressed)
     decision = {
         "schemaVersion": 1,
         "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -379,12 +527,21 @@ def cmd_compare(args: argparse.Namespace) -> int:
         "before": before,
         "after": after,
         "improvements": deltas,
+        "regressions": {
+            "offlineRoundsAfterLastTargetDispatch": offline_regressed,
+        },
         "verdict": (
-            "keep" if primary_moved else "provisional-keep" if proxy_moved else "delete"
+            "keep"
+            if primary_moved
+            else "provisional-keep"
+            if proxy_moved and not offline_regressed
+            else "delete"
         ),
         "reason": (
             "improved validated root causes per measured cost"
             if primary_moved
+            else "added offline synthesis rounds after the last target dispatch without advancing a primary terminal"
+            if offline_regressed
             else "improved a search proxy but has not yet improved validated root causes per cost"
             if proxy_moved
             else "moved neither validated root causes per cost nor a retained search proxy"

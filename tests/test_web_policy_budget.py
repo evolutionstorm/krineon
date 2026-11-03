@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from scripts.web_browser_harness import validate_scenario
 from scripts.web_budget import SharedWebBudget
-from scripts.web_contract import WebCampaignContract, WebContractError
+from scripts.web_contract import BudgetLedger, WebCampaignContract, WebContractError
 from scripts.web_policy import WebPolicyEngine, normalize_scope_path, validate_step_envelope
 from scripts.http_protocol_harness import BrokeredProtocolTransport
 from tests.test_web_app_profile import OwnedFixtureHandler, contract_value, workflow_value
@@ -146,14 +146,158 @@ class WebPolicyBudgetTests(unittest.TestCase):
         return WebCampaignContract.load(path)
 
     @staticmethod
-    def research_binding(family: str, source: str, experiment: str) -> dict[str, str]:
-        return {
+    def research_binding(
+        family: str,
+        source: str,
+        experiment: str,
+        phase: str | None = None,
+    ) -> dict[str, str]:
+        binding = {
             "taskId": "execution-task",
             "sourceTaskId": source,
             "experimentId": experiment,
             "approachFamily": family,
             "mechanismFingerprint": f"mechanism-{experiment}",
         }
+        if phase is not None:
+            binding["executionPhase"] = phase
+        return binding
+
+    def test_active_execution_budget_does_not_charge_offline_analysis_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = self.contract(root)
+            budget = SharedWebBudget(contract, root / "budget.sqlite3")
+            with sqlite3.connect(root / "budget.sqlite3") as connection:
+                connection.execute(
+                    "UPDATE meta SET value=? WHERE key='started_at'",
+                    (str(time.time() - 86400),),
+                )
+            budget.reserve(
+                operation_id="execution-after-offline-analysis",
+                request_bytes=1,
+                estimated_response_bytes=1,
+                cleanup=False,
+                adapter="test",
+            )
+            budget.reconcile_response("execution-after-offline-analysis", 1)
+            self.assertEqual(budget.read()["state"], "active")
+
+    def test_legacy_adapter_budget_uses_the_same_execution_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = self.contract(root)
+            ledger = BudgetLedger(contract, root / "legacy-ledger.json")
+            stale = ledger.read()
+            stale["startedAt"] = "2000-01-01T00:00:00+00:00"
+            (root / "legacy-ledger.json").write_text(
+                json.dumps(stale, indent=2) + "\n"
+            )
+            result = ledger.reserve(
+                operation_id="legacy-after-offline-analysis",
+                request_bytes=1,
+                estimated_response_bytes=1,
+                cleanup=False,
+                adapter="legacy-test",
+            )
+            self.assertEqual(result["requests"], 1)
+
+    def test_execution_phase_cap_preserves_replay_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = contract_value("http://owned.test:8080", confirmed=True)
+            manifest = root / "owned-accounts.json"
+            manifest.write_text(
+                '{"schemaVersion":1,"accounts":[{"id":"user-a"},{"id":"user-b"}]}\n'
+            )
+            value["authorization"]["ownedFullTesting"] = {
+                "enabled": True,
+                "ownedAccountsOnly": True,
+                "autoApproveBoundedWorkflows": True,
+                "accountManifest": manifest.name,
+                "accountManifestSha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "accountIds": ["user-a", "user-b"],
+            }
+            value["budget"]["totalRequests"] = 11
+            value["budget"]["cleanupReservedRequests"] = 1
+            value["researchDiversity"]["enforceOperationBinding"] = True
+            value["researchDiversity"]["runtimeBudgetAllocation"] = {
+                "baseline": 0.1,
+                "novel": 0.5,
+                "followup": 0.2,
+                "replay": 0.2,
+            }
+            path = root / "web-campaign.json"
+            path.write_text(json.dumps(value, indent=2) + "\n")
+            database = sqlite3.connect(root / "orchestration.db")
+            database.executescript(
+                """
+                CREATE TABLE tasks(task_id TEXT PRIMARY KEY,state TEXT,title TEXT);
+                CREATE TABLE task_approach_families(task_id TEXT,family_id TEXT);
+                CREATE TABLE approach_families(family_id TEXT PRIMARY KEY,exploration INTEGER);
+                CREATE TABLE events(event_id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT,event_type TEXT,task_id TEXT,worker_id TEXT,payload_json TEXT);
+                """
+            )
+            database.executemany(
+                "INSERT INTO tasks VALUES(?,?,?)",
+                [
+                    ("execution-task", "running", "Execution"),
+                    ("normal-workflow-source", "completed", "Normal workflow acquisition"),
+                ],
+            )
+            database.execute(
+                "INSERT INTO approach_families VALUES(?,1)",
+                ("web-capability-sharing",),
+            )
+            database.execute(
+                "INSERT INTO task_approach_families VALUES(?,?)",
+                ("normal-workflow-source", "web-capability-sharing"),
+            )
+            database.commit()
+            database.close()
+            budget = SharedWebBudget(WebCampaignContract.load(path), root / "budget.sqlite3")
+            budget.reserve(
+                operation_id="baseline-one",
+                request_bytes=1,
+                estimated_response_bytes=1,
+                cleanup=False,
+                adapter="test",
+                research_binding=self.research_binding(
+                    "web-capability-sharing",
+                    "normal-workflow-source",
+                    "baseline-one",
+                    "baseline",
+                ),
+            )
+            budget.reconcile_response("baseline-one", 1)
+            with self.assertRaisesRegex(WebContractError, "durable source task"):
+                budget.reserve(
+                    operation_id="phase-lie",
+                    request_bytes=1,
+                    estimated_response_bytes=1,
+                    cleanup=False,
+                    adapter="test",
+                    research_binding=self.research_binding(
+                        "web-capability-sharing",
+                        "normal-workflow-source",
+                        "phase-lie",
+                        "novel",
+                    ),
+                )
+            with self.assertRaisesRegex(WebContractError, "baseline execution-phase"):
+                budget.reserve(
+                    operation_id="baseline-two",
+                    request_bytes=1,
+                    estimated_response_bytes=1,
+                    cleanup=False,
+                    adapter="test",
+                    research_binding=self.research_binding(
+                        "web-capability-sharing",
+                        "normal-workflow-source",
+                        "baseline-two",
+                        "baseline",
+                    ),
+                )
 
     def test_owned_full_testing_binds_operations_and_caps_one_family(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

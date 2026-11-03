@@ -27,7 +27,8 @@ The campaign authority is `web-campaign.json` (schema version 2). It records:
 - owner-approved identities, roles, tenants, sessions, and credential origins;
 - secret references, never credential values;
 - per-action request and response limits;
-- shared request, byte, rate, concurrency, wall-clock, and cleanup budgets;
+- shared request, byte, rate, concurrency, active target-execution, and cleanup
+  budgets;
 - shared response-decompression, redirect, WebSocket-frame, browser-event, and
   retained-storage budgets;
 - read-only, disposable-write, sensitive, external-side-effect, and unknown
@@ -79,6 +80,38 @@ mechanism fingerprint. The shared SQLite ledger verifies both tasks against
 `orchestration.db`, records reservation and completion events there, and
 rejects additional authorization traffic after the warm-up share is consumed.
 Direct coordinator calls cannot bypass this rule.
+
+Target time is an execution budget, not a campaign-age timer. Offline source
+analysis, synthesis, and operator review do not consume
+`maxActiveExecutionSeconds`. The broker measures only admitted target
+dispatches. Authorization expiry remains absolute. The broker divides the
+non-cleanup request budget among four phases:
+
+- baseline acquisition;
+- novel mechanism experiments;
+- focused follow-up; and
+- independent replay.
+
+The allocation prevents inventory from consuming the capacity needed to test
+and replay a surviving mechanism. At 25%, 50%, 75%, and 90% of active target
+time, the coordinator writes an execution checkpoint with the remaining time
+and pending experiments. A later execution epoch requires a new signed
+contract and ledger. Krineon does not silently extend an expired authorization
+or exhausted budget.
+
+Every legitimate high-value feature must first pass normal-workflow
+acquisition. The retained contract identifies the actor and effective actor,
+resource identity and generation, values issued and consumed, authoritative
+before-and-after readback, asynchronous completion, and cleanup. An unknown
+operation creates an acquisition task. It does not become a guessed endpoint.
+
+Every active web lead also carries a promotion plan. The plan names its current
+evidence level, the next level, missing evidence, fresh owned fixture,
+authoritative observers, request estimate, and cleanup requirement. A runtime
+differential automatically enters an independent replay lane with a fresh
+fixture and an excluded origin worker. Repeating offline synthesis after target
+execution stops reduces the runtime-evidence score and cannot justify another
+broad research round.
 
 The web profile keeps distinct early routes alive for capabilities and shares,
 integrations and callbacks, uploads and storage processing, asynchronous job

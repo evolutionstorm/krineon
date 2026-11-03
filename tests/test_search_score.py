@@ -140,6 +140,65 @@ class SearchScoreTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_offline_round_growth_without_terminal_progress_is_a_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "campaign.json").write_text("{}\n")
+            before = root / "before.json"
+            after = root / "after.json"
+            before.write_text(
+                json.dumps(
+                    {
+                        "score": {
+                            "securityInformationGain": 1,
+                            "completeTerminals": 0,
+                            "offlineRoundsAfterLastTargetDispatch": 0,
+                            "runtimeEvidenceScore": 1,
+                        }
+                    }
+                )
+                + "\n"
+            )
+            after.write_text(
+                json.dumps(
+                    {
+                        "score": {
+                            "securityInformationGain": 2,
+                            "completeTerminals": 0,
+                            "offlineRoundsAfterLastTargetDispatch": 2,
+                            "runtimeEvidenceScore": -18,
+                        }
+                    }
+                )
+                + "\n"
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCORE),
+                    "compare",
+                    str(root),
+                    "--subsystem",
+                    "offline-round-loop",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--enforce",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            decision = json.loads(
+                (root / "metrics" / "ablations" / "offline-round-loop.json").read_text()
+            )
+            self.assertEqual(decision["verdict"], "delete")
+            self.assertTrue(
+                decision["regressions"]["offlineRoundsAfterLastTargetDispatch"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

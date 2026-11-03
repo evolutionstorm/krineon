@@ -75,6 +75,24 @@
     },
     {
       "wave": 1,
+      "id": "web-normal-workflow-acquisition",
+      "title": "Authoritative normal-workflow acquisition",
+      "objective": "Execute the smallest legitimate owned-fixture lifecycle for each admitted high-value feature before anomaly testing. Bind exact operations, actor and effective actor, resource identity and generation, authoritative before/after readback, asynchronous completion or quiescence, and cleanup. Missing contracts create acquisition tasks; they do not become guessed endpoints or prose-only security routes.",
+      "deliverables": [
+        "replay-confirmed legitimate feature lifecycles",
+        "exact operation and value-extraction contracts",
+        "authoritative identity, generation, digest, owner, parent, job, result, and cleanup observations",
+        "explicit acquisition blockers for unavailable contracts"
+      ],
+      "priority": 125,
+      "dependsOn": [
+        "web-contract-coordinator",
+        "web-identity-resource-inventory",
+        "web-api-browser-discovery"
+      ]
+    },
+    {
+      "wave": 1,
       "id": "web-authorization-oracles",
       "title": "Baseline authorization and isolation oracles",
       "objective": "Establish compact typed controls for cross-user, cross-role, cross-tenant, object-ownership, checker-consumer, and session-binding invariants. Use this lane to identify chain inputs and obvious High-impact failures, but do not let routine identifier substitution displace novel producer-consumer, parser, lifecycle, integration, protocol, or execution-boundary research. Every oracle must distinguish confirmed disagreement, observed preservation, and inconclusive telemetry.",
@@ -88,7 +106,8 @@
       "dependsOn": [
         "web-contract-coordinator",
         "web-identity-resource-inventory",
-        "web-api-browser-discovery"
+        "web-api-browser-discovery",
+        "web-normal-workflow-acquisition"
       ]
     },
     {
@@ -106,7 +125,8 @@
       "dependsOn": [
         "web-contract-coordinator",
         "web-identity-resource-inventory",
-        "web-api-browser-discovery"
+        "web-api-browser-discovery",
+        "web-normal-workflow-acquisition"
       ]
     },
     {
@@ -121,7 +141,7 @@
         "non-availability impact hypotheses"
       ],
       "priority": 115,
-      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-normal-workflow-acquisition"]
     },
     {
       "wave": 1,
@@ -134,7 +154,7 @@
         "ranked capability lifecycle experiments or measured no-surface evidence"
       ],
       "priority": 121,
-      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-workflow-state-modeling"]
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-normal-workflow-acquisition", "web-workflow-state-modeling"]
     },
     {
       "wave": 1,
@@ -147,7 +167,7 @@
         "ranked outbound-authority experiments or measured no-surface evidence"
       ],
       "priority": 120,
-      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-normal-workflow-acquisition"]
     },
     {
       "wave": 1,
@@ -160,7 +180,7 @@
         "ranked processing experiments or measured no-surface evidence"
       ],
       "priority": 119,
-      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-normal-workflow-acquisition"]
     },
     {
       "wave": 1,
@@ -173,7 +193,7 @@
         "ranked async lifecycle experiments or measured no-surface evidence"
       ],
       "priority": 118,
-      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-workflow-state-modeling"]
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-normal-workflow-acquisition", "web-workflow-state-modeling"]
     },
     {
       "wave": 1,
@@ -186,7 +206,7 @@
         "ranked cross-protocol experiments or measured no-surface evidence"
       ],
       "priority": 117,
-      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-normal-workflow-acquisition"]
     },
     {
       "wave": 2,

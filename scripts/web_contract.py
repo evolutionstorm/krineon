@@ -863,6 +863,16 @@ class WebCampaignContract:
                 f"budget.{field}",
                 allow_zero=field == "maxRedirects",
             )
+        wall_mode = str(budget.get("wallClockMode") or "elapsed-wall")
+        if wall_mode not in {"elapsed-wall", "active-execution"}:
+            raise WebContractError(
+                "budget.wallClockMode must be elapsed-wall or active-execution"
+            )
+        if "maxActiveExecutionSeconds" in budget:
+            require_positive_int(
+                budget.get("maxActiveExecutionSeconds"),
+                "budget.maxActiveExecutionSeconds",
+            )
         cleanup = require_positive_int(
             budget.get("cleanupReservedRequests"),
             "budget.cleanupReservedRequests",
@@ -880,6 +890,48 @@ class WebCampaignContract:
             for policy in self.action_policies
         ):
             raise WebContractError("action policy byte limits cannot exceed campaign limits")
+
+        observers = self.raw.get("authoritativeObservers", [])
+        if not isinstance(observers, list):
+            raise WebContractError("authoritativeObservers must be a list")
+        observer_ids: set[str] = set()
+        allowed_observer_kinds = {
+            "resource-identity",
+            "resource-generation",
+            "content-digest",
+            "ownership",
+            "parent-binding",
+            "job-state",
+            "execution-attempt",
+            "result-identity",
+            "audit-actor",
+            "quiescence",
+            "cleanup",
+        }
+        for index, observer in enumerate(observers):
+            if not isinstance(observer, dict):
+                raise WebContractError(
+                    f"authoritativeObservers[{index}] must be an object"
+                )
+            observer_id = require_identifier(
+                observer.get("id"), f"authoritativeObservers[{index}].id"
+            )
+            if observer_id in observer_ids:
+                raise WebContractError(f"duplicate authoritative observer: {observer_id}")
+            observer_ids.add(observer_id)
+            kind = str(observer.get("kind") or "")
+            if kind not in allowed_observer_kinds:
+                raise WebContractError(
+                    f"authoritativeObservers[{index}].kind is unsupported"
+                )
+            if not str(observer.get("basis") or "").strip():
+                raise WebContractError(
+                    f"authoritativeObservers[{index}].basis is required"
+                )
+            if not isinstance(observer.get("independentReadback"), bool):
+                raise WebContractError(
+                    f"authoritativeObservers[{index}].independentReadback must be Boolean"
+                )
 
         program = self.raw.get("program")
         if not isinstance(program, dict):
@@ -1308,7 +1360,7 @@ class BudgetLedger:
 
     def _initial(self) -> dict[str, Any]:
         return {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "contractSha256": self.contract.digest,
             "startedAt": utc_now().isoformat(),
             "requests": 0,
@@ -1317,6 +1369,56 @@ class BudgetLedger:
             "responseBytes": 0,
             "operations": [],
         }
+
+    @staticmethod
+    def _active_execution_seconds(ledger: dict[str, Any], now: dt.datetime) -> float:
+        """Measure target-dispatch time without charging offline campaign work."""
+
+        total = 0.0
+        for row in ledger.get("operations", []):
+            if not isinstance(row, dict) or row.get("targetDispatch", True) is not True:
+                continue
+            started_value = row.get("reservedAt")
+            if not isinstance(started_value, str):
+                continue
+            started = parse_time(started_value, "ledger.operations.reservedAt")
+            finished_value = row.get("reconciledAt") or row.get("abortedAt")
+            finished = (
+                parse_time(str(finished_value), "ledger.operations.finishedAt")
+                if finished_value
+                else now
+            )
+            total += max(0.0, (finished - started).total_seconds())
+        return total
+
+    def _assert_time_and_authorization(
+        self, ledger: dict[str, Any], budget: dict[str, Any]
+    ) -> None:
+        now = utc_now()
+        authorization = self.contract.raw["authorization"]
+        valid_until_value = authorization.get("validUntil")
+        if authorization.get("confirmed") is True and valid_until_value:
+            valid_until = parse_time(
+                str(valid_until_value), "authorization.validUntil"
+            )
+            if now >= valid_until:
+                raise WebContractError("web campaign authorization has expired")
+        mode = str(budget.get("wallClockMode") or "elapsed-wall")
+        if mode == "active-execution":
+            consumed = self._active_execution_seconds(ledger, now)
+            maximum = int(
+                budget.get("maxActiveExecutionSeconds", budget["maxWallSeconds"])
+            )
+            if consumed > maximum:
+                raise WebContractError(
+                    "web campaign active target-execution budget is exhausted"
+                )
+            return
+        elapsed = (
+            now - parse_time(ledger["startedAt"], "ledger.startedAt")
+        ).total_seconds()
+        if elapsed > int(budget["maxWallSeconds"]):
+            raise WebContractError("web campaign wall-clock budget is exhausted")
 
     def read(self) -> dict[str, Any]:
         if not self.path.is_file():
@@ -1347,9 +1449,7 @@ class BudgetLedger:
             ledger = self.read()
             if any(row.get("id") == operation_id for row in ledger["operations"]):
                 raise WebContractError("budget operation id was already reserved")
-            elapsed = (utc_now() - parse_time(ledger["startedAt"], "ledger.startedAt")).total_seconds()
-            if elapsed > int(budget["maxWallSeconds"]):
-                raise WebContractError("web campaign wall-clock budget is exhausted")
+            self._assert_time_and_authorization(ledger, budget)
             total = int(ledger["requests"]) + 1
             cleanup_total = int(ledger["cleanupRequests"]) + (1 if cleanup else 0)
             normal_total = total - cleanup_total
@@ -1380,6 +1480,7 @@ class BudgetLedger:
                     "requestBytes": request_bytes,
                     "reservedResponseBytes": estimated_response_bytes,
                     "reservedAt": utc_now().isoformat(),
+                    "targetDispatch": True,
                 }
             )
             atomic_json(self.path, ledger)

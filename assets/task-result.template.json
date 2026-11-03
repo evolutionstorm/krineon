@@ -71,6 +71,7 @@
     ],
     "researchLeads": [
       {
+        "profile": "web-app",
         "kind": "observation",
         "chainMaturity": "observation",
         "title": "A retained difference with no invented impact claim",
@@ -80,6 +81,15 @@
         "approachFamilies": ["one registered semantic family"],
         "mechanismFingerprint": "stable-boundary-mechanism-id",
         "nextExperiment": "The cheapest experiment that distinguishes competing explanations",
+        "promotionPlan": {
+          "currentLevel": "observation",
+          "nextLevel": "source-supported-mechanism",
+          "missingEvidence": "Exact source path followed by a bounded runtime differential",
+          "requiredObserverIds": ["owned-resource-identity"],
+          "requiredFixture": "A fresh owned resource with authoritative readback and cleanup",
+          "estimatedRequests": 3,
+          "cleanupRequired": true
+        },
         "executableOracle": {
           "kind": "http-differential",
           "runner": "owned production HTTP adapter",

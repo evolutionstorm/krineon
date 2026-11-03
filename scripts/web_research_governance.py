@@ -46,6 +46,8 @@ NOVEL_ZERO_DAY_FAMILIES = frozenset(
     }
 )
 
+EXECUTION_PHASES = frozenset({"baseline", "novel", "followup", "replay"})
+
 DEFAULT_RESEARCH_DIVERSITY = {
     "enforceOperationBinding": True,
     "warmupOperations": 4,
@@ -53,6 +55,15 @@ DEFAULT_RESEARCH_DIVERSITY = {
     "minimumRuntimeFamiliesBeforeClosure": 4,
     "minimumNonAuthorizationFamiliesBeforeClosure": 3,
     "minimumNovelMechanismFamiliesBeforeClosure": 3,
+    # Shares apply to the non-cleanup request budget. They prevent initial
+    # inventory work from consuming the capacity needed to test, minimize, and
+    # independently replay a surviving mechanism.
+    "runtimeBudgetAllocation": {
+        "baseline": 0.20,
+        "novel": 0.55,
+        "followup": 0.15,
+        "replay": 0.10,
+    },
 }
 
 SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
@@ -60,6 +71,28 @@ SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 
 class WebResearchGovernanceError(ValueError):
     """Raised when target traffic is detached from the research frontier."""
+
+
+def infer_execution_phase(*values: Any) -> str:
+    """Derive the budget phase from durable task identity, never worker claims."""
+
+    text = " ".join(str(value or "").lower() for value in values)
+    if any(
+        token in text
+        for token in ("discovery", "inventory", "normal-workflow", "contract", "baseline")
+    ):
+        return "baseline"
+    if any(
+        token in text
+        for token in ("independent-replay", "replay-", "evidence-finding", "verification")
+    ):
+        return "replay"
+    if any(
+        token in text
+        for token in ("lead-", "campaign-chain", "controlled-execution", "followup")
+    ):
+        return "followup"
+    return "novel"
 
 
 def owned_full_testing(contract: Mapping[str, Any]) -> bool:
@@ -121,6 +154,23 @@ def validate_diversity_policy(contract: Mapping[str, Any]) -> None:
         raise WebResearchGovernanceError(
             "researchDiversity.maximumAuthorizationRequestShare must be between 0 and 1"
         )
+    allocation = policy.get("runtimeBudgetAllocation")
+    if not isinstance(allocation, Mapping) or set(allocation) != set(EXECUTION_PHASES):
+        raise WebResearchGovernanceError(
+            "researchDiversity.runtimeBudgetAllocation must define baseline, novel, followup, and replay"
+        )
+    total = 0.0
+    for phase in sorted(EXECUTION_PHASES):
+        value = allocation.get(phase)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise WebResearchGovernanceError(
+                f"researchDiversity.runtimeBudgetAllocation.{phase} must be positive"
+            )
+        total += float(value)
+    if abs(total - 1.0) > 0.000001:
+        raise WebResearchGovernanceError(
+            "researchDiversity.runtimeBudgetAllocation shares must sum to 1"
+        )
 
 
 def normalize_research_binding(value: Any) -> dict[str, str]:
@@ -146,12 +196,23 @@ def normalize_research_binding(value: Any) -> dict[str, str]:
         raise WebResearchGovernanceError(
             "researchBinding.approachFamily is not a registered web runtime family"
         )
+    supplied_phase = str(value.get("executionPhase") or "").strip()
+    inferred_phase = infer_execution_phase(normalized["sourceTaskId"])
+    if supplied_phase:
+        phase = supplied_phase
+    else:
+        phase = inferred_phase
+    if phase not in EXECUTION_PHASES:
+        raise WebResearchGovernanceError(
+            "researchBinding.executionPhase must be baseline, novel, followup, or replay"
+        )
+    normalized["executionPhase"] = phase
     return normalized
 
 
 def _task_row(connection: sqlite3.Connection, task_id: str) -> sqlite3.Row:
     row = connection.execute(
-        "SELECT task_id,state,title FROM tasks WHERE task_id=?", (task_id,)
+        "SELECT * FROM tasks WHERE task_id=?", (task_id,)
     ).fetchone()
     if row is None:
         raise WebResearchGovernanceError(
@@ -192,6 +253,18 @@ def validate_binding_against_campaign(
             raise WebResearchGovernanceError(
                 "researchBinding approach family is not assigned to sourceTaskId"
             )
+        fields = set(source.keys())
+        expected_phase = infer_execution_phase(
+            source["task_id"],
+            source["title"],
+            source["lane"] if "lane" in fields else "",
+            source["task_kind"] if "task_kind" in fields else "",
+        )
+        if binding["executionPhase"] != expected_phase:
+            raise WebResearchGovernanceError(
+                "researchBinding.executionPhase does not match the durable source task; "
+                f"expected {expected_phase}"
+            )
     except sqlite3.Error as exc:
         raise WebResearchGovernanceError(
             f"orchestration database cannot validate researchBinding: {exc}"
@@ -228,6 +301,7 @@ def record_orchestration_event(
                         "experimentId": binding["experimentId"],
                         "approachFamily": binding["approachFamily"],
                         "mechanismFingerprint": binding["mechanismFingerprint"],
+                        "executionPhase": binding["executionPhase"],
                     },
                     sort_keys=True,
                 ),

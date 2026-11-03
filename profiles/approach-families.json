@@ -270,6 +270,7 @@
       "web-contract-coordinator": ["campaign-foundation", "web-controlled-broker"],
       "web-identity-resource-inventory": ["web-authorization-isolation", "ingress-authority"],
       "web-api-browser-discovery": ["web-browser-api", "ingress-authority"],
+      "web-normal-workflow-acquisition": ["web-workflow-business-logic", "web-controlled-broker"],
       "web-authorization-oracles": ["web-authorization-isolation", "representation-parser"],
       "web-workflow-state-modeling": ["web-workflow-business-logic"],
       "web-cache-serialization-tools": ["web-cache-partition", "representation-parser", "capability-code-loading"],

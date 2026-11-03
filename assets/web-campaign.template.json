@@ -13,7 +13,13 @@
     "maximumAuthorizationRequestShare": 0.2,
     "minimumRuntimeFamiliesBeforeClosure": 4,
     "minimumNonAuthorizationFamiliesBeforeClosure": 3,
-    "minimumNovelMechanismFamiliesBeforeClosure": 3
+    "minimumNovelMechanismFamiliesBeforeClosure": 3,
+    "runtimeBudgetAllocation": {
+      "baseline": 0.2,
+      "novel": 0.55,
+      "followup": 0.15,
+      "replay": 0.1
+    }
   },
   "origins": [
     {
@@ -95,6 +101,26 @@
     ]
   },
   "identities": [],
+  "authoritativeObservers": [
+    {
+      "id": "owned-resource-identity",
+      "kind": "resource-identity",
+      "basis": "Replace with an owner-approved API, audit record, or independently observed server state.",
+      "independentReadback": true
+    },
+    {
+      "id": "owned-resource-generation",
+      "kind": "resource-generation",
+      "basis": "Replace with the authoritative version, generation, revision, or digest used by the target.",
+      "independentReadback": true
+    },
+    {
+      "id": "owned-cleanup",
+      "kind": "cleanup",
+      "basis": "Replace with a server-visible absence or restored-state observation for disposable fixtures.",
+      "independentReadback": true
+    }
+  ],
   "requestInputs": {
     "markdownFiles": [],
     "requestBundles": [],
@@ -140,7 +166,7 @@
   ],
   "budget": {
     "totalRequests": 200,
-    "cleanupReservedRequests": 20,
+    "cleanupReservedRequests": 10,
     "totalRequestBytes": 10485760,
     "totalResponseBytes": 52428800,
     "maxRequestsPerSecond": 1,
@@ -153,7 +179,9 @@
     "maxBrowserEvents": 10000,
     "totalStorageBytes": 104857600,
     "maxActions": 200,
-    "maxWallSeconds": 1800,
+    "maxWallSeconds": 14400,
+    "maxActiveExecutionSeconds": 14400,
+    "wallClockMode": "active-execution",
     "automaticRetries": 0
   },
   "networkContainment": {

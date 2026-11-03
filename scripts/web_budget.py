@@ -10,7 +10,9 @@ running and close their transport before returning.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -115,6 +117,7 @@ class SharedWebBudget:
                 "approach_family": "TEXT",
                 "mechanism_fingerprint": "TEXT",
                 "target_dispatch": "INTEGER NOT NULL DEFAULT 1",
+                "execution_phase": "TEXT NOT NULL DEFAULT 'novel'",
             }
             for column, declaration in migrations.items():
                 if column not in columns:
@@ -137,6 +140,8 @@ class SharedWebBudget:
                 "state": "active",
                 "state_reason": "",
                 "state_changed_at": str(now),
+                "execution_epoch": f"{self.contract.digest[:16]}-{int(now)}",
+                "last_checkpoint_percent": "0",
             }
             for key, value in defaults.items():
                 connection.execute(
@@ -157,6 +162,9 @@ class SharedWebBudget:
             "browser_events": int(raw.get("maxBrowserEvents", 10000)),
             "websocket_bytes": int(raw.get("maxWebsocketFrameBytes", 1048576)),
             "wall_seconds": int(raw["maxWallSeconds"]),
+            "active_seconds": int(
+                raw.get("maxActiveExecutionSeconds", raw["maxWallSeconds"])
+            ),
         }
 
     @staticmethod
@@ -172,6 +180,25 @@ class SharedWebBudget:
             (now, now),
         )
 
+    @staticmethod
+    def _active_execution_seconds(
+        connection: sqlite3.Connection, now: float
+    ) -> float:
+        total = 0.0
+        for row in connection.execute(
+            "SELECT reserved_at,finished_at,lease_until,status FROM operations "
+            "WHERE target_dispatch=1"
+        ):
+            started = float(row["reserved_at"])
+            if row["finished_at"] is not None:
+                finished = float(row["finished_at"])
+            elif row["status"] == "running":
+                finished = min(now, float(row["lease_until"]))
+            else:
+                finished = started
+            total += max(0.0, finished - started)
+        return total
+
     def _assert_active(self, connection: sqlite3.Connection, now: float) -> None:
         meta = self._meta(connection)
         state = meta.get("state")
@@ -179,9 +206,30 @@ class SharedWebBudget:
             raise WebContractError(
                 f"web campaign dispatch is {state}: {meta.get('state_reason', '')}"
             )
-        if now - float(meta["started_at"]) > self._limits()["wall_seconds"]:
-            self._set_state(connection, "cancelled", "wall-clock budget expired", now)
-            raise WebContractError("web campaign wall-clock budget is exhausted")
+        authorization = self.contract.raw["authorization"]
+        valid_until_value = authorization.get("validUntil")
+        if authorization.get("confirmed") is True and valid_until_value:
+            valid_until = dt.datetime.fromisoformat(
+                str(valid_until_value).replace("Z", "+00:00")
+            ).timestamp()
+            if now >= valid_until:
+                self._set_state(connection, "cancelled", "authorization expired", now)
+                raise WebContractError("web campaign authorization has expired")
+        budget = self.contract.raw["budget"]
+        mode = str(budget.get("wallClockMode") or "elapsed-wall")
+        if mode == "active-execution":
+            consumed = self._active_execution_seconds(connection, now)
+            maximum = self._limits()["active_seconds"]
+            reason = "active target-execution budget expired"
+            error = "web campaign active target-execution budget is exhausted"
+        else:
+            consumed = now - float(meta["started_at"])
+            maximum = self._limits()["wall_seconds"]
+            reason = "wall-clock budget expired"
+            error = "web campaign wall-clock budget is exhausted"
+        if consumed > maximum:
+            self._set_state(connection, "cancelled", reason, now)
+            raise WebContractError(error)
 
     @staticmethod
     def _set_state(
@@ -279,11 +327,27 @@ class SharedWebBudget:
             cleanup_requests = int(aggregates["cleanup"]) + int(cleanup)
             normal_requests = total_requests - cleanup_requests
             normal_limit = limits["requests"] - limits["cleanup"]
+            if binding is not None and not cleanup and target_dispatch:
+                phase = binding["executionPhase"]
+                allocation = policy["runtimeBudgetAllocation"]
+                phase_limit = max(1, int(normal_limit * float(allocation[phase])))
+                phase_used = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM operations WHERE cleanup=0 AND target_dispatch=1 "
+                        "AND execution_phase=?",
+                        (phase,),
+                    ).fetchone()[0]
+                )
+                if phase_used + 1 > phase_limit:
+                    raise WebContractError(
+                        f"{phase} execution-phase budget is exhausted; preserve capacity "
+                        "for the other runtime phases"
+                    )
             if binding is not None and not cleanup:
                 previous_normal = int(
                     connection.execute(
-                        "SELECT COUNT(*) FROM operations WHERE cleanup=0 AND target_dispatch=1 "
-                        "AND status IN ('running','completed')"
+                        "SELECT COUNT(*) FROM operations "
+                        "WHERE cleanup=0 AND target_dispatch=1"
                     ).fetchone()[0]
                 )
                 if (
@@ -293,8 +357,7 @@ class SharedWebBudget:
                     previous_family = int(
                         connection.execute(
                             "SELECT COUNT(*) FROM operations "
-                            "WHERE cleanup=0 AND target_dispatch=1 AND approach_family=? "
-                            "AND status IN ('running','completed')",
+                            "WHERE cleanup=0 AND target_dispatch=1 AND approach_family=?",
                             (AUTHORIZATION_FAMILY,),
                         ).fetchone()[0]
                     )
@@ -354,6 +417,10 @@ class SharedWebBudget:
                     int(target_dispatch),
                 ),
             )
+            connection.execute(
+                "UPDATE operations SET execution_phase=? WHERE id=?",
+                (binding["executionPhase"] if binding else "novel", operation_id),
+            )
             connection.commit()
         if binding is not None:
             try:
@@ -370,6 +437,60 @@ class SharedWebBudget:
                     f"target operation could not enter the durable event stream: {exc}"
                 ) from exc
         return self.read()
+
+    def _checkpoint_if_needed(self) -> None:
+        """Retain an operator checkpoint before execution capacity is exhausted."""
+
+        now = time.time()
+        with self._connect() as connection:
+            meta = self._meta(connection)
+            maximum = float(self._limits()["active_seconds"])
+            consumed = self._active_execution_seconds(connection, now)
+            percentage = int((consumed / maximum) * 100) if maximum else 100
+            threshold = max((value for value in (25, 50, 75, 90) if percentage >= value), default=0)
+            prior = int(meta.get("last_checkpoint_percent", "0"))
+            if threshold <= prior:
+                return
+            execution_epoch = meta.get("execution_epoch")
+            connection.execute(
+                "UPDATE meta SET value=? WHERE key='last_checkpoint_percent'",
+                (str(threshold),),
+            )
+        root = self.contract.path.parent
+        pending: list[dict[str, Any]] = []
+        database = root / "orchestration.db"
+        if database.is_file():
+            with sqlite3.connect(database) as orchestration:
+                orchestration.row_factory = sqlite3.Row
+                pending = [
+                    dict(row)
+                    for row in orchestration.execute(
+                        "SELECT task_id,state,title,priority FROM tasks "
+                        "WHERE state IN ('queued','running','verifying') "
+                        "ORDER BY priority DESC,task_id LIMIT 100"
+                    )
+                ]
+        checkpoint = {
+            "schemaVersion": 1,
+            "producer": "krineon-web-budget",
+            "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "executionEpoch": execution_epoch,
+            "thresholdPercent": threshold,
+            "activeExecutionSeconds": round(consumed, 6),
+            "remainingActiveExecutionSeconds": max(0.0, round(maximum - consumed, 6)),
+            "authorizationValidUntil": self.contract.raw["authorization"]["validUntil"],
+            "pendingExperiments": pending,
+            "requiredAction": (
+                "finish replay and cleanup"
+                if threshold >= 90
+                else "prioritize executable promotion experiments"
+            ),
+        }
+        output = root / "evidence" / "web" / "execution-checkpoint.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(checkpoint, indent=2, sort_keys=True) + "\n")
+        os.replace(temporary, output)
 
     def reconcile_response(
         self,
@@ -432,6 +553,7 @@ class SharedWebBudget:
                 "experimentId": row["experiment_id"],
                 "approachFamily": row["approach_family"],
                 "mechanismFingerprint": row["mechanism_fingerprint"],
+                "executionPhase": row["execution_phase"],
             }
             try:
                 record_orchestration_event(
@@ -445,6 +567,7 @@ class SharedWebBudget:
                 raise WebContractError(
                     f"completed operation could not enter the durable event stream: {exc}"
                 ) from exc
+        self._checkpoint_if_needed()
         return self.read()
 
     def abort(self, operation_id: str, reason: str) -> dict[str, Any]:
@@ -457,6 +580,7 @@ class SharedWebBudget:
                 (now, reason[:1000], operation_id),
             )
             connection.commit()
+        self._checkpoint_if_needed()
         return self.read()
 
     def heartbeat(self, operation_id: str, lease_seconds: int = 30) -> None:
@@ -562,6 +686,16 @@ class SharedWebBudget:
             authorization_count / len(completed) if completed else 0.0
         )
         unbound = [row["id"] for row in completed if not row.get("task_id")]
+        phase_usage = {
+            phase: sum(row.get("execution_phase") == phase for row in completed)
+            for phase in ("baseline", "novel", "followup", "replay")
+        }
+        owned_accounts = (
+            self.contract.raw.get("authorization", {})
+            .get("ownedFullTesting", {})
+            .get("accountIds", [])
+        )
+        authoritative_observers = self.contract.raw.get("authoritativeObservers", [])
 
         pending_exploration: list[dict[str, str]] = []
         root_synthesis_state = "missing"
@@ -609,6 +743,8 @@ class SharedWebBudget:
             blockers.append(
                 "too few novel zero-day mechanism families were exercised"
             )
+        if not authoritative_observers:
+            blockers.append("no authoritative target-state observer is admitted")
         if (
             len(completed) > int(policy["warmupOperations"])
             and authorization_share
@@ -634,6 +770,10 @@ class SharedWebBudget:
             "completedNonAuthorizationFamilies": sorted(non_authorization),
             "completedNovelMechanismFamilies": sorted(novel_mechanisms),
             "authorizationRequestShare": round(authorization_share, 6),
+            "executionPhaseUsage": phase_usage,
+            "ownedIdentityCount": len(owned_accounts),
+            "authorityBoundaryReady": len(owned_accounts) >= 2,
+            "authoritativeObserverCount": len(authoritative_observers),
             "unboundOperationIds": unbound,
             "pendingExplorationTasks": pending_exploration,
             "rootSynthesisState": root_synthesis_state,
@@ -645,17 +785,27 @@ class SharedWebBudget:
         with self._connect() as connection:
             meta = self._meta(connection)
             rows = [dict(row) for row in connection.execute("SELECT * FROM operations ORDER BY reserved_at,id")]
+            active_seconds = self._active_execution_seconds(connection, time.time())
         family_usage: dict[str, int] = {}
         for row in rows:
             family = row.get("approach_family")
             if family:
                 family_usage[str(family)] = family_usage.get(str(family), 0) + 1
         return {
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "contractSha256": meta.get("contract_sha256"),
             "startedAtUnix": float(meta.get("started_at", "0")),
             "state": meta.get("state"),
             "stateReason": meta.get("state_reason"),
+            "executionEpoch": meta.get("execution_epoch"),
+            "wallClockMode": str(
+                self.contract.raw["budget"].get("wallClockMode") or "elapsed-wall"
+            ),
+            "activeExecutionSeconds": round(active_seconds, 6),
+            "remainingActiveExecutionSeconds": max(
+                0.0, round(self._limits()["active_seconds"] - active_seconds, 6)
+            ),
+            "authorizationValidUntil": self.contract.raw["authorization"]["validUntil"],
             "operations": rows,
             "requests": len(rows),
             "targetRequests": sum(int(row.get("target_dispatch", 1)) for row in rows),
@@ -664,6 +814,16 @@ class SharedWebBudget:
             "responseBytes": sum(int(row["actual_response_bytes"] if row["actual_response_bytes"] is not None else row["reserved_response_bytes"]) for row in rows),
             "storageBytes": sum(int(row["actual_storage_bytes"] if row["actual_storage_bytes"] is not None else row["reserved_storage_bytes"]) for row in rows),
             "familyUsage": dict(sorted(family_usage.items())),
+            "phaseUsage": {
+                phase: sum(
+                    1
+                    for row in rows
+                    if row.get("execution_phase") == phase
+                    and row.get("target_dispatch") == 1
+                    and row.get("cleanup") == 0
+                )
+                for phase in ("baseline", "novel", "followup", "replay")
+            },
         }
 
 
