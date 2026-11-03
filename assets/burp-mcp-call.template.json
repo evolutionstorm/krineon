@@ -8,6 +8,13 @@
   "effectClass": "read-only",
   "operationClass": "ordinary-http",
   "intent": "Test one named security hypothesis with an enforcing control",
+  "researchBinding": {
+    "taskId": "replace-with-current-running-execution-task",
+    "sourceTaskId": "replace-with-source-hypothesis-task",
+    "experimentId": "replace-with-durable-experiment-id",
+    "approachFamily": "replace-with-registered-web-runtime-family",
+    "mechanismFingerprint": "replace-with-semantic-mechanism-fingerprint"
+  },
   "argumentsFile": "private/burp-mcp/send-http1.arguments.json",
   "maxResultBytes": 1048576,
   "timeoutSeconds": 60

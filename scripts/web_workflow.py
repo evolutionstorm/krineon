@@ -23,6 +23,12 @@ try:
     from .web_identity import IdentityBroker
     from .web_policy import validate_http_replay_headers, validate_step_envelope
     from .web_sequence_planner import validate_operation
+    from .web_research_governance import (
+        WebResearchGovernanceError,
+        binding_from,
+        diversity_policy,
+        normalize_research_binding,
+    )
 except ImportError:
     from experiment_control import (
         authority_paths,
@@ -36,6 +42,12 @@ except ImportError:
     from web_identity import IdentityBroker
     from web_policy import validate_http_replay_headers, validate_step_envelope
     from web_sequence_planner import validate_operation
+    from web_research_governance import (
+        WebResearchGovernanceError,
+        binding_from,
+        diversity_policy,
+        normalize_research_binding,
+    )
 
 
 def load_object(path: Path | str) -> dict[str, Any]:
@@ -150,6 +162,11 @@ def validate_workflow(
             if not step_id or step_id in seen:
                 raise WebContractError("workflow step ids must be nonempty and unique")
             seen.add(step_id)
+            if diversity_policy(contract.raw)["enforceOperationBinding"] and not cleanup:
+                try:
+                    normalize_research_binding(binding_from(workflow, step))
+                except WebResearchGovernanceError as exc:
+                    raise WebContractError(str(exc)) from exc
             resource = step.get("resource")
             if not isinstance(resource, dict) or any(
                 not str(resource.get(field) or "").strip()

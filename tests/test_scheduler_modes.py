@@ -21,8 +21,8 @@ class SchedulerModeTests(unittest.TestCase):
         limit = profile["schedulingPolicy"]["familyShareLimits"][
             "web-authorization-isolation"
         ]
-        self.assertEqual(limit["maxActiveShare"], 0.34)
-        self.assertTrue(limit["focusedEvidenceSlotExempt"])
+        self.assertEqual(limit["maxActiveShare"], 0.2)
+        self.assertFalse(limit["focusedEvidenceSlotExempt"])
         self.assertFalse(profile["schedulingPolicy"]["fixedWorkersPerLane"])
         registry = json.loads(
             (project / "profiles" / "approach-families.json").read_text(

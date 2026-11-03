@@ -113,14 +113,32 @@ to discard the exchange or end the campaign. Re-plan and requeue any lane that
 was completed as planning-only when its required account, browser, MCP, or
 runtime capability later becomes available.
 
-Do not let authentication or authorization consume the web campaign. Treat
-them as one access-control family. While distinct non-access-control tasks are
-ready, keep that family below the profile's dynamic active-share limit and
-prefer parser/representation, workflow/state, cache, browser/client,
-integration/capability, upload/storage, asynchronous, and protocol boundaries.
+Authentication and authorization are baseline coverage and possible chain
+components, not Krineon's primary zero-day strategy. Treat them as one
+access-control family. While distinct non-access-control tasks are ready, keep
+that family below the profile's dynamic one-fifth active-share limit and
+prefer unfamiliar producer-consumer, parser/representation, workflow/state,
+cache, browser/client, integration/capability, upload/storage, asynchronous,
+protocol, native, and execution boundaries.
 Do not manufacture a fixed worker allocation. A concrete verified
 access-control primitive may use the normal bounded focused-chain slot, after
 which scheduling returns to approach-diverse exploration.
+
+In owned full-testing mode, bind every target-facing operation to the current
+running execution task, its source hypothesis task, a durable experiment ID,
+one registered runtime approach family, and a semantic mechanism fingerprint.
+The shared budget verifies this `researchBinding` against `orchestration.db`
+and records both reservation and completion events. Do not call HTTP, CDP,
+protocol, or Burp adapters outside that binding. After the short warm-up, a same-family
+authorization call that exceeds the runtime share must yield to another ready
+family; this is internal scheduling, not a new user-approval requirement.
+
+Do not close a web campaign from a prose synthesis. The machine depth gate must
+confirm bound operations, minimum distinct, non-authorization, and novel
+mechanism runtime families, an empty eligible exploration frontier, and active
+root synthesis.
+Safety and user stops remain immediate, but a failed depth gate is retained as
+`coverage-incomplete`, not “no finding” or “target exhausted.”
 
 Bootstrap web intake offline with `campaign_bootstrap.py`; `--url` and
 `--requests` are concise aliases for exact application origins and annotated

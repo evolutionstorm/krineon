@@ -6,6 +6,11 @@ targets are allowed after campaign authorization is confirmed. A non-loopback
 endpoint must also appear exactly as `host:port` in
 `campaign.json.authorization.protocolTargets`.
 
+For an owned full-testing campaign, the sequence also carries a
+`researchBinding`. The shared ledger verifies its running execution task,
+source hypothesis task, durable experiment ID, registered approach family,
+and mechanism fingerprint before any brokered target request is sent.
+
 ```bash
 python3 scripts/http_protocol_harness.py CAMPAIGN sequence.json \
   CAMPAIGN/evidence/protocol/run-01 --var PORT=3000

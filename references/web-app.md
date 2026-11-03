@@ -58,11 +58,42 @@ isolated-topology authorization is present in the account manifest.
 
 Authentication and authorization form one access-control research family, not
 the default subject of every web lane. When other mechanisms are ready, the
-scheduler limits access-control work to roughly one third of active exploration
+scheduler limits access-control work to roughly one fifth of active exploration
 and prefers representation/parser, workflow, cache, browser/client,
 integration/capability, upload/storage, asynchronous, and protocol boundaries.
 This is a dynamic share, not a fixed agent assignment. A verified access-control
-primitive can still receive one evidence-unlocked focused slot.
+primitive remains a valid chain input, but it is not exempt from the family cap.
+
+Krineon's primary objective is novel target-specific mechanism discovery. A
+normal login check, identifier substitution, or role matrix is useful baseline
+coverage, but it does not demonstrate research depth. Root synthesis must show
+the unfamiliar producer-consumer, representation, parser, lifecycle,
+integration, protocol, native, or execution boundaries investigated and the
+falsifiable experiments used to distinguish them.
+
+The same limit is enforced at target dispatch, not only during task claiming.
+Every owned full-testing HTTP, browser, protocol, or Burp operation carries a
+`researchBinding` with the current running execution task, source hypothesis
+task, durable experiment ID, registered approach family, and semantic
+mechanism fingerprint. The shared SQLite ledger verifies both tasks against
+`orchestration.db`, records reservation and completion events there, and
+rejects additional authorization traffic after the warm-up share is consumed.
+Direct coordinator calls cannot bypass this rule.
+
+The web profile keeps distinct early routes alive for capabilities and shares,
+integrations and callbacks, uploads and storage processing, asynchronous job
+lifecycle, and cross-protocol differentials. These routes must produce either
+measured surface evidence and experiments or measured no-surface evidence.
+They cannot disappear merely because authorization work produced results first.
+
+Before describing a normal stop as a completed campaign, run the shared
+budget's `depth-gate` command and retain its JSON output. The gate rejects a
+completion claim when operations are detached from tasks, too few distinct,
+non-authorization, or novel-mechanism runtime families ran, authorization
+exceeds its target traffic share, eligible exploration remains queued, or root
+synthesis is not complete. Safety, authorization, expiry, and user stops still stop traffic
+immediately; a failed gate labels that result `coverage-incomplete` instead of
+pretending the target was exhausted.
 
 ## Operational intake and approval
 

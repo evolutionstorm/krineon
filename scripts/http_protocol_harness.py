@@ -328,6 +328,7 @@ class BrokeredProtocolTransport:
             adapter="raw-http1",
             origin_id=origin_id,
             lease_seconds=max(1, min(int(limits["timeoutSeconds"]), int(float(definition.get("timeout", 10)))) + 5),
+            research_binding=definition.get("researchBinding"),
         )
         timeout = float(definition.get("connectTimeout", 5))
         connection: socket.socket | None = None
@@ -592,6 +593,9 @@ class SequenceRunner:
         raise RuntimeError(f"redirect leaves the declared target set: {resolved}")
 
     def execute_request(self, step_id: str, definition: dict[str, Any], ordinal: str = "0") -> dict[str, Any]:
+        if "researchBinding" not in definition and self.spec.get("researchBinding") is not None:
+            definition = dict(definition)
+            definition["researchBinding"] = self.spec["researchBinding"]
         target_name = str(definition["target"])
         session_name = str(definition.get("session") or "anonymous")
         if target_name not in self.targets or session_name not in self.sessions:

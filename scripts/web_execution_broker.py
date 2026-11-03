@@ -38,6 +38,7 @@ try:
     from .web_secret_store import SecretStore
     from .web_workflow import load_object, verify
     from .web_budget import SharedWebBudget
+    from .web_research_governance import binding_from
     from .web_policy import (
         WebPolicyEngine,
         TargetDecision,
@@ -61,6 +62,7 @@ except ImportError:
     from web_secret_store import SecretStore
     from web_workflow import load_object, verify
     from web_budget import SharedWebBudget
+    from web_research_governance import binding_from
     from web_policy import (
         WebPolicyEngine,
         TargetDecision,
@@ -468,6 +470,7 @@ class WebExecutionBroker:
                 origin_id=origin_id,
                 action_units=1,
                 lease_seconds=int(limits["timeoutSeconds"]) + 5,
+                research_binding=binding_from(self.workflow, step),
             )
         self.ledger.reserve(**reserve_kwargs)
         self.rate_limit(origin_id)

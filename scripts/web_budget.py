@@ -23,12 +23,32 @@ try:
         require_identifier,
         utc_now,
     )
+    from .web_research_governance import (
+        AUTHORIZATION_FAMILY,
+        NOVEL_ZERO_DAY_FAMILIES,
+        WEB_RUNTIME_FAMILIES,
+        WebResearchGovernanceError,
+        diversity_policy,
+        normalize_research_binding,
+        record_orchestration_event,
+        validate_binding_against_campaign,
+    )
 except ImportError:
     from web_contract import (
         WebCampaignContract,
         WebContractError,
         require_identifier,
         utc_now,
+    )
+    from web_research_governance import (
+        AUTHORIZATION_FAMILY,
+        NOVEL_ZERO_DAY_FAMILIES,
+        WEB_RUNTIME_FAMILIES,
+        WebResearchGovernanceError,
+        diversity_policy,
+        normalize_research_binding,
+        record_orchestration_event,
+        validate_binding_against_campaign,
     )
 
 
@@ -83,6 +103,27 @@ class SharedWebBudget:
                     last_dispatch REAL NOT NULL
                 );
                 """
+            )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(operations)")
+            }
+            migrations = {
+                "task_id": "TEXT",
+                "source_task_id": "TEXT",
+                "experiment_id": "TEXT",
+                "approach_family": "TEXT",
+                "mechanism_fingerprint": "TEXT",
+                "target_dispatch": "INTEGER NOT NULL DEFAULT 1",
+            }
+            for column, declaration in migrations.items():
+                if column not in columns:
+                    connection.execute(
+                        f"ALTER TABLE operations ADD COLUMN {column} {declaration}"
+                    )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS operations_family "
+                "ON operations(approach_family,status,reserved_at)"
             )
             existing = connection.execute(
                 "SELECT value FROM meta WHERE key='contract_sha256'"
@@ -173,6 +214,8 @@ class SharedWebBudget:
         browser_events: int = 0,
         websocket_bytes: int = 0,
         lease_seconds: int = 30,
+        research_binding: dict[str, Any] | None = None,
+        target_dispatch: bool = True,
     ) -> dict[str, Any]:
         require_identifier(operation_id, "operationId")
         values = (
@@ -187,8 +230,25 @@ class SharedWebBudget:
             raise WebContractError("budget reservations cannot be negative")
         if lease_seconds < 1:
             raise WebContractError("dispatch lease must be positive")
+        if not isinstance(target_dispatch, bool):
+            raise WebContractError("target_dispatch must be Boolean")
         now = time.time()
         limits = self._limits()
+        policy = diversity_policy(self.contract.raw)
+        binding: dict[str, str] | None = None
+        if policy["enforceOperationBinding"] and not cleanup:
+            try:
+                binding = normalize_research_binding(research_binding)
+                binding = validate_binding_against_campaign(
+                    self.contract.path.parent, binding
+                )
+            except WebResearchGovernanceError as exc:
+                raise WebContractError(str(exc)) from exc
+        elif research_binding is not None:
+            try:
+                binding = normalize_research_binding(research_binding)
+            except WebResearchGovernanceError as exc:
+                raise WebContractError(str(exc)) from exc
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._expire(connection, now)
@@ -219,6 +279,35 @@ class SharedWebBudget:
             cleanup_requests = int(aggregates["cleanup"]) + int(cleanup)
             normal_requests = total_requests - cleanup_requests
             normal_limit = limits["requests"] - limits["cleanup"]
+            if binding is not None and not cleanup:
+                previous_normal = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM operations WHERE cleanup=0 AND target_dispatch=1 "
+                        "AND status IN ('running','completed')"
+                    ).fetchone()[0]
+                )
+                if (
+                    previous_normal >= int(policy["warmupOperations"])
+                    and binding["approachFamily"] == AUTHORIZATION_FAMILY
+                ):
+                    previous_family = int(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM operations "
+                            "WHERE cleanup=0 AND target_dispatch=1 AND approach_family=? "
+                            "AND status IN ('running','completed')",
+                            (AUTHORIZATION_FAMILY,),
+                        ).fetchone()[0]
+                    )
+                    projected_share = (previous_family + 1) / (previous_normal + 1)
+                    maximum_share = float(
+                        policy["maximumAuthorizationRequestShare"]
+                    )
+                    if projected_share > maximum_share:
+                        raise WebContractError(
+                            "authorization research reached its runtime request-share cap; "
+                            "execute a distinct eligible approach family before returning "
+                            "to this mechanism"
+                        )
             checks = {
                 "total request": (total_requests, limits["requests"]),
                 "request-byte": (int(aggregates["request_bytes"]) + request_bytes, limits["request_bytes"]),
@@ -240,8 +329,9 @@ class SharedWebBudget:
                 """INSERT INTO operations(
                    id,adapter,origin_id,cleanup,request_bytes,reserved_response_bytes,
                    reserved_storage_bytes,action_units,browser_events,websocket_bytes,
-                   status,reserved_at,lease_until)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   status,reserved_at,lease_until,task_id,source_task_id,experiment_id,
+                   approach_family,mechanism_fingerprint,target_dispatch)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     operation_id,
                     adapter,
@@ -256,9 +346,29 @@ class SharedWebBudget:
                     "running",
                     now,
                     now + lease_seconds,
+                    binding["taskId"] if binding else None,
+                    binding["sourceTaskId"] if binding else None,
+                    binding["experimentId"] if binding else None,
+                    binding["approachFamily"] if binding else None,
+                    binding["mechanismFingerprint"] if binding else None,
+                    int(target_dispatch),
                 ),
             )
             connection.commit()
+        if binding is not None:
+            try:
+                record_orchestration_event(
+                    self.contract.path.parent,
+                    event_type="web-operation-reserved",
+                    binding=binding,
+                    operation_id=operation_id,
+                    status="running",
+                )
+            except (OSError, sqlite3.Error) as exc:
+                self.abort(operation_id, "orchestration event binding failed")
+                raise WebContractError(
+                    f"target operation could not enter the durable event stream: {exc}"
+                ) from exc
         return self.read()
 
     def reconcile_response(
@@ -315,6 +425,26 @@ class SharedWebBudget:
                 (actual_bytes, storage_bytes, actual_events, actual_websocket, now, operation_id),
             )
             connection.commit()
+        if row["task_id"]:
+            binding = {
+                "taskId": row["task_id"],
+                "sourceTaskId": row["source_task_id"],
+                "experimentId": row["experiment_id"],
+                "approachFamily": row["approach_family"],
+                "mechanismFingerprint": row["mechanism_fingerprint"],
+            }
+            try:
+                record_orchestration_event(
+                    self.contract.path.parent,
+                    event_type="web-operation-completed",
+                    binding=binding,
+                    operation_id=operation_id,
+                    status="completed",
+                )
+            except (OSError, sqlite3.Error) as exc:
+                raise WebContractError(
+                    f"completed operation could not enter the durable event stream: {exc}"
+                ) from exc
         return self.read()
 
     def abort(self, operation_id: str, reason: str) -> dict[str, Any]:
@@ -400,22 +530,140 @@ class SharedWebBudget:
             ).fetchone()
             return row is None or row["status"] != "running" or float(row["lease_until"]) < time.time()
 
+    def depth_gate(self, *, allow_active_synthesis: bool = False) -> dict[str, Any]:
+        """Decide whether a web campaign may claim research completion.
+
+        A user-requested stop, authorization expiry, or safety stop may always
+        end traffic, but it must be described as an incomplete campaign when
+        this gate fails.
+        """
+
+        policy = diversity_policy(self.contract.raw)
+        with self._connect() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM operations WHERE cleanup=0 AND target_dispatch=1 "
+                    "ORDER BY reserved_at,id"
+                )
+            ]
+        completed = [row for row in rows if row["status"] == "completed"]
+        families = {
+            str(row["approach_family"])
+            for row in completed
+            if row.get("approach_family") in WEB_RUNTIME_FAMILIES
+        }
+        non_authorization = families.difference({AUTHORIZATION_FAMILY})
+        novel_mechanisms = families.intersection(NOVEL_ZERO_DAY_FAMILIES)
+        authorization_count = sum(
+            row.get("approach_family") == AUTHORIZATION_FAMILY for row in completed
+        )
+        authorization_share = (
+            authorization_count / len(completed) if completed else 0.0
+        )
+        unbound = [row["id"] for row in completed if not row.get("task_id")]
+
+        pending_exploration: list[dict[str, str]] = []
+        root_synthesis_state = "missing"
+        orchestration = self.contract.path.parent / "orchestration.db"
+        orchestration_error: str | None = None
+        if orchestration.is_file():
+            try:
+                database = sqlite3.connect(orchestration)
+                database.row_factory = sqlite3.Row
+                pending_exploration = [
+                    dict(row)
+                    for row in database.execute(
+                        "SELECT DISTINCT tasks.task_id,tasks.state,"
+                        "task_approach_families.family_id "
+                        "FROM tasks JOIN task_approach_families USING(task_id) "
+                        "JOIN approach_families USING(family_id) "
+                        "WHERE approach_families.exploration=1 "
+                        "AND tasks.state IN ('queued','running','verifying') "
+                        "ORDER BY tasks.task_id,task_approach_families.family_id"
+                    )
+                ]
+                root = database.execute(
+                    "SELECT state FROM tasks WHERE task_id='web-root-synthesis'"
+                ).fetchone()
+                if root is not None:
+                    root_synthesis_state = str(root["state"])
+                database.close()
+            except sqlite3.Error as exc:
+                orchestration_error = str(exc)
+        else:
+            orchestration_error = "orchestration.db is missing"
+
+        blockers: list[str] = []
+        if policy["enforceOperationBinding"] and unbound:
+            blockers.append("target operations are not bound to durable research tasks")
+        if len(families) < int(policy["minimumRuntimeFamiliesBeforeClosure"]):
+            blockers.append("too few distinct runtime approach families were exercised")
+        if len(non_authorization) < int(
+            policy["minimumNonAuthorizationFamiliesBeforeClosure"]
+        ):
+            blockers.append("too few non-authorization runtime families were exercised")
+        if len(novel_mechanisms) < int(
+            policy["minimumNovelMechanismFamiliesBeforeClosure"]
+        ):
+            blockers.append(
+                "too few novel zero-day mechanism families were exercised"
+            )
+        if (
+            len(completed) > int(policy["warmupOperations"])
+            and authorization_share
+            > float(policy["maximumAuthorizationRequestShare"])
+        ):
+            blockers.append("authorization traffic exceeds the campaign family-share limit")
+        if pending_exploration:
+            blockers.append("eligible exploration tasks remain in the durable frontier")
+        acceptable_synthesis = {"completed"}
+        if allow_active_synthesis:
+            acceptable_synthesis.update({"running", "verifying"})
+        if root_synthesis_state not in acceptable_synthesis:
+            blockers.append("web-root-synthesis is not complete")
+        if orchestration_error:
+            blockers.append("orchestration state could not be verified")
+
+        return {
+            "schemaVersion": 1,
+            "eligibleForCompletedCampaignClaim": not blockers,
+            "requiredDispositionWhenBlocked": "coverage-incomplete",
+            "policy": policy,
+            "completedRuntimeFamilies": sorted(families),
+            "completedNonAuthorizationFamilies": sorted(non_authorization),
+            "completedNovelMechanismFamilies": sorted(novel_mechanisms),
+            "authorizationRequestShare": round(authorization_share, 6),
+            "unboundOperationIds": unbound,
+            "pendingExplorationTasks": pending_exploration,
+            "rootSynthesisState": root_synthesis_state,
+            "orchestrationError": orchestration_error,
+            "blockers": blockers,
+        }
+
     def read(self) -> dict[str, Any]:
         with self._connect() as connection:
             meta = self._meta(connection)
             rows = [dict(row) for row in connection.execute("SELECT * FROM operations ORDER BY reserved_at,id")]
+        family_usage: dict[str, int] = {}
+        for row in rows:
+            family = row.get("approach_family")
+            if family:
+                family_usage[str(family)] = family_usage.get(str(family), 0) + 1
         return {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "contractSha256": meta.get("contract_sha256"),
             "startedAtUnix": float(meta.get("started_at", "0")),
             "state": meta.get("state"),
             "stateReason": meta.get("state_reason"),
             "operations": rows,
             "requests": len(rows),
+            "targetRequests": sum(int(row.get("target_dispatch", 1)) for row in rows),
             "cleanupRequests": sum(int(row["cleanup"]) for row in rows),
             "requestBytes": sum(int(row["request_bytes"]) for row in rows),
             "responseBytes": sum(int(row["actual_response_bytes"] if row["actual_response_bytes"] is not None else row["reserved_response_bytes"]) for row in rows),
             "storageBytes": sum(int(row["actual_storage_bytes"] if row["actual_storage_bytes"] is not None else row["reserved_storage_bytes"]) for row in rows),
+            "familyUsage": dict(sorted(family_usage.items())),
         }
 
 
@@ -423,8 +671,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("contract")
     parser.add_argument("ledger")
-    parser.add_argument("command", choices=("status", "pause", "cancel"))
+    parser.add_argument("command", choices=("status", "pause", "cancel", "depth-gate"))
     parser.add_argument("--reason", default="operator request")
+    parser.add_argument("--output")
     args = parser.parse_args(argv)
     try:
         budget = SharedWebBudget(WebCampaignContract.load(args.contract), args.ledger)
@@ -432,9 +681,17 @@ def main(argv: list[str] | None = None) -> int:
             result = budget.pause(args.reason)
         elif args.command == "cancel":
             result = budget.cancel(args.reason)
+        elif args.command == "depth-gate":
+            result = budget.depth_gate()
         else:
             result = budget.read()
+        if args.output:
+            output = Path(args.output).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
         print(json.dumps(result, indent=2, sort_keys=True))
+        if args.command == "depth-gate":
+            return 0 if result["eligibleForCompletedCampaignClaim"] else 3
         return 0
     except (OSError, ValueError, sqlite3.Error, WebContractError) as exc:
         print(f"error: {exc}")

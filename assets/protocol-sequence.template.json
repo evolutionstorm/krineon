@@ -1,5 +1,12 @@
 {
   "schemaVersion": 1,
+  "researchBinding": {
+    "taskId": "replace-with-current-running-execution-task",
+    "sourceTaskId": "replace-with-source-hypothesis-task",
+    "experimentId": "replace-with-durable-experiment-id",
+    "approachFamily": "web-protocol-differential",
+    "mechanismFingerprint": "replace-with-semantic-mechanism-fingerprint"
+  },
   "targets": {
     "framework": {"host": "127.0.0.1", "port": "${PORT}"}
   },

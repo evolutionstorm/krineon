@@ -518,6 +518,8 @@ def prepare_call(root: Path, contract_path: Path, spec_path: Path) -> dict[str, 
         origin_id=origin_id,
         action_units=1,
         lease_seconds=timeout + 15,
+        research_binding=spec.get("researchBinding"),
+        target_dispatch=tool["capability"] not in {"http-history-read", "websocket-history-read"},
     )
     now = time.time()
     record = {

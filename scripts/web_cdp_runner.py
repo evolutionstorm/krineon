@@ -58,6 +58,7 @@ try:
     from .web_policy import WebPolicyEngine, classify_access_response
     from .web_artifact_graph import build as build_client_artifact_graph
     from .web_protocol_model import build as build_protocol_model
+    from .web_research_governance import binding_from
 except ImportError:
     from experiment_control import authority_paths, sign_file
     from chromium_replay import (
@@ -88,6 +89,7 @@ except ImportError:
     from web_policy import WebPolicyEngine, classify_access_response
     from web_artifact_graph import build as build_client_artifact_graph
     from web_protocol_model import build as build_protocol_model
+    from web_research_governance import binding_from
 
 
 DISCOVERY_EXPRESSION = r"""
@@ -603,6 +605,7 @@ def discover(
                         "origin_id": matches[0].id,
                         "browser_events": 0,
                         "lease_seconds": max(1, int(timeout) + 5),
+                        "research_binding": binding_from(workflow, step),
                     }
                     if isinstance(ledger, SharedWebBudget)
                     else {}

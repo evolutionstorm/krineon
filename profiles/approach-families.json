@@ -178,6 +178,46 @@
       "exploration": true
     },
     {
+      "id": "web-capability-sharing",
+      "title": "Links, shares, bundles, and delegated capabilities",
+      "boundary": "server-issued or user-created capability crossing identity, workspace, expiry, revocation, or recipient boundaries",
+      "mechanism": "signed-link acquisition, transfer, redemption, expiry, revocation, recipient binding, and alternate-consumer replay",
+      "invariant": "a capability grants only the intended action, resource, recipient, lifetime, and number of uses",
+      "exploration": true
+    },
+    {
+      "id": "web-integration-callback",
+      "title": "Integrations, webhooks, automation, and outbound authority",
+      "boundary": "attacker-controlled integration state crossing into privileged callbacks, connectors, automation, or outbound requests",
+      "mechanism": "destination binding, callback ownership, redirect handling, secret scope, event substitution, and privileged-deputy analysis",
+      "invariant": "untrusted integration input must not select unauthorized destinations, credentials, resources, or actions",
+      "exploration": true
+    },
+    {
+      "id": "web-upload-storage-processing",
+      "title": "Upload, storage, preview, archive, and parser boundaries",
+      "boundary": "owned file content and metadata crossing storage, extraction, preview, conversion, indexing, and download consumers",
+      "mechanism": "path and name normalization, archive structure, parser disagreement, content-type selection, lifecycle, and cross-consumer representation",
+      "invariant": "processing owned content must preserve containment, identity, type, and authorization across every consumer",
+      "exploration": true
+    },
+    {
+      "id": "web-async-job-lifecycle",
+      "title": "Asynchronous job and lifecycle authority",
+      "boundary": "request-time identity crossing queued work, completion, polling, cancellation, retry, and result delivery",
+      "mechanism": "job ownership, stale authorization, generation binding, alternate consumer, cancellation, retry, and delayed execution",
+      "invariant": "every asynchronous consumer must enforce current authority for the exact owner, resource generation, and result",
+      "exploration": true
+    },
+    {
+      "id": "web-protocol-differential",
+      "title": "Cross-protocol and parser interpretation differentials",
+      "boundary": "one logical resource or request crossing HTTP versions, REST, WebDAV, SFTP, FTP, WebSocket, SSE, proxy, and origin parsers",
+      "mechanism": "normalization, method, framing, metadata, identity, and state differentials across independently implemented consumers",
+      "invariant": "all admitted protocols must resolve the same principal, resource, boundaries, and state transition",
+      "exploration": true
+    },
+    {
       "id": "web-controlled-broker",
       "title": "Controlled web experiment execution",
       "boundary": "agent-proposed operation crossing into authorized target traffic",
@@ -233,6 +273,11 @@
       "web-authorization-oracles": ["web-authorization-isolation", "representation-parser"],
       "web-workflow-state-modeling": ["web-workflow-business-logic"],
       "web-cache-serialization-tools": ["web-cache-partition", "representation-parser", "capability-code-loading"],
+      "web-capability-sharing-discovery": ["web-capability-sharing", "web-workflow-business-logic"],
+      "web-integration-callback-discovery": ["web-integration-callback", "capability-code-loading", "ingress-authority"],
+      "web-upload-storage-discovery": ["web-upload-storage-processing", "representation-parser", "ingress-authority"],
+      "web-async-lifecycle-discovery": ["web-async-job-lifecycle", "web-workflow-business-logic"],
+      "web-protocol-differential-discovery": ["web-protocol-differential", "representation-parser", "ingress-authority"],
       "web-cheapest-discriminators": ["blocker-alternative-route", "web-controlled-broker"],
       "web-business-logic-oracles": ["web-workflow-business-logic"],
       "web-business-sequence-planning": ["web-workflow-business-logic", "chain-composition"],

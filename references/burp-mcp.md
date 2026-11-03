@@ -52,6 +52,10 @@ For every tool call:
    This is a narrow private execution record, not an exception that permits
    credential-bearing captures elsewhere in the campaign.
 2. Create a call specification from `assets/burp-mcp-call.template.json`.
+   Bind it to the current running execution task, the source hypothesis task,
+   a durable experiment ID, one registered approach family, and a semantic
+   mechanism fingerprint. The shared ledger rejects detached calls and applies
+   family-share limits even when the coordinator invokes Burp directly.
 3. Prepare the call. The adapter validates the request against
    `web-campaign.json`, verifies the registered tool-schema hash, and reserves
    the shared request, byte, storage, action, concurrency, and time budget.

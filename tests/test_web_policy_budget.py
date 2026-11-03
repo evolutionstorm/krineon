@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -75,6 +77,173 @@ class WebPolicyBudgetTests(unittest.TestCase):
         path = root / "contract.json"
         path.write_text(json.dumps(value, indent=2) + "\n")
         return WebCampaignContract.load(path)
+
+    def governed_contract(self, root: Path) -> WebCampaignContract:
+        value = contract_value("http://owned.test:8080", confirmed=True)
+        manifest = root / "owned-accounts.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "accounts": [{"id": "user-a"}, {"id": "user-b"}],
+                }
+            )
+            + "\n"
+        )
+        value["authorization"]["ownedFullTesting"] = {
+            "enabled": True,
+            "ownedAccountsOnly": True,
+            "autoApproveBoundedWorkflows": True,
+            "accountManifest": manifest.name,
+            "accountManifestSha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            "accountIds": ["user-a", "user-b"],
+        }
+        value["researchDiversity"] = {
+            "enforceOperationBinding": True,
+            "warmupOperations": 2,
+            "maximumAuthorizationRequestShare": 0.5,
+            "minimumRuntimeFamiliesBeforeClosure": 2,
+            "minimumNonAuthorizationFamiliesBeforeClosure": 1,
+            "minimumNovelMechanismFamiliesBeforeClosure": 1,
+        }
+        path = root / "web-campaign.json"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        database = sqlite3.connect(root / "orchestration.db")
+        database.executescript(
+            """
+            CREATE TABLE tasks(task_id TEXT PRIMARY KEY,state TEXT,title TEXT);
+            CREATE TABLE task_approach_families(task_id TEXT,family_id TEXT);
+            CREATE TABLE approach_families(family_id TEXT PRIMARY KEY,exploration INTEGER);
+            CREATE TABLE events(
+              event_id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT,
+              event_type TEXT,task_id TEXT,worker_id TEXT,payload_json TEXT
+            );
+            """
+        )
+        tasks = [
+            ("execution-task", "running", "Controlled execution"),
+            ("auth-source", "completed", "Authorization mechanism"),
+            ("capability-source", "completed", "Capability mechanism"),
+            ("web-root-synthesis", "running", "Synthesis"),
+        ]
+        database.executemany("INSERT INTO tasks VALUES(?,?,?)", tasks)
+        database.executemany(
+            "INSERT INTO approach_families VALUES(?,1)",
+            [
+                ("web-authorization-isolation",),
+                ("web-capability-sharing",),
+            ],
+        )
+        database.executemany(
+            "INSERT INTO task_approach_families VALUES(?,?)",
+            [
+                ("auth-source", "web-authorization-isolation"),
+                ("capability-source", "web-capability-sharing"),
+            ],
+        )
+        database.commit()
+        database.close()
+        return WebCampaignContract.load(path)
+
+    @staticmethod
+    def research_binding(family: str, source: str, experiment: str) -> dict[str, str]:
+        return {
+            "taskId": "execution-task",
+            "sourceTaskId": source,
+            "experimentId": experiment,
+            "approachFamily": family,
+            "mechanismFingerprint": f"mechanism-{experiment}",
+        }
+
+    def test_owned_full_testing_binds_operations_and_caps_one_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = self.governed_contract(root)
+            budget = SharedWebBudget(contract, root / "budget.sqlite3")
+            with self.assertRaisesRegex(WebContractError, "researchBinding"):
+                budget.reserve(
+                    operation_id="unbound",
+                    request_bytes=1,
+                    estimated_response_bytes=1,
+                    cleanup=False,
+                    adapter="test",
+                )
+            for index in range(2):
+                operation_id = f"auth-{index}"
+                budget.reserve(
+                    operation_id=operation_id,
+                    request_bytes=1,
+                    estimated_response_bytes=1,
+                    cleanup=False,
+                    adapter="test",
+                    research_binding=self.research_binding(
+                        "web-authorization-isolation", "auth-source", operation_id
+                    ),
+                )
+                budget.reconcile_response(operation_id, 1)
+            with self.assertRaisesRegex(WebContractError, "request-share cap"):
+                budget.reserve(
+                    operation_id="auth-capped",
+                    request_bytes=1,
+                    estimated_response_bytes=1,
+                    cleanup=False,
+                    adapter="test",
+                    research_binding=self.research_binding(
+                        "web-authorization-isolation", "auth-source", "auth-capped"
+                    ),
+                )
+            budget.reserve(
+                operation_id="capability-1",
+                request_bytes=1,
+                estimated_response_bytes=1,
+                cleanup=False,
+                adapter="test",
+                research_binding=self.research_binding(
+                    "web-capability-sharing", "capability-source", "capability-1"
+                ),
+            )
+            budget.reconcile_response("capability-1", 1)
+            ledger = budget.read()
+            self.assertEqual(ledger["familyUsage"]["web-authorization-isolation"], 2)
+            self.assertEqual(ledger["familyUsage"]["web-capability-sharing"], 1)
+            database = sqlite3.connect(root / "orchestration.db")
+            event_types = {
+                row[0] for row in database.execute("SELECT event_type FROM events")
+            }
+            database.close()
+            self.assertIn("web-operation-reserved", event_types)
+            self.assertIn("web-operation-completed", event_types)
+
+    def test_depth_gate_rejects_narrow_or_unfinished_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = self.governed_contract(root)
+            budget = SharedWebBudget(contract, root / "budget.sqlite3")
+            for operation_id, family, source in (
+                ("auth-one", "web-authorization-isolation", "auth-source"),
+                ("cap-one", "web-capability-sharing", "capability-source"),
+            ):
+                budget.reserve(
+                    operation_id=operation_id,
+                    request_bytes=1,
+                    estimated_response_bytes=1,
+                    cleanup=False,
+                    adapter="test",
+                    research_binding=self.research_binding(family, source, operation_id),
+                )
+                budget.reconcile_response(operation_id, 1)
+            blocked = budget.depth_gate()
+            self.assertFalse(blocked["eligibleForCompletedCampaignClaim"])
+            self.assertIn("web-root-synthesis is not complete", blocked["blockers"])
+            database = sqlite3.connect(root / "orchestration.db")
+            database.execute(
+                "UPDATE tasks SET state='completed' WHERE task_id IN "
+                "('execution-task','web-root-synthesis')"
+            )
+            database.commit()
+            database.close()
+            passed = budget.depth_gate()
+            self.assertTrue(passed["eligibleForCompletedCampaignClaim"], passed)
 
     def test_canonicalization_checks_raw_and_normalized_paths(self) -> None:
         self.assertEqual(normalize_scope_path("/a/%7euser/../b"), "/a/b")

@@ -30,6 +30,10 @@ try:
         sign_file,
         verify_file,
     )
+    from .web_research_governance import (
+        WebResearchGovernanceError,
+        validate_diversity_policy,
+    )
 except ImportError:
     from experiment_control import (
         ExperimentControlError,
@@ -38,6 +42,10 @@ except ImportError:
         ensure_authority,
         sign_file,
         verify_file,
+    )
+    from web_research_governance import (
+        WebResearchGovernanceError,
+        validate_diversity_policy,
     )
 
 
@@ -382,6 +390,10 @@ class WebCampaignContract:
                 )
         if not str(self.raw.get("environmentOwner") or "").strip():
             raise WebContractError("environmentOwner is required")
+        try:
+            validate_diversity_policy(self.raw)
+        except WebResearchGovernanceError as exc:
+            raise WebContractError(str(exc)) from exc
 
         origins = self.raw.get("origins")
         if not isinstance(origins, list) or not origins:
@@ -1731,6 +1743,16 @@ def activate_owned_full_testing(
     )
     if updated.get("nuclei", {}).get("enabled") is not True:
         updated["nuclei"].update({"enabled": True, "maxTemplates": 25})
+    updated.setdefault("researchDiversity", {}).update(
+        {
+            "enforceOperationBinding": True,
+            "warmupOperations": 4,
+            "maximumAuthorizationRequestShare": 0.2,
+            "minimumRuntimeFamiliesBeforeClosure": 4,
+            "minimumNonAuthorizationFamiliesBeforeClosure": 3,
+            "minimumNovelMechanismFamiliesBeforeClosure": 3,
+        }
+    )
 
     WebCampaignContract(contract_file, updated, "pending-owned-full-testing-record")
     atomic_json(contract_file, updated)

@@ -7,6 +7,14 @@
   "environmentOwner": "replace-with-owner",
   "discoveryTrack": "first-principles",
   "impactObjective": "high-critical",
+  "researchDiversity": {
+    "enforceOperationBinding": false,
+    "warmupOperations": 4,
+    "maximumAuthorizationRequestShare": 0.2,
+    "minimumRuntimeFamiliesBeforeClosure": 4,
+    "minimumNonAuthorizationFamiliesBeforeClosure": 3,
+    "minimumNovelMechanismFamiliesBeforeClosure": 3
+  },
   "origins": [
     {
       "id": "app",

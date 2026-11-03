@@ -14,12 +14,12 @@
     "idleSlotPolicy": "balance-semantic-family-load-then-claim-priority-or-split-missing-link",
     "familyShareLimits": {
       "web-authorization-isolation": {
-        "maxActiveShare": 0.34,
+        "maxActiveShare": 0.2,
         "whenAlternativesReady": "defer",
-        "focusedEvidenceSlotExempt": true
+        "focusedEvidenceSlotExempt": false
       }
     },
-    "internalObjective": "rank independently observed invariant disagreements, verified authorization or state primitives, and compatible multi-step chain edges",
+    "internalObjective": "discover novel target-specific producer-consumer, representation, parser, lifecycle, integration, protocol, and execution-boundary disagreements; retain authentication and authorization as baseline coverage and chain inputs rather than the campaign center",
     "filingObjective": "independently replayed application-specific High, Critical, or RCE impact",
     "partialEvidenceAdvancesQueue": true
   },
@@ -76,15 +76,15 @@
     {
       "wave": 1,
       "id": "web-authorization-oracles",
-      "title": "Executable authorization and isolation oracles",
-      "objective": "Derive typed oracles for cross-user, cross-role, cross-tenant, object-ownership, checker-consumer, and session-binding invariants. Every oracle must distinguish confirmed disagreement, observed preservation, and inconclusive telemetry. Status differences and scanner matches are not vulnerabilities.",
+      "title": "Baseline authorization and isolation oracles",
+      "objective": "Establish compact typed controls for cross-user, cross-role, cross-tenant, object-ownership, checker-consumer, and session-binding invariants. Use this lane to identify chain inputs and obvious High-impact failures, but do not let routine identifier substitution displace novel producer-consumer, parser, lifecycle, integration, protocol, or execution-boundary research. Every oracle must distinguish confirmed disagreement, observed preservation, and inconclusive telemetry.",
       "deliverables": [
         "versioned web oracle specifications",
         "runtime observation contracts",
         "baseline and enforcing-negative controls",
         "automatic three-way interpretations"
       ],
-      "priority": 116,
+      "priority": 70,
       "dependsOn": [
         "web-contract-coordinator",
         "web-identity-resource-inventory",
@@ -124,6 +124,71 @@
       "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
     },
     {
+      "wave": 1,
+      "id": "web-capability-sharing-discovery",
+      "title": "Share, bundle, signed-link, and delegated-capability research",
+      "objective": "Inventory every observed share, bundle, inbox, invitation, signed link, download capability, and transfer path. Build bounded experiments for recipient binding, cross-workspace use, expiry, revocation, reuse, alternate consumers, and resource replacement. If the target exposes no such surface, retain the measured catalog evidence instead of silently completing the lane.",
+      "deliverables": [
+        "capability acquisition and consumer graph",
+        "recipient, resource, expiry, revocation, and reuse invariants",
+        "ranked capability lifecycle experiments or measured no-surface evidence"
+      ],
+      "priority": 121,
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-workflow-state-modeling"]
+    },
+    {
+      "wave": 1,
+      "id": "web-integration-callback-discovery",
+      "title": "Integration, automation, webhook, and outbound-authority research",
+      "objective": "Map connectors, webhooks, automation, callback destinations, OAuth grants, secrets, redirects, and server-side fetches. Distinguish destination control, credential scope, event substitution, and privileged-deputy behavior with owned endpoints and callbacks only. Retain a measured no-surface record when unavailable.",
+      "deliverables": [
+        "integration and callback authority graph",
+        "destination, secret, event, and resource-binding invariants",
+        "ranked outbound-authority experiments or measured no-surface evidence"
+      ],
+      "priority": 120,
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+    },
+    {
+      "wave": 1,
+      "id": "web-upload-storage-discovery",
+      "title": "Upload, storage, preview, archive, and parser research",
+      "objective": "Trace owned content and metadata through upload, storage, rename, copy, move, archive, extraction, preview, conversion, indexing, and download consumers. Generate small representation differentials and containment oracles. Do not substitute availability effects for security impact.",
+      "deliverables": [
+        "content and metadata consumer graph",
+        "path, type, ownership, and parser agreement invariants",
+        "ranked processing experiments or measured no-surface evidence"
+      ],
+      "priority": 119,
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+    },
+    {
+      "wave": 1,
+      "id": "web-async-lifecycle-discovery",
+      "title": "Asynchronous job, retry, cancellation, and result research",
+      "objective": "Model jobs, background processing, polling, export, import, transfer, notification, retry, cancellation, and result delivery. Test ownership and current authorization at enqueue, execution, completion, and consumption using bounded owned fixtures.",
+      "deliverables": [
+        "job and result lifecycle graph",
+        "owner, resource generation, authorization, cancellation, and retry invariants",
+        "ranked async lifecycle experiments or measured no-surface evidence"
+      ],
+      "priority": 118,
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery", "web-workflow-state-modeling"]
+    },
+    {
+      "wave": 1,
+      "id": "web-protocol-differential-discovery",
+      "title": "Cross-protocol and parser differential research",
+      "objective": "Compare independently implemented consumers for the same owned resource and identity, including HTTP versions, REST, WebDAV, SFTP, FTP, WebSocket, SSE, proxy, and origin paths when the approved target exposes them. Preserve exact framing, normalization, method, metadata, and state observations; do not infer a disagreement from status alone.",
+      "deliverables": [
+        "protocol-to-resource and identity map",
+        "normalization, framing, authority, and state differential hypotheses",
+        "ranked cross-protocol experiments or measured no-surface evidence"
+      ],
+      "priority": 117,
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+    },
+    {
       "wave": 2,
       "id": "web-cheapest-discriminators",
       "title": "Competing explanations and cheapest experiments",
@@ -139,9 +204,13 @@
       "dependsOn": [
         "web-identity-resource-inventory",
         "web-api-browser-discovery",
-        "web-authorization-oracles",
         "web-workflow-state-modeling",
-        "web-cache-serialization-tools"
+        "web-cache-serialization-tools",
+        "web-capability-sharing-discovery",
+        "web-integration-callback-discovery",
+        "web-upload-storage-discovery",
+        "web-async-lifecycle-discovery",
+        "web-protocol-differential-discovery"
       ]
     },
     {
@@ -348,8 +417,9 @@
       "wave": 3,
       "id": "web-root-synthesis",
       "title": "Web campaign synthesis and next-round direction",
-      "objective": "Synthesize confirmed invariants, refuted mechanisms, active primitives, and compatible chains. Promote only independently reproduced security impact. Redirect remaining budget toward underexplored semantic families and stop on expiry, unsafe scope, exhausted budget, or explicit user direction.",
+      "objective": "Synthesize confirmed invariants, refuted mechanisms, active primitives, and compatible chains. Show which unfamiliar target-specific producer-consumer, representation, parser, lifecycle, integration, protocol, or execution boundaries were investigated and what experiments distinguished them. Authentication and authorization results are baseline coverage or chain components; they cannot by themselves establish that novel zero-day search was deep. Promote only independently reproduced security impact. Redirect remaining budget toward underexplored semantic families and stop on expiry, unsafe scope, exhausted budget, or explicit user direction.",
       "deliverables": [
+        "novel-mechanism coverage ledger with experiments and scoped refutations",
         "ranked confirmed and refuted mechanisms",
         "reportable finding packages or retained knowledge",
         "scoped negative knowledge",

@@ -65,6 +65,7 @@ try:
     from .swarm_control import ControlError, ControlStore
     from .web_oracle import evaluate as evaluate_web_oracle
     from .web_contract import WebCampaignContract
+    from .web_budget import SharedWebBudget
     from .web_workflow import verify as verify_web_workflow
 except ImportError:  # Direct script execution.
     from chain_reasoning import (
@@ -101,6 +102,7 @@ except ImportError:  # Direct script execution.
     from swarm_control import ControlError, ControlStore
     from web_oracle import evaluate as evaluate_web_oracle
     from web_contract import WebCampaignContract
+    from web_budget import SharedWebBudget
     from web_workflow import verify as verify_web_workflow
 
 
@@ -7107,6 +7109,22 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 "v8-finding-scoped-replay-scheduler",
             }:
                 validate_replay_scheduler_result(root, result)
+            if task["lane"] == "web-root-synthesis":
+                contract_path = root / "web-campaign.json"
+                if not contract_path.is_file():
+                    raise SystemExit(
+                        "web-root-synthesis requires web-campaign.json"
+                    )
+                depth_gate = SharedWebBudget(
+                    WebCampaignContract.load(contract_path),
+                    root / "evidence" / "web" / "budget-ledger.sqlite3",
+                ).depth_gate(allow_active_synthesis=True)
+                write_json(root / "evidence" / "web" / "depth-gate.json", depth_gate)
+                if not depth_gate["eligibleForCompletedCampaignClaim"]:
+                    raise SystemExit(
+                        "web campaign depth gate rejected completion: "
+                        + "; ".join(depth_gate["blockers"])
+                    )
             verification_update = connection.execute(
                 "UPDATE tasks SET state='verifying',lease_expires_at=?,updated_at=? "
                 "WHERE task_id=? AND state='running' AND lease_owner=? AND lease_token=?",

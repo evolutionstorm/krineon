@@ -28,6 +28,7 @@ try:
     from .web_policy import WebPolicyEngine, validate_step_envelope
     from .web_secret_store import SecretStore
     from .web_workflow import load_object, verify
+    from .web_research_governance import binding_from
 except ImportError:
     from web_budget import SharedWebBudget
     from web_contract import WebCampaignContract, WebContractError, atomic_json, sha256_bytes
@@ -36,6 +37,7 @@ except ImportError:
     from web_policy import WebPolicyEngine, validate_step_envelope
     from web_secret_store import SecretStore
     from web_workflow import load_object, verify
+    from web_research_governance import binding_from
 
 
 def execute_step(
@@ -132,6 +134,7 @@ def execute_step(
         adapter="http2",
         origin_id=origin_id,
         lease_seconds=int(limits["timeoutSeconds"]) + 5,
+        research_binding=binding_from(workflow, step),
     )
     raw: socket.socket | None = None
     response_body = bytearray()
