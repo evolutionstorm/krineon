@@ -401,10 +401,11 @@ lockfiles, manifests, bundles, build graphs, or runtime linkage and pin only
 high-leverage sources there. Audit both the dependency and the caller boundary.
 Read [dependencies](references/dependencies.md).
 
-Static analysis is a hypothesis generator. Run Trailmark, Joern, Z3, and
-cppcheck whenever each tool is installed and compatible with the pinned source;
-retain explicit unavailable or not-applicable outcomes. Tree-sitter, Joern,
-Trailmark, Z3, and cppcheck output does not become a candidate by itself.
+Static analysis is a hypothesis generator. Run Trailmark, Joern, AISEC CPG,
+SVF, PhASAR, Pysa, Infer, the Go call-graph tool, Z3, and cppcheck whenever each
+tool is installed and compatible with the pinned source; retain explicit
+unavailable or not-applicable outcomes. Analyzer output does not become a
+candidate by itself.
 Prefer differential witnesses: two real pinned consumers, one hashed input, a
 recorded disagreement, and an equal control. Bind solver constraints to an
 exact source fragment and execute the result through both consumers. Read

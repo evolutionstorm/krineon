@@ -601,10 +601,22 @@ def build_semantic_ir(
         "sourceBundleMappings": bundle_edges(relations),
         "securityPaths": paths,
         "experimentCandidates": build_experiment_candidates(paths),
+        "propertyGraphEvidence": [
+            row
+            for row in analysis.get("semanticGraphArtifacts", [])
+            if isinstance(row, dict)
+        ],
+        "languageAnalysisEvidence": [
+            row
+            for row in analysis.get("languageSemanticArtifacts", [])
+            if isinstance(row, dict)
+        ],
         "contract": {
             "vulnerabilityVerdictsProduced": False,
             "unknownTransformationsBecomeExperiments": True,
             "runtimeIdentityRequiredForContinuity": True,
+            "propertyGraphEvidenceCreatesVerdicts": False,
+            "languageAnalysisEvidenceCreatesVerdicts": False,
         },
     }
     web = web_semantic_facts(facts, relations)

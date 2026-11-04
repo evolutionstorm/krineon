@@ -41,15 +41,28 @@ the supported analysis tools that Krineon can detect automatically.
 | Tree-sitter CLI and Python modules | Syntax-aware source structure and candidate extraction | Multi-language source analysis |
 | Trailmark | Single-revision structure, entrypoint, and data-flow assistance | Supported source languages |
 | Joern (`joern`, `joern-parse`, `joern-scan`) | Code property graphs and cross-function reachability | C, C++, Java, JavaScript, and other supported languages |
+| Fraunhofer AISEC CPG (`cpg-neo4j`) | Language-independent AST, DFG, EOG, CFG, CDG, and call-graph evidence | Java, C/C++, Go, Python, Rust, LLVM IR, and hypothesis-only TypeScript/JavaScript analysis |
+| SVF (`wpa`) | LLVM points-to, alias, memory-object, and value-flow evidence | One pinned C/C++/Rust LLVM module at a time |
+| PhASAR (`phasar-cli`) | LLVM IFDS/IDE data-flow, taint, and typestate analyses | One pinned LLVM module with a reviewed analysis configuration |
+| Pysa (`pyre analyze`) | Python forward and backward taint analysis | Python applications with reviewed models and search paths |
+| Infer Pulse (`infer`) | Native and JVM ownership, lifetime, and memory-safety diagnostics | C, C++, Objective-C, and Java builds captured from reviewed argv recipes |
+| Go callgraph (`callgraph`) | SSA-backed static, CHA, RTA, or VTA call graphs | Go modules and services |
 | Z3 CLI and Python module | Concrete inputs for source-bound arithmetic and constraint models | Parsers, integer boundaries, state machines, and protocol checks |
 | cppcheck | Additional C and C++ diagnostics | Native targets |
 | Semgrep or OpenGrep | Fast structural rules and target-specific pattern checks | Source reconnaissance |
 | CodeQL CLI | Deeper cross-file data-flow queries | Languages and builds supported by CodeQL |
 | REA | Evidence from shipped binaries, generated bundles, Electron packages, and other artifacts | Source-versus-artifact differentials |
 
-When Trailmark, Joern, Z3, or cppcheck is available and applicable, Krineon's
-static pipeline runs it and retains its provenance. A tool match remains a
-hypothesis until a controlled runtime experiment validates it.
+When Trailmark, Joern, Fraunhofer AISEC CPG, SVF, PhASAR, Pysa, Infer, the Go
+call-graph tool, Z3, or cppcheck is available and applicable, Krineon's static
+pipeline runs it and retains its provenance. AISEC CPG exports are normalized
+into semantic evidence without creating a finding
+or queue lead. Inferred unresolved-call edges and experimental TypeScript
+results remain explicitly non-authoritative. Any tool match remains a
+hypothesis until a controlled runtime experiment validates it. See
+[AISEC CPG integration](references/aisec-cpg.md),
+[language-specific analysis](references/language-analysis.md), and
+[helper-tool installation](references/install-tools.md).
 
 ### Build, runtime, and fuzzing helpers
 
@@ -427,7 +440,8 @@ Krineon includes focused support for these targets and techniques:
 - Chrome and V8 release, sanitizer, debug, and owned-page browser replay
 - Signed build provenance with live sanitizer and REPRL capability checks
 - workerd GC, handle, reentry, cancellation, ArrayBuffer, and IoContext oracles
-- Mandatory-when-available Trailmark, Joern, Z3, and cppcheck analysis
+- Capability-conditioned Trailmark, Joern, Fraunhofer AISEC CPG, SVF,
+  PhASAR, Pysa, Infer, Go call-graph, Z3, and cppcheck analysis
 - Tree-sitter-assisted structural analysis
 - AFL++, libFuzzer, and Fuzzilli campaigns
 - V8, Istanbul, and source-map-aware JavaScript coverage
@@ -500,6 +514,9 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [OpenCode runtime adapter](references/opencode.md)
 - [OMP runtime adapter](references/omp.md)
 - [Research methodology](references/methodology.md)
+- [Install helper tools](references/install-tools.md)
+- [Language-specific static analysis](references/language-analysis.md)
+- [Fraunhofer AISEC CPG integration](references/aisec-cpg.md)
 - [Critical/RCE promotion contract](references/critical-rce.md)
 - [Orchestration and independent replay](references/orchestration.md)
 - [Evidence gates](references/evidence-gates.md)

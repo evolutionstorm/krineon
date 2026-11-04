@@ -103,6 +103,44 @@ class SemanticIRTests(unittest.TestCase):
         self.assertEqual(fact["observationReference"], "cdp:event:21")
         self.assertNotIn("source", fact)
 
+    def test_property_graph_evidence_is_linked_without_creating_a_verdict(self) -> None:
+        ir = build_semantic_ir(
+            {
+                "framework": "native",
+                "facts": [],
+                "relations": [],
+                "semanticGraphArtifacts": [
+                    {
+                        "provider": "fraunhofer-aisec-cpg",
+                        "claimBoundary": "source-supported-hypothesis-runtime-confirmation-required",
+                        "evidence": ["tools/static/run/aisec-cpg/aisec-cpg-semantic.json"],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(
+            ir["propertyGraphEvidence"][0]["provider"], "fraunhofer-aisec-cpg"
+        )
+        self.assertFalse(ir["contract"]["propertyGraphEvidenceCreatesVerdicts"])
+
+    def test_language_analysis_evidence_is_linked_without_creating_a_verdict(self) -> None:
+        ir = build_semantic_ir(
+            {
+                "framework": "native",
+                "facts": [],
+                "relations": [],
+                "languageSemanticArtifacts": [
+                    {
+                        "provider": "svf",
+                        "claimBoundary": "static-source-support-runtime-confirmation-required",
+                        "evidence": ["tools/static/run/svf/svf-semantic.json"],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(ir["languageAnalysisEvidence"][0]["provider"], "svf")
+        self.assertFalse(ir["contract"]["languageAnalysisEvidenceCreatesVerdicts"])
+
 
 if __name__ == "__main__":
     unittest.main()

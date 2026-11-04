@@ -21,6 +21,8 @@ HARNESS = PROJECT / "scripts" / "research_harness.py"
 Z3_SOLVER = PROJECT / "scripts" / "z3_boundary_solver.py"
 DIFFERENTIAL = PROJECT / "scripts" / "differential_witness.py"
 REA_ADAPTER = PROJECT / "scripts" / "rea_adapter.py"
+AISEC_CPG_ADAPTER = PROJECT / "scripts" / "aisec_cpg_adapter.py"
+LANGUAGE_ANALYSIS_ADAPTER = PROJECT / "scripts" / "language_analysis_adapter.py"
 ALLOWED_FAMILIES = {
     "ingress-authority",
     "execution-sink-backtrace",
@@ -37,7 +39,18 @@ ALLOWED_FAMILIES = {
     "dependency-integration",
 }
 
-MANDATORY_AVAILABLE_TOOLS = ("trailmark", "joern", "z3", "cppcheck")
+MANDATORY_AVAILABLE_TOOLS = (
+    "trailmark",
+    "joern",
+    "aisec-cpg",
+    "z3",
+    "cppcheck",
+    "svf",
+    "phasar",
+    "pysa",
+    "infer",
+    "go-callgraph",
+)
 SOURCE_SUFFIXES: dict[str, tuple[str, str | None]] = {
     ".py": ("python", "python"),
     ".js": ("javascript", "javascript"),
@@ -56,7 +69,41 @@ SOURCE_SUFFIXES: dict[str, tuple[str, str | None]] = {
     ".rs": ("rust", "rust"),
     ".go": ("go", "golang"),
     ".java": ("java", "java"),
+    ".m": ("objective-c", "c"),
+    ".mm": ("objective-cpp", "c"),
     ".swift": ("swift", "swiftsrc"),
+    ".ll": ("llvm", None),
+    ".bc": ("llvm", None),
+}
+AISEC_CPG_LANGUAGES: dict[str, tuple[str, str]] = {
+    ".java": ("java", "maintained"),
+    ".c": ("cxx", "maintained"),
+    ".h": ("cxx", "maintained"),
+    ".cc": ("cxx", "maintained"),
+    ".cpp": ("cxx", "maintained"),
+    ".cxx": ("cxx", "maintained"),
+    ".hpp": ("cxx", "maintained"),
+    ".hh": ("cxx", "maintained"),
+    ".go": ("go", "maintained"),
+    ".py": ("python", "maintained"),
+    ".rs": ("rust", "maintained"),
+    ".ll": ("llvm", "incubating"),
+    ".bc": ("llvm", "incubating"),
+    ".js": ("typescript", "experimental"),
+    ".jsx": ("typescript", "experimental"),
+    ".mjs": ("typescript", "experimental"),
+    ".cjs": ("typescript", "experimental"),
+    ".ts": ("typescript", "experimental"),
+    ".tsx": ("typescript", "experimental"),
+}
+AISEC_CPG_MATURITY = {
+    "java": "maintained",
+    "cxx": "maintained",
+    "go": "maintained",
+    "python": "maintained",
+    "rust": "maintained",
+    "llvm": "incubating",
+    "typescript": "experimental",
 }
 IGNORED_SOURCE_PARTS = {
     ".git", ".next", "build", "dist", "node_modules", "target", "vendor",
@@ -141,7 +188,8 @@ def source_language_inventory(source: Path) -> dict[str, Any]:
     for path in candidates:
         if inspected >= 100_000:
             break
-        if not path.is_file() or any(part in IGNORED_SOURCE_PARTS for part in path.parts):
+        relative_parts = () if source.is_file() else path.relative_to(source).parts
+        if not path.is_file() or any(part in IGNORED_SOURCE_PARTS for part in relative_parts):
             continue
         inspected += 1
         suffix = path.suffix.lower()
@@ -156,14 +204,110 @@ def source_language_inventory(source: Path) -> dict[str, Any]:
         for suffix, count in counts.items()
         if suffix in {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"}
     )
+    python_files = counts.get(".py", 0)
+    go_files = counts.get(".go", 0)
+    infer_files = sum(
+        count
+        for suffix, count in counts.items()
+        if suffix in {
+            ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh",
+            ".m", ".mm", ".java",
+        }
+    )
+    llvm_files = sum(counts.get(suffix, 0) for suffix in (".ll", ".bc"))
+    aisec_candidates = [
+        (suffix, count, AISEC_CPG_LANGUAGES[suffix])
+        for suffix, count in ranked
+        if suffix in AISEC_CPG_LANGUAGES
+    ]
+    aisec_suffix = aisec_candidates[0][0] if aisec_candidates else None
+    aisec_language, aisec_maturity = (
+        AISEC_CPG_LANGUAGES[aisec_suffix] if aisec_suffix else (None, None)
+    )
     return {
         "filesInspected": inspected,
         "suffixCounts": dict(ranked),
         "primarySuffix": primary_suffix,
         "trailmarkLanguage": trailmark,
         "joernLanguage": joern,
+        "aisecCpgLanguage": aisec_language,
+        "aisecCpgMaturity": aisec_maturity,
+        "aisecCpgSuffix": aisec_suffix,
         "cppcheckCompatible": cpp_files > 0,
+        "pysaCompatible": python_files > 0,
+        "goCallgraphCompatible": go_files > 0,
+        "inferCompatible": infer_files > 0,
+        "llvmAnalysisCompatible": llvm_files > 0,
     }
+
+
+def discover_llvm_module(source: Path, explicit: Path | None) -> tuple[Path | None, str | None]:
+    """Select one exact LLVM module without silently composing incompatible builds."""
+    if explicit is not None:
+        module = explicit.expanduser().resolve()
+        if not module.is_file() or module.suffix.lower() not in {".ll", ".bc"}:
+            raise RuntimeError(f"LLVM module is not a .ll or .bc file: {module}")
+        return module, None
+    if source.is_file() and source.suffix.lower() in {".ll", ".bc"}:
+        return source, None
+    if not source.is_dir():
+        return None, "the source is not an LLVM module or directory"
+    modules = [
+        path.resolve()
+        for path in source.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".ll", ".bc"}
+        and not any(part in IGNORED_SOURCE_PARTS for part in path.relative_to(source).parts)
+    ]
+    modules.sort(key=str)
+    if len(modules) == 1:
+        return modules[0], None
+    if not modules:
+        return None, "no pinned LLVM .ll or .bc module was found; pass --llvm-module"
+    return None, "multiple LLVM modules were found; pass --llvm-module to select one exact build artifact"
+
+
+def language_adapter_result(
+    *,
+    tool: str,
+    executable: str,
+    source: Path,
+    output_dir: Path,
+    run_dir: Path,
+    campaign_root: Path,
+    timeout: int,
+    extra: list[str] | None = None,
+) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        str(LANGUAGE_ANALYSIS_ADAPTER),
+        "--tool",
+        tool,
+        "--source",
+        str(source),
+        "--executable",
+        executable,
+        "--output-dir",
+        str(output_dir),
+        "--timeout",
+        str(timeout),
+        *(extra or []),
+    ]
+    result = command_record(tool, command, run_dir, timeout + 60)
+    result["claimBoundary"] = "static-source-support-runtime-confirmation-required"
+    result["authoritativeForPromotion"] = False
+    if result["status"] == "completed":
+        record = output_dir / f"{tool}-run.json"
+        semantic = output_dir / f"{tool}-semantic.json"
+        if record.is_file() and semantic.is_file():
+            result["evidence"] = [
+                relative_evidence(campaign_root, record),
+                relative_evidence(campaign_root, semantic),
+            ]
+        else:
+            result["status"] = "failed"
+            result["reason"] = "adapter completed without its required run and semantic artifacts"
+    return result
 
 
 def not_applicable_tool(name: str, reason: str, capability: dict[str, Any]) -> dict[str, Any]:
@@ -413,6 +557,13 @@ def run_pipeline(args: argparse.Namespace) -> int:
     explicit_language = str(args.language).strip() if args.language else None
     trailmark_language = explicit_language or language_inventory["trailmarkLanguage"]
     joern_language = explicit_language or language_inventory["joernLanguage"]
+    aisec_language = args.aisec_cpg_language or language_inventory["aisecCpgLanguage"]
+    aisec_maturity = (
+        AISEC_CPG_MATURITY.get(args.aisec_cpg_language)
+        if args.aisec_cpg_language
+        else language_inventory["aisecCpgMaturity"]
+    )
+    llvm_module, llvm_module_reason = discover_llvm_module(source, args.llvm_module)
 
     if "trailmark" in selected:
         executable = shutil.which("trailmark")
@@ -491,6 +642,72 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 )
             )
 
+    if "aisec-cpg" in selected:
+        executable = shutil.which("cpg-neo4j")
+        if not executable:
+            tools.append({"name": "aisec-cpg", "status": "unavailable"})
+        elif not aisec_language or not aisec_maturity:
+            capability = command_record(
+                "aisec-cpg-capability", [executable, "--help"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "aisec-cpg",
+                    "no AISEC CPG-supported source language was detected",
+                    capability,
+                )
+            )
+        else:
+            cpg_dir = run_dir / "aisec-cpg"
+            cpg_timeout = max(args.timeout, 900)
+            result = command_record(
+                "aisec-cpg",
+                [
+                    sys.executable,
+                    str(AISEC_CPG_ADAPTER),
+                    "run",
+                    "--source",
+                    str(source),
+                    "--executable",
+                    str(executable),
+                    "--output-dir",
+                    str(cpg_dir),
+                    "--language",
+                    str(aisec_language),
+                    "--maturity",
+                    str(aisec_maturity),
+                    "--timeout",
+                    str(cpg_timeout),
+                ],
+                run_dir,
+                cpg_timeout + 60,
+            )
+            result["frontend"] = {
+                "language": aisec_language,
+                "maturity": aisec_maturity,
+                "eligibleAsSourceSupport": aisec_maturity == "maintained",
+                "authoritativeForPromotion": False,
+            }
+            result["claimBoundary"] = (
+                "source-supported-hypothesis-runtime-confirmation-required"
+                if aisec_maturity == "maintained"
+                else "experimental-or-incubating-hypothesis-only"
+            )
+            if result["status"] == "completed":
+                record_path = cpg_dir / "aisec-cpg-run.json"
+                semantic_path = cpg_dir / "aisec-cpg-semantic.json"
+                raw_path = cpg_dir / "aisec-cpg-raw.json"
+                if record_path.is_file() and semantic_path.is_file() and raw_path.is_file():
+                    result["evidence"] = [
+                        relative_evidence(campaign_root, record_path),
+                        relative_evidence(campaign_root, semantic_path),
+                        relative_evidence(campaign_root, raw_path),
+                    ]
+                else:
+                    result["status"] = "failed"
+                    result["reason"] = "adapter completed without its required evidence set"
+            tools.append(result)
+
     if "cppcheck" in selected:
         executable = shutil.which("cppcheck")
         if not executable:
@@ -517,6 +734,175 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     ],
                     run_dir,
                     max(args.timeout, 300),
+                )
+            )
+
+    if "svf" in selected:
+        executable = shutil.which("wpa")
+        if not executable:
+            tools.append({"name": "svf", "status": "unavailable"})
+        elif llvm_module is None:
+            capability = command_record(
+                "svf-capability", [executable, "--help"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool("svf", str(llvm_module_reason), capability)
+            )
+        else:
+            extra = ["--module", str(llvm_module), "--svf-analysis", args.svf_analysis]
+            if args.llvm_provenance:
+                extra.extend(["--llvm-provenance", str(args.llvm_provenance.resolve())])
+            tools.append(
+                language_adapter_result(
+                    tool="svf",
+                    executable=executable,
+                    source=source,
+                    output_dir=run_dir / "svf",
+                    run_dir=run_dir,
+                    campaign_root=campaign_root,
+                    timeout=max(args.timeout, 900),
+                    extra=extra,
+                )
+            )
+
+    if "phasar" in selected:
+        executable = shutil.which("phasar-cli")
+        if not executable:
+            tools.append({"name": "phasar", "status": "unavailable"})
+        elif llvm_module is None:
+            capability = command_record(
+                "phasar-capability", [executable, "--help"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool("phasar", str(llvm_module_reason), capability)
+            )
+        else:
+            extra = ["--module", str(llvm_module)]
+            if args.llvm_provenance:
+                extra.extend(["--llvm-provenance", str(args.llvm_provenance.resolve())])
+            if args.phasar_analysis:
+                extra.extend(["--phasar-analysis", args.phasar_analysis])
+            if args.phasar_config:
+                extra.extend(["--analysis-config", str(args.phasar_config.resolve())])
+            tools.append(
+                language_adapter_result(
+                    tool="phasar",
+                    executable=executable,
+                    source=source,
+                    output_dir=run_dir / "phasar",
+                    run_dir=run_dir,
+                    campaign_root=campaign_root,
+                    timeout=max(args.timeout, 900),
+                    extra=extra,
+                )
+            )
+
+    if "pysa" in selected:
+        executable = shutil.which("pyre")
+        source_root = source if source.is_dir() else source.parent
+        configuration = source_root / ".pyre_configuration"
+        if not executable:
+            tools.append({"name": "pysa", "status": "unavailable"})
+        elif not language_inventory["pysaCompatible"]:
+            capability = command_record(
+                "pysa-capability", [executable, "--version"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool("pysa", "the target contains no detected Python source", capability)
+            )
+        elif not configuration.is_file():
+            capability = command_record(
+                "pysa-capability", [executable, "--version"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "pysa",
+                    "Python source is present but no reviewed .pyre_configuration exists",
+                    capability,
+                )
+            )
+        else:
+            extra = ["--pysa-no-verify"] if args.pysa_no_verify else []
+            tools.append(
+                language_adapter_result(
+                    tool="pysa",
+                    executable=executable,
+                    source=source_root,
+                    output_dir=run_dir / "pysa",
+                    run_dir=run_dir,
+                    campaign_root=campaign_root,
+                    timeout=max(args.timeout, 900),
+                    extra=extra,
+                )
+            )
+
+    if "infer" in selected:
+        executable = shutil.which("infer")
+        if not executable:
+            tools.append({"name": "infer", "status": "unavailable"})
+        elif not language_inventory["inferCompatible"]:
+            capability = command_record(
+                "infer-capability", [executable, "--version"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "infer", "the target contains no detected C, C++, Objective-C, or Java source", capability
+                )
+            )
+        elif not args.infer_build_spec:
+            capability = command_record(
+                "infer-capability", [executable, "--version"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "infer",
+                    "a reviewed --infer-build-spec argv recipe is required before build capture",
+                    capability,
+                )
+            )
+        else:
+            tools.append(
+                language_adapter_result(
+                    tool="infer",
+                    executable=executable,
+                    source=source,
+                    output_dir=run_dir / "infer",
+                    run_dir=run_dir,
+                    campaign_root=campaign_root,
+                    timeout=max(args.timeout, 1800),
+                    extra=["--build-spec", str(args.infer_build_spec.resolve())],
+                )
+            )
+
+    if "go-callgraph" in selected:
+        executable = shutil.which("callgraph")
+        if not executable:
+            tools.append({"name": "go-callgraph", "status": "unavailable"})
+        elif not language_inventory["goCallgraphCompatible"]:
+            capability = command_record(
+                "go-callgraph-capability", [executable, "--help"], run_dir, args.timeout
+            )
+            tools.append(
+                not_applicable_tool(
+                    "go-callgraph", "the target contains no detected Go source", capability
+                )
+            )
+        else:
+            tools.append(
+                language_adapter_result(
+                    tool="go-callgraph",
+                    executable=executable,
+                    source=source if source.is_dir() else source.parent,
+                    output_dir=run_dir / "go-callgraph",
+                    run_dir=run_dir,
+                    campaign_root=campaign_root,
+                    timeout=max(args.timeout, 600),
+                    extra=[
+                        "--go-algorithm",
+                        args.go_callgraph_algorithm,
+                        "--go-pattern",
+                        args.go_pattern,
+                    ],
                 )
             )
 
@@ -681,6 +1067,30 @@ def run_pipeline(args: argparse.Namespace) -> int:
         commit=str(campaign.get("commit") or "unknown"),
         max_leads=args.max_leads,
     )
+    semantic_graph_artifacts = [
+        {
+            "provider": "fraunhofer-aisec-cpg",
+            "frontend": item.get("frontend"),
+            "claimBoundary": item.get("claimBoundary"),
+            "evidence": item.get("evidence", []),
+        }
+        for item in tools
+        if item.get("name") == "aisec-cpg"
+        and item.get("status") == "completed"
+        and item.get("evidence")
+    ]
+    language_semantic_artifacts = [
+        {
+            "provider": item.get("name"),
+            "claimBoundary": item.get("claimBoundary"),
+            "authoritativeForPromotion": False,
+            "evidence": item.get("evidence", []),
+        }
+        for item in tools
+        if item.get("name") in {"svf", "phasar", "pysa", "infer", "go-callgraph"}
+        and item.get("status") == "completed"
+        and item.get("evidence")
+    ]
     run_record = {
         "schemaVersion": 1,
         "runId": run_id,
@@ -704,6 +1114,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
             "internetPatchDiffUsed": False,
         },
         "tools": tools,
+        "semanticGraphArtifacts": semantic_graph_artifacts,
+        "languageSemanticArtifacts": language_semantic_artifacts,
         "leadCount": len(normalized),
         "untruncatedLeadCount": untruncated_lead_count,
         "leadSelection": "semantic-priority-not-tool-order",
@@ -823,7 +1235,10 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--tool",
         action="append",
-        choices=("trailmark", "joern", "differential", "z3", "cppcheck", "rea"),
+        choices=(
+            "trailmark", "joern", "aisec-cpg", "differential", "z3", "cppcheck", "rea",
+            "svf", "phasar", "pysa", "infer", "go-callgraph",
+        ),
         help="add an analysis lane; installed core analyzers cannot be disabled",
     )
     run.add_argument(
@@ -833,6 +1248,49 @@ def parser() -> argparse.ArgumentParser:
         help="two-consumer executable witness specification; repeatable",
     )
     run.add_argument("--z3-spec", action="append", type=Path)
+    run.add_argument(
+        "--aisec-cpg-language",
+        choices=tuple(sorted(AISEC_CPG_MATURITY)),
+        help="override the inferred AISEC CPG frontend for a mixed-language source tree",
+    )
+    run.add_argument(
+        "--llvm-module",
+        type=Path,
+        help="exact .ll or .bc artifact for SVF and PhASAR; required when discovery is ambiguous",
+    )
+    run.add_argument(
+        "--llvm-provenance",
+        type=Path,
+        help="reviewed build manifest containing source, dependency, compiler, flags, and patch identity",
+    )
+    run.add_argument(
+        "--svf-analysis", choices=("ander", "fspta"), default="ander"
+    )
+    run.add_argument(
+        "--phasar-analysis",
+        help="optional built-in PhASAR analysis such as ifds-uninit or ide-xtaint",
+    )
+    run.add_argument(
+        "--phasar-config",
+        type=Path,
+        help="reviewed PhASAR source/sink analysis configuration",
+    )
+    run.add_argument(
+        "--pysa-no-verify",
+        action="store_true",
+        help="disable Pysa model verification and record the resulting coverage limitation",
+    )
+    run.add_argument(
+        "--infer-build-spec",
+        type=Path,
+        help="JSON object with a reviewed argv command and optional in-tree workingDirectory",
+    )
+    run.add_argument(
+        "--go-callgraph-algorithm",
+        choices=("static", "cha", "rta", "vta"),
+        default="cha",
+    )
+    run.add_argument("--go-pattern", default="./...")
     run.add_argument(
         "--rea-spec",
         action="append",

@@ -13,22 +13,42 @@ trackers, or another revision to locate defects. Checked-in tests, assertions,
 fuzz targets, invariant comments, and fixtures in the pinned revision are
 allowed local oracles.
 
-Trailmark, Tree-sitter, Joern, language frontends, and manual source reading may
-help identify candidate pairs such as serializer versus decoder, validator
-versus executor, interpreter versus optimizing tier, parser versus re-parser,
-copy versus zero-copy consumer, synchronous versus deferred path, or owner
-versus concurrent consumer.
+Trailmark, Tree-sitter, Joern, Fraunhofer AISEC CPG, SVF, PhASAR, Pysa, Infer,
+Go call graphs, language frontends, and manual source reading may help identify
+candidate pairs such as serializer versus decoder, validator versus executor,
+interpreter versus optimizing tier,
+parser versus re-parser, copy versus zero-copy consumer, synchronous versus
+deferred path, or owner versus concurrent consumer.
 
 The static pipeline invokes every installed compatible core analyzer:
-Trailmark for structure and entry points, Joern for CPG construction, cppcheck
-for C/C++ diagnostics, and Z3 for supplied source-bound constraints. An
-installed tool may be marked not applicable only after the pipeline exercises
-its capability and records why the target or current hypothesis does not fit.
-Missing specifications never permit a fabricated model.
+Trailmark for structure and entry points, Joern and AISEC CPG for
+property-graph construction, SVF and PhASAR for pinned LLVM modules, Pysa for
+modelled Python taint, Infer for captured native or JVM builds, Go callgraph
+for SSA-backed reachability, cppcheck for C/C++ diagnostics, and Z3 for
+supplied source-bound constraints. An installed tool may be marked not
+applicable only after the pipeline exercises its capability and records why the
+target or current hypothesis does not fit. Missing specifications never permit
+a fabricated model.
 
 Their inventories and graphs remain researcher notes. The former syntax census
 and bundled Joern queries were removed because they did not produce executable
 differentials or improve the measured search vector.
+
+The AISEC adapter retains the exact raw JSON export and a normalized summary of
+DFG, EOG, CFG, CDG, AST, and call edges. It labels frontend maturity and records
+that unresolved-call data flow may be inferred by default. Maintained frontends
+can support a source hypothesis; incubating LLVM and experimental
+TypeScript/JavaScript results remain hypothesis-only. Neither class enters the
+lead queue without an executable runtime discriminator.
+
+The language-analysis adapter retains the executable hash, source manifest,
+exact command, working directory, raw output, generated artifacts, normalized
+summary, and coverage gaps for SVF, PhASAR, Pysa, Infer, and Go call graphs.
+LLVM results name one exact module and record whether build provenance is
+complete. Pysa records model and search-path limitations. Infer requires a
+reviewed argv build recipe. Go results preserve the selected approximation
+algorithm. None of these artifacts creates a queue lead without an executable
+runtime discriminator. Read [language-specific analysis](language-analysis.md).
 
 For Next, React, and Node production builds,
 `framework_analysis_pipeline.py` turns route and runtime relationships into

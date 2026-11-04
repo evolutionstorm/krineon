@@ -31,6 +31,20 @@ Control-flow dominance and unfamiliar transformations remain unknown until a
 target CPG or runtime observation proves them. Unknowns become experiment
 candidates. They do not become findings.
 
+`aisec_cpg_adapter.py` supplies a provenance-bound property-graph layer. Its
+raw export remains immutable and its normalized artifact describes graph shape,
+edge families, frontend maturity, inferred nodes, and unresolved calls. It does
+not convert names such as `exec`, `parse`, or `memcpy` into security facts.
+TypeScript/JavaScript output is experimental and cannot prove dominance or data
+flow. Every CPG-supported path still requires a target-specific runtime oracle.
+
+`language_analysis_adapter.py` supplies a second provenance-bound layer for
+SVF, PhASAR, Pysa, Infer, and Go call graphs. Static run records expose these
+under `languageSemanticArtifacts`; semantic IR exposes them under
+`languageAnalysisEvidence`. The IR contract states that these artifacts create
+no verdict. Missing models, build capture, LLVM provenance, or unresolved call
+coverage remain explicit unknowns.
+
 Runtime observations should name a `factId` and include:
 
 ```json
