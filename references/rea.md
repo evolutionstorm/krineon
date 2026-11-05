@@ -2,11 +2,15 @@
 
 Use REA when a claim depends on a shipped binary, generated bundle, packaged
 application, decompilation, or behavior that the available source cannot
-establish. Do not run REA merely to summarize an ordinary source repository.
+establish. For web campaigns, the first approved Chromium journey retains the
+production client artifacts and `web_rea_bootstrap.py` automatically prepares
+and runs the bounded `javascript-application` operation when REA is available.
+That early artifact pass occurs before deeper workflow, WebSocket, and chain
+experiments. Do not run REA merely to summarize an ordinary source repository.
 Krineon's source semantic IR remains the authority for source claims; REA adds
 an independently produced view of the artifact that users actually run.
 
-REA is optional and separately installed. Krineon never downloads, installs,
+REA is separately installed. Krineon never downloads, installs,
 updates, or configures REA, Hopper, Ghidra, IDA, Kuna, Frida, or an MCP client.
 `scripts/tool_probe.py` records whether an existing `rea` executable is
 available. Follow REA's official installation and provider documentation when
@@ -46,8 +50,9 @@ Every REA hypothesis keeps source/artifact equivalence unresolved until the
 campaign establishes that provenance independently.
 
 The static pipeline accepts a reviewed REA specification through
-`--rea-spec`. REA is not a mandatory analyzer for every target: it becomes an
-active lane only when a shipped-artifact specification exists. A completed run
+`--rea-spec`. REA becomes a required-when-available early lane for a web
+campaign as soon as browser-loaded production artifacts exist. Other profiles
+activate it only when a shipped-artifact specification exists. A completed run
 creates one source-versus-artifact differential hypothesis. It does not create
 a vulnerability verdict.
 

@@ -58,7 +58,35 @@ def load_object(path: Path | str) -> dict[str, Any]:
     return value
 
 
-BROWSER_ACTION_TYPES = {"click", "fill", "select", "wait-for-selector"}
+BROWSER_ACTION_TYPES = {
+    "click",
+    "double-click",
+    "fill",
+    "select",
+    "check",
+    "uncheck",
+    "submit",
+    "focus",
+    "hover",
+    "press",
+    "navigate",
+    "wait-for-selector",
+    "wait-for-url",
+}
+SAFE_BROWSER_KEYS = {
+    "Enter",
+    "Escape",
+    "Tab",
+    " ",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+}
 
 
 def validate_browser_actions(step: dict[str, Any]) -> list[dict[str, Any]]:
@@ -79,8 +107,12 @@ def validate_browser_actions(step: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(action_id)
         if action_type not in BROWSER_ACTION_TYPES:
             raise WebContractError("browser action type is unsupported")
-        if not selector or len(selector.encode("utf-8")) > 2048:
-            raise WebContractError("browser actions require a bounded selector")
+        if action_type not in {"navigate", "wait-for-url"} and (
+            not selector or len(selector.encode("utf-8")) > 2048
+        ):
+            raise WebContractError("this browser action requires a bounded selector")
+        if selector and len(selector.encode("utf-8")) > 2048:
+            raise WebContractError("browser action selector exceeds the limit")
         value = action.get("value")
         secret_ref = action.get("secretRef")
         if action_type in {"fill", "select"}:
@@ -96,6 +128,24 @@ def validate_browser_actions(step: dict[str, Any]) -> list[dict[str, Any]]:
                 raise WebContractError("browser action secretRef must use secret://")
         elif value is not None or secret_ref is not None:
             raise WebContractError("this browser action type does not accept a value")
+        if action_type == "press" and str(action.get("key") or "") not in SAFE_BROWSER_KEYS:
+            raise WebContractError("press action key is not in the bounded key set")
+        if action_type in {"navigate", "wait-for-url"}:
+            destination = str(action.get("path") or action.get("url") or "")
+            if not destination or len(destination.encode("utf-8")) > 4096:
+                raise WebContractError(
+                    "navigate/wait-for-url requires one bounded path or URL"
+                )
+        full_policy = action.get("useOwnedFullTestRequestPolicy", False)
+        if not isinstance(full_policy, bool):
+            raise WebContractError(
+                "useOwnedFullTestRequestPolicy must be Boolean"
+            )
+        maximum_mutations = action.get("maxMutationRequests", 3)
+        if isinstance(maximum_mutations, bool) or not isinstance(
+            maximum_mutations, int
+        ) or not 1 <= maximum_mutations <= 10:
+            raise WebContractError("maxMutationRequests must be 1..10")
         requests = action.get("expectedRequests", [])
         if not isinstance(requests, list):
             raise WebContractError("browser action expectedRequests must be an array")
@@ -110,6 +160,9 @@ def validate_browser_actions(step: dict[str, Any]) -> list[dict[str, Any]]:
             maximum = request.get("maxCount")
             if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 20:
                 raise WebContractError("expected browser request maxCount must be 1..20")
+            required = request.get("required", True)
+            if not isinstance(required, bool):
+                raise WebContractError("expected browser request required must be Boolean")
     return actions
 
 
@@ -223,6 +276,41 @@ def validate_workflow(
                 require_live_authorization=dynamic,
             )
             for action in browser_actions:
+                if action.get("useOwnedFullTestRequestPolicy") is True:
+                    full_testing = contract.raw["authorization"].get(
+                        "ownedFullTesting", {}
+                    )
+                    if not isinstance(full_testing, dict) or not (
+                        full_testing.get("enabled") is True
+                        and full_testing.get("autonomousBrowserOperations") is True
+                        and full_testing.get("perBrowserActionUserConfirmation") is False
+                    ):
+                        raise WebContractError(
+                            "automatic browser request policy requires owned full-test authorization"
+                        )
+                    writes += 1
+                    action_identity = contract.identity(
+                        str(step.get("identityId") or "anonymous")
+                    )
+                    action_origin_ids = (
+                        action_identity.allowed_origin_ids
+                        if action_identity is not None
+                        else frozenset({str(step.get("originId") or "")})
+                    )
+                    for action_origin_id in action_origin_ids:
+                        for method in full_testing["defaultMutationMethods"]:
+                            for prefix in contract.origins[
+                                action_origin_id
+                            ].allowed_path_prefixes:
+                                contract.admitted_request(
+                                    origin_id=action_origin_id,
+                                    path_or_url=prefix,
+                                    method=str(method),
+                                    effect_class="disposable-write",
+                                    operation="browser",
+                                    operation_class="browser-action",
+                                    require_live_authorization=dynamic,
+                                )
                 for expected_request in action.get("expectedRequests", []):
                     if expected_request["effectClass"] == "disposable-write":
                         writes += 1

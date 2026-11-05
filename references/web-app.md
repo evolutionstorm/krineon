@@ -119,6 +119,25 @@ lifecycle, and cross-protocol differentials. These routes must produce either
 measured surface evidence and experiments or measured no-surface evidence.
 They cannot disappear merely because authorization work produced results first.
 
+Client reverse engineering is an early web phase. The first approved Chromium
+journey retains only artifacts loaded from admitted origins. Krineon then
+prepares `rea-web-analysis.json` and, when an existing REA installation is
+available, analyzes those frozen artifacts before deeper workflow experiments.
+The resulting module, dynamic-load, API, permission, and WebSocket-handler
+relationships remain untrusted hypotheses until a source or independent
+runtime observer confirms them. Missing REA, incomplete coverage, and residual
+unknowns remain explicit blockers rather than guessed edges.
+
+Every browser-observed WebSocket channel enters a dedicated state-machine
+frontier. The frontier covers handshake identity and session binding, Origin
+and subprotocol enforcement, per-message actor/resource/tenant checks,
+permission changes and logout on existing channels, reconnect, replay,
+ordering, alternate consumers, and bounded binary-frame parser differentials.
+Each experiment uses verified owned identities and resources, no more than two
+connections, sixteen small frames per connection, authoritative server-state
+readback, and a fresh independent replay. WebSocket research is not a load or
+availability test.
+
 Before describing a normal stop as a completed campaign, run the shared
 budget's `depth-gate` command and retain its JSON output. The gate rejects a
 completion claim when operations are detached from tasks, too few distinct,
@@ -194,11 +213,28 @@ token, or API-key values. Bootstrap performs this activation automatically when
 `--owned-accounts` is supplied with program guidelines and an exact web origin.
 Once activated, the coordinator dispatches bounded experiments without another
 user prompt and re-plans any lane that was previously planning-only.
+POST, PUT, PATCH, and DELETE are standing, default permissions for exact-scope
+operations on owned disposable fixtures. The coordinator signs and executes
+them automatically, then performs authoritative readback and cleanup. A missing
+safe fixture or cleanup path is an experiment blocker to resolve, not a reason
+to ask for per-method approval or silently reduce the campaign to GET/HEAD.
 
 An identity with `credentialRef: secret://user-a` must list the exact origin
 IDs that may receive that credential. At execution time, the broker resolves
 the reference from `KRINEON_SECRET_USER_A`. It does not copy credential values
 into campaign, workflow, observation, or private request evidence.
+
+For interactive credentials, use `credentialType: form-login` with a `login`
+object containing `usernameRef`, `usernameVersion`, `passwordRef`, and
+`passwordVersion`. The values are separate private secrets. Optional
+`startPath`, field selectors, a submit selector, a success selector, and
+`successPathPrefix` may disambiguate unusual applications. Without overrides,
+the Chromium runner follows only an observed same-origin sign-in link and
+requires one unambiguous visible password field and username candidate. It
+also supports a bounded username-then-password transition on that login page. It
+rejects credential-bearing GET URLs, caps login submissions, records only
+whether a session transition was observed, and redacts both values from success
+and failure artifacts.
 
 Authenticated identities also declare a credential type, exact path ranges,
 permitted HTTP or browser transports, expiry, and reviewed verification
@@ -408,13 +444,21 @@ intercepts every request. A proxy, copied browser headers, or CDP interception
 alone is insufficient. Loopback-owned application fixtures have real-Chromium
 acceptance coverage; fake-CDP coverage is not treated as sufficient.
 
-Browser steps may contain declarative `click`, `fill`, `select`, and
-`wait-for-selector` actions. They cannot contain JavaScript. Fill and select
-values are bounded literals or private `secret://` references. Every expected
-network request names its exact origin, path prefix, method, effect class, and
-maximum count in the signed workflow. Undeclared mutation is blocked, and a
-declared request that never occurs fails the experiment. Disposable writes
-still require a compensating cleanup step.
+Browser steps may contain declarative `navigate`, `click`, `double-click`,
+`focus`, `hover`, `fill`, `select`, `check`, `uncheck`, `press`, `submit`,
+`wait-for-selector`, and `wait-for-url` actions. They cannot contain JavaScript.
+Fill and select values are bounded literals or private `secret://` references.
+Discovery records visible controls with stable selectors, form bindings, and
+action hints so the coordinator can generate the next action sequence without
+human browser operation. Every expected network request names its exact origin,
+path prefix, method, effect class, and maximum count in the signed workflow.
+Owned full-test actions may instead select the automatic request policy. It
+admits bounded same-origin POST, PUT, PATCH, and DELETE requests under the
+signed action and still requires readback and cleanup. Other undeclared
+mutations are blocked, and a required declared request that never occurs fails
+the experiment. Form login remains bounded by its identity and
+credential-refresh policy. Disposable writes still require a compensating
+cleanup step.
 
 Use real Chromium CDP as the default browser-session and browser-only behavior
 observer. Chrome generates its own User-Agent, client hints, Fetch Metadata,

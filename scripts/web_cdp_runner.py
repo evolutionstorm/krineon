@@ -58,6 +58,8 @@ try:
     from .web_policy import WebPolicyEngine, classify_access_response
     from .web_artifact_graph import build as build_client_artifact_graph
     from .web_protocol_model import build as build_protocol_model
+    from .websocket_experiment_frontier import build as build_websocket_frontier
+    from .web_rea_bootstrap import run_when_available as run_web_rea
     from .web_research_governance import binding_from
 except ImportError:
     from experiment_control import authority_paths, sign_file
@@ -89,11 +91,31 @@ except ImportError:
     from web_policy import WebPolicyEngine, classify_access_response
     from web_artifact_graph import build as build_client_artifact_graph
     from web_protocol_model import build as build_protocol_model
+    from websocket_experiment_frontier import build as build_websocket_frontier
+    from web_rea_bootstrap import run_when_available as run_web_rea
     from web_research_governance import binding_from
 
 
 DISCOVERY_EXPRESSION = r"""
-(async () => ({
+(async () => {
+  const selectorFor = element => {
+    if (element.id) {
+      const value = `#${CSS.escape(element.id)}`;
+      if (document.querySelectorAll(value).length === 1) return value;
+    }
+    if (element.name) {
+      const value = `${element.tagName.toLowerCase()}[name="${CSS.escape(element.name)}"]`;
+      if (document.querySelectorAll(value).length === 1) return value;
+    }
+    const testId = element.getAttribute('data-testid');
+    if (testId) {
+      const value = `[data-testid="${CSS.escape(testId)}"]`;
+      if (document.querySelectorAll(value).length === 1) return value;
+    }
+    return '';
+  };
+  const visible = element => !!element && !element.disabled && element.getClientRects().length > 0;
+  return ({
   url: location.href,
   baseUrl: document.baseURI,
   title: document.title,
@@ -105,6 +127,21 @@ DISCOVERY_EXPRESSION = r"""
     method: (f.method || 'get').toUpperCase(),
     fields: [...f.elements].slice(0, 200).map(e => ({name: e.name || '', type: e.type || e.tagName}))
   })),
+  interactiveControls: [...document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="link"],[contenteditable="true"]')]
+    .filter(visible).slice(0, 1000).map(element => ({
+      selector: selectorFor(element),
+      tag: element.tagName.toLowerCase(),
+      type: (element.type || '').toLowerCase(),
+      name: element.name || '',
+      role: element.getAttribute('role') || '',
+      text: (element.innerText || element.getAttribute('aria-label') || element.placeholder || '').slice(0, 256),
+      href: element.href || '',
+      required: !!element.required,
+      checked: 'checked' in element ? !!element.checked : null,
+      formAction: element.form?.action || '',
+      formMethod: (element.form?.method || '').toUpperCase(),
+      supportsAutomaticAction: !!selectorFor(element)
+    })),
   scripts: [...document.scripts].slice(0, 500).map(s => s.src || '<inline>'),
   inlineScripts: [...document.scripts].filter(s => !s.src).slice(0, 100).map((s, i) => ({index: i, text: (s.textContent || '').slice(0, 262144)})),
   resources: performance.getEntriesByType('resource').slice(0, 1000).map(r => ({name: r.name, initiatorType: r.initiatorType})),
@@ -113,7 +150,8 @@ DISCOVERY_EXPRESSION = r"""
   sessionStorageKeys: Object.keys(sessionStorage).slice(0, 200),
   cookieNames: document.cookie.split(';').map(v => v.split('=', 1)[0].trim()).filter(Boolean).slice(0, 200),
   serviceWorkers: ('serviceWorker' in navigator) ? (await navigator.serviceWorker.getRegistrations()).map(r => r.scope) : []
-}))()
+  });
+})()
 """
 
 
@@ -163,6 +201,44 @@ def browser_action_expression(action: dict[str, Any], value: str | None) -> str:
     )
     if action_type == "click":
         return prefix + "element.click(); return {ok:true,type:'click'}; })()"
+    if action_type == "double-click":
+        return (
+            prefix
+            + "element.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,view:window}));"
+            + "return {ok:true,type:'double-click'}; })()"
+        )
+    if action_type == "focus":
+        return prefix + "element.focus(); return {ok:true,type:'focus'}; })()"
+    if action_type == "hover":
+        return (
+            prefix
+            + "element.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,view:window}));"
+            + "element.dispatchEvent(new MouseEvent('mouseenter',{bubbles:false,view:window}));"
+            + "return {ok:true,type:'hover'}; })()"
+        )
+    if action_type == "press":
+        return prefix + "element.focus(); return {ok:true,type:'press-ready'}; })()"
+    if action_type in {"check", "uncheck"}:
+        desired = "true" if action_type == "check" else "false"
+        return (
+            prefix
+            + "if(!('checked' in element)) return {ok:false,reason:'not-checkable'};"
+            + "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'checked')?.set;"
+            + "if(!setter) return {ok:false,reason:'checked-setter-unavailable'};"
+            + f"setter.call(element,{desired});"
+            + "element.dispatchEvent(new Event('input',{bubbles:true}));"
+            + "element.dispatchEvent(new Event('change',{bubbles:true}));"
+            + f"return {{ok:true,type:'{action_type}'}}; }})()"
+        )
+    if action_type == "submit":
+        return (
+            prefix
+            + "const form=element instanceof HTMLFormElement?element:element.form;"
+            + "if(!form) return {ok:false,reason:'form-not-found'};"
+            + "if(element !== form && typeof form.requestSubmit === 'function') form.requestSubmit(element);"
+            + "else if(typeof form.requestSubmit === 'function') form.requestSubmit();"
+            + "else form.submit();return {ok:true,type:'submit'}; })()"
+        )
     encoded_value = json.dumps(value if value is not None else "")
     if action_type == "fill":
         return (
@@ -182,6 +258,174 @@ def browser_action_expression(action: dict[str, Any], value: str | None) -> str:
             "element.dispatchEvent(new Event('change',{bubbles:true}));return {ok:true,type:'select'}; })()"
         )
     raise WebContractError("unsupported browser action")
+
+
+def login_link_expression() -> str:
+    """Find one same-origin login link without probing guessed routes."""
+
+    return r"""
+(() => {
+  const candidates = [...document.querySelectorAll('a[href]')].map((a, index) => {
+    let u; try { u = new URL(a.href, location.href); } catch (_) { return null; }
+    if (u.origin !== location.origin) return null;
+    const text = `${a.textContent || ''} ${a.getAttribute('aria-label') || ''} ${u.pathname}`.toLowerCase();
+    let score = 0;
+    if (/\b(sign[ -]?in|log[ -]?in)\b/.test(text)) score += 10;
+    if (/(session|auth|account)/.test(u.pathname.toLowerCase())) score += 3;
+    return {url: u.href, score, index};
+  }).filter(Boolean).filter(v => v.score > 0).sort((a,b) => b.score-a.score || a.index-b.index);
+  if (!candidates.length) return {ok:false, reason:'login-link-not-found'};
+  if (candidates.length > 1 && candidates[0].score === candidates[1].score)
+    return {ok:false, reason:'ambiguous-login-links'};
+  return {ok:true, url:candidates[0].url};
+})()
+"""
+
+
+def automatic_login_expression(
+    login: dict[str, Any], username: str, password: str, *, username_submitted: bool = False
+) -> str:
+    """Fill and submit one detected login form using only fixed driver code."""
+
+    configuration = json.dumps(
+        {
+            "usernameSelector": str(login.get("usernameSelector") or ""),
+            "passwordSelector": str(login.get("passwordSelector") or ""),
+            "submitSelector": str(login.get("submitSelector") or ""),
+            "username": username,
+            "password": password,
+            "usernameSubmitted": username_submitted,
+        }
+    )
+    return r"""
+(() => {
+  const cfg = CONFIGURATION;
+  const visible = e => !!e && !e.disabled && e.getClientRects().length > 0;
+  const query = selector => { try { return selector ? document.querySelector(selector) : null; } catch (_) { return null; } };
+  const passwords = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+  const password = query(cfg.passwordSelector) || (passwords.length === 1 ? passwords[0] : null);
+  if (!password) return {ok:false, reason:passwords.length > 1 ? 'ambiguous-password-fields' : 'password-field-not-found'};
+  const form = password.form || password.closest('form');
+  const scope = form || document;
+  const usernameCandidates = [...scope.querySelectorAll('input')].filter(e => visible(e) && e !== password && !['hidden','password','checkbox','radio','submit','button'].includes((e.type || '').toLowerCase())).map((e, index) => {
+    const hint = `${e.autocomplete || ''} ${e.name || ''} ${e.id || ''} ${e.type || ''}`.toLowerCase();
+    let score = 0;
+    if ((e.autocomplete || '').toLowerCase() === 'username') score += 20;
+    if ((e.type || '').toLowerCase() === 'email') score += 12;
+    if (/(user|email|login|account)/.test(hint)) score += 8;
+    return {e, score, index};
+  }).sort((a,b) => b.score-a.score || a.index-b.index);
+  const username = query(cfg.usernameSelector) || (usernameCandidates.length ? usernameCandidates[0].e : null);
+  if (!username && !cfg.usernameSubmitted) return {ok:false, reason:'username-field-not-found'};
+  if (!cfg.usernameSelector && usernameCandidates.length > 1 && usernameCandidates[0].score === usernameCandidates[1].score)
+    return {ok:false, reason:'ambiguous-username-fields'};
+  const setValue = (element, value) => {
+    const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (!setter) return false;
+    setter.call(element, value);
+    element.dispatchEvent(new Event('input', {bubbles:true}));
+    element.dispatchEvent(new Event('change', {bubbles:true}));
+    return true;
+  };
+  if ((username && !setValue(username, cfg.username)) || !setValue(password, cfg.password))
+    return {ok:false, reason:'native-value-setter-unavailable'};
+  const submit = query(cfg.submitSelector) || (form ? form.querySelector('button[type="submit"],input[type="submit"],button:not([type])') : null);
+  const beforeUrl = location.href;
+  const formAction = form ? form.action : '';
+  const formMethod = form ? (form.method || 'get').toUpperCase() : '';
+  if (submit) submit.click();
+  else if (form && typeof form.requestSubmit === 'function') form.requestSubmit();
+  else return {ok:false, reason:'submit-control-not-found'};
+  return {ok:true, type:'automatic-login', beforeUrl, formAction, formMethod};
+})()
+""".replace("CONFIGURATION", configuration)
+
+
+def automatic_username_step_expression(
+    login: dict[str, Any], username: str
+) -> str:
+    """Submit the username stage of an observed two-step login flow."""
+
+    configuration = json.dumps(
+        {
+            "usernameSelector": str(login.get("usernameSelector") or ""),
+            "submitSelector": str(login.get("submitSelector") or ""),
+            "username": username,
+        }
+    )
+    return r"""
+(() => {
+  const cfg = CONFIGURATION;
+  const visible = e => !!e && !e.disabled && e.getClientRects().length > 0;
+  const query = selector => { try { return selector ? document.querySelector(selector) : null; } catch (_) { return null; } };
+  const candidates = [...document.querySelectorAll('input')].filter(e => visible(e) && !['hidden','password','checkbox','radio','submit','button'].includes((e.type || '').toLowerCase())).map((e, index) => {
+    const hint = `${e.autocomplete || ''} ${e.name || ''} ${e.id || ''} ${e.type || ''}`.toLowerCase();
+    let score = 0;
+    if ((e.autocomplete || '').toLowerCase() === 'username') score += 20;
+    if ((e.type || '').toLowerCase() === 'email') score += 12;
+    if (/(user|email|login|account)/.test(hint)) score += 8;
+    return {e, score, index};
+  }).filter(v => v.score > 0).sort((a,b) => b.score-a.score || a.index-b.index);
+  const username = query(cfg.usernameSelector) || (candidates.length ? candidates[0].e : null);
+  if (!username) return {ok:false, reason:'username-stage-not-found'};
+  if (!cfg.usernameSelector && candidates.length > 1 && candidates[0].score === candidates[1].score)
+    return {ok:false, reason:'ambiguous-username-fields'};
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!setter) return {ok:false, reason:'native-value-setter-unavailable'};
+  setter.call(username, cfg.username);
+  username.dispatchEvent(new Event('input', {bubbles:true}));
+  username.dispatchEvent(new Event('change', {bubbles:true}));
+  const form = username.form || username.closest('form');
+  const submit = query(cfg.submitSelector) || (form ? form.querySelector('button[type="submit"],input[type="submit"],button:not([type])') : null);
+  const beforeUrl = location.href;
+  if (submit) submit.click();
+  else if (form && typeof form.requestSubmit === 'function') form.requestSubmit();
+  else return {ok:false, reason:'submit-control-not-found'};
+  return {ok:true, type:'automatic-login-username-stage', beforeUrl};
+})()
+""".replace("CONFIGURATION", configuration)
+
+
+def password_ready_expression(login: dict[str, Any]) -> str:
+    configuration = json.dumps(
+        {"passwordSelector": str(login.get("passwordSelector") or "")}
+    )
+    return r"""
+(() => {
+  const cfg = CONFIGURATION;
+  const visible = e => !!e && !e.disabled && e.getClientRects().length > 0;
+  let selected = null;
+  try { selected = cfg.passwordSelector ? document.querySelector(cfg.passwordSelector) : null; } catch (_) {}
+  const fields = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+  return {ok: visible(selected) || fields.length === 1, count: fields.length};
+})()
+""".replace("CONFIGURATION", configuration)
+
+
+def automatic_login_status_expression(
+    login: dict[str, Any], before_url: str
+) -> str:
+    configuration = json.dumps(
+        {
+            "beforeUrl": before_url,
+            "successSelector": str(login.get("successSelector") or ""),
+            "successPathPrefix": str(login.get("successPathPrefix") or ""),
+            "passwordSelector": str(login.get("passwordSelector") or ""),
+        }
+    )
+    return r"""
+(() => {
+  const cfg = CONFIGURATION;
+  const visible = e => !!e && e.getClientRects().length > 0;
+  const query = selector => { try { return selector ? document.querySelector(selector) : null; } catch (_) { return null; } };
+  const successElement = query(cfg.successSelector);
+  const password = query(cfg.passwordSelector) || [...document.querySelectorAll('input[type="password"]')].find(visible);
+  const pathMatched = !!cfg.successPathPrefix && location.pathname.startsWith(cfg.successPathPrefix) && !visible(password);
+  const transitioned = location.href !== cfg.beforeUrl && !visible(password);
+  return {ok: visible(successElement) || pathMatched || transitioned, urlChanged: location.href !== cfg.beforeUrl, passwordVisible: visible(password)};
+})()
+""".replace("CONFIGURATION", configuration)
 
 
 def browser_network_flags(
@@ -482,7 +726,16 @@ def discover(
         path_or_url=admitted["url"],
         transport="browser",
     )
-    credential = identities.resolve(identity) if identity is not None else ""
+    credential = ""
+    form_login_credentials: tuple[str, str] | None = None
+    secret_redactions: list[str] = []
+    if identity is not None:
+        if identity.credential_type == "form-login":
+            form_login_credentials = identities.form_login_credentials(identity)
+            secret_redactions.extend(form_login_credentials)
+        else:
+            credential = identities.resolve(identity)
+            secret_redactions.append(credential)
     if admitted["method"] != "GET" or admitted["effectClass"] != "read-only":
         raise WebContractError("browser entry navigation must be a read-only GET")
     if not binary.is_file():
@@ -498,13 +751,55 @@ def discover(
     browser_actions = validate_browser_actions(step)
     expected_requests: list[dict[str, Any]] = []
     active_action = {"id": None}
+    automatic_action_mutations: dict[str, dict[str, int]] = {}
+    automatic_login_state = {
+        "active": False,
+        "used": 0,
+        "limit": (
+            int(identity.login.get("maxSubmitRequests", 3))
+            if identity is not None and isinstance(identity.login, dict)
+            else 0
+        ),
+    }
     for action in browser_actions:
         for request in action.get("expectedRequests", []):
             expected_requests.append({**request, "actionId": action["id"], "used": 0})
+        if action.get("useOwnedFullTestRequestPolicy") is True:
+            full_testing = contract.raw["authorization"]["ownedFullTesting"]
+            limit = int(action.get("maxMutationRequests", 3))
+            automatic_action_mutations[str(action["id"])] = {
+                "used": 0,
+                "limit": limit,
+            }
+            action_origin_ids = (
+                identity.allowed_origin_ids
+                if identity is not None
+                else frozenset({str(step["originId"])})
+            )
+            for action_origin_id in action_origin_ids:
+                origin = contract.origins[action_origin_id]
+                for method in full_testing["defaultMutationMethods"]:
+                    for prefix in origin.allowed_path_prefixes:
+                        expected_requests.append(
+                            {
+                                "originId": origin.id,
+                                "pathPrefix": prefix,
+                                "method": method,
+                                "effectClass": "disposable-write",
+                                "maxCount": limit,
+                                "required": False,
+                                "automaticFullPolicy": True,
+                                "actionId": action["id"],
+                                "used": 0,
+                            }
+                        )
 
     def expected_request(url: str, method: str, origin_id: str) -> dict[str, Any] | None:
         path = urlsplit(url).path or "/"
         for request in expected_requests:
+            automatic_limit = automatic_action_mutations.get(
+                str(request["actionId"])
+            )
             if (
                 str(request["actionId"]) == str(active_action["id"])
                 and
@@ -512,6 +807,10 @@ def discover(
                 and str(request["method"]).upper() == method.upper()
                 and path_matches_prefix(path, str(request["pathPrefix"]))
                 and int(request["used"]) < int(request["maxCount"])
+                and (
+                    automatic_limit is None
+                    or int(automatic_limit["used"]) < int(automatic_limit["limit"])
+                )
             ):
                 return request
         return None
@@ -537,16 +836,35 @@ def discover(
                 )
             safe_method = method.upper() in {"GET", "HEAD", "OPTIONS"}
             expected = expected_request(url, method, matches[0].id)
-            if not safe_method and expected is None:
+            automatic_login_request = bool(
+                automatic_login_state["active"]
+                and identity is not None
+                and identity.credential_type == "form-login"
+                and matches[0].id in identity.allowed_origin_ids
+                and method.upper() == "POST"
+                and int(automatic_login_state["used"])
+                < int(automatic_login_state["limit"])
+            )
+            if automatic_login_state["active"] and safe_method and parsed_url.query:
+                decoded_url = unquote_to_bytes(url).decode("utf-8", "replace")
+                if any(secret and secret in decoded_url for secret in secret_redactions):
+                    raise WebContractError(
+                        "automatic login refused to place credentials in a GET URL"
+                    )
+            if not safe_method and expected is None and not automatic_login_request:
                 raise WebContractError(
                     "browser mutation was not declared by a signed action contract"
                 )
             effect_class = (
                 str(expected["effectClass"])
                 if expected is not None
-                else "read-only"
+                else "sensitive" if automatic_login_request else "read-only"
             )
-            operation_class = "browser-action" if expected is not None else "browser-discovery"
+            operation_class = (
+                "credential-refresh"
+                if automatic_login_request
+                else "browser-action" if expected is not None else "browser-discovery"
+            )
             policy.admit(
                 origin_id=matches[0].id,
                 url=url,
@@ -588,6 +906,13 @@ def discover(
             )
             if expected is not None:
                 expected["used"] = int(expected["used"]) + 1
+                if expected.get("automaticFullPolicy") is True:
+                    mutation_counter = automatic_action_mutations[
+                        str(expected["actionId"])
+                    ]
+                    mutation_counter["used"] = int(mutation_counter["used"]) + 1
+            if automatic_login_request:
+                automatic_login_state["used"] = int(automatic_login_state["used"]) + 1
             request_bytes = (
                 len(url.encode("utf-8"))
                 + len(method.encode("ascii", "ignore"))
@@ -725,7 +1050,7 @@ def discover(
             session_id = attached["sessionId"]
             for method in ("Page.enable", "Runtime.enable", "Network.enable", "Log.enable"):
                 client.command(method, session_id=session_id, deadline=deadline)
-            if identity is not None:
+            if identity is not None and identity.credential_type != "form-login":
                 injected_headers = identities.injection_headers(identity, credential)
                 cookie_values = [
                     value for name, value in injected_headers if name.lower() == "cookie"
@@ -777,9 +1102,14 @@ def discover(
                 "Fetch.enable", {"patterns": [{"urlPattern": "*"}]},
                 session_id=session_id, deadline=deadline
             )
+            navigation_url = admitted["url"]
+            if identity is not None and isinstance(identity.login, dict):
+                start_path = str(identity.login.get("startPath") or "")
+                if start_path:
+                    navigation_url = urljoin(admitted["origin"] + "/", start_path.lstrip("/"))
             event_index = len(client.events)
             client.command(
-                "Page.navigate", {"url": admitted["url"]},
+                "Page.navigate", {"url": navigation_url},
                 session_id=session_id, deadline=deadline
             )
             client.wait_for(
@@ -787,6 +1117,226 @@ def discover(
                 after_index=event_index
             )
             action_results: list[dict[str, Any]] = []
+            automatic_login_result: dict[str, Any] | None = None
+            if identity is not None and isinstance(identity.login, dict):
+                if form_login_credentials is None:
+                    raise WebContractError("form-login credentials were not resolved")
+                username, password = form_login_credentials
+                password_presence = client.command(
+                    "Runtime.evaluate",
+                    {
+                        "expression": "document.querySelectorAll('input[type=password]').length",
+                        "returnByValue": True,
+                    },
+                    session_id=session_id,
+                    deadline=deadline,
+                ).get("result", {}).get("value", 0)
+                if not int(password_presence or 0):
+                    current_path = str(
+                        client.command(
+                            "Runtime.evaluate",
+                            {
+                                "expression": "location.pathname",
+                                "returnByValue": True,
+                            },
+                            session_id=session_id,
+                            deadline=deadline,
+                        ).get("result", {}).get("value", "")
+                    ).lower()
+                    login_context = bool(
+                        identity.login.get("startPath")
+                        or re.search(r"(?:login|sign[-_]?in|auth|session)", current_path)
+                    )
+                    if not login_context:
+                        link_result = client.command(
+                            "Runtime.evaluate",
+                            {
+                                "expression": login_link_expression(),
+                                "returnByValue": True,
+                            },
+                            session_id=session_id,
+                            deadline=deadline,
+                        ).get("result", {}).get("value")
+                        if not isinstance(link_result, dict) or link_result.get("ok") is not True:
+                            raise WebContractError(
+                                "automatic login could not locate an unambiguous login form or link"
+                            )
+                        login_url = str(link_result.get("url") or "")
+                        login_origin = canonical_origin(
+                            f"{urlsplit(login_url).scheme}://{urlsplit(login_url).netloc}"
+                        )
+                        if login_origin != admitted["origin"]:
+                            raise WebContractError("automatic login link left the admitted origin")
+                        identities.authorize(
+                            identity.id,
+                            origin_id=admitted["originId"],
+                            path_or_url=login_url,
+                            transport="browser",
+                        )
+                        login_event_index = len(client.events)
+                        client.command(
+                            "Page.navigate", {"url": login_url},
+                            session_id=session_id, deadline=deadline,
+                        )
+                        client.wait_for(
+                            "Page.loadEventFired", session_id=session_id, deadline=deadline,
+                            after_index=login_event_index,
+                        )
+                active_action["id"] = "automatic-login"
+                automatic_login_state["active"] = True
+                try:
+                    login_deadline = min(
+                        deadline,
+                        time.monotonic() + int(identity.login["timeoutSeconds"]),
+                    )
+                    ready = client.command(
+                        "Runtime.evaluate",
+                        {
+                            "expression": password_ready_expression(identity.login),
+                            "returnByValue": True,
+                        },
+                        session_id=session_id,
+                        deadline=login_deadline,
+                    ).get("result", {}).get("value")
+                    username_submitted = False
+                    if not isinstance(ready, dict) or ready.get("ok") is not True:
+                        username_stage = client.command(
+                            "Runtime.evaluate",
+                            {
+                                "expression": automatic_username_step_expression(
+                                    identity.login, username
+                                ),
+                                "returnByValue": True,
+                            },
+                            session_id=session_id,
+                            deadline=login_deadline,
+                        ).get("result", {}).get("value")
+                        if not isinstance(username_stage, dict) or username_stage.get("ok") is not True:
+                            reason = (
+                                str(username_stage.get("reason") or "username-stage-failed")
+                                if isinstance(username_stage, dict)
+                                else "username-stage-failed"
+                            )
+                            raise WebContractError(
+                                f"automatic two-step login failed: {reason}"
+                            )
+                        while time.monotonic() < login_deadline:
+                            try:
+                                ready = client.command(
+                                    "Runtime.evaluate",
+                                    {
+                                        "expression": password_ready_expression(
+                                            identity.login
+                                        ),
+                                        "returnByValue": True,
+                                    },
+                                    session_id=session_id,
+                                    deadline=login_deadline,
+                                ).get("result", {}).get("value")
+                                if isinstance(ready, dict) and ready.get("ok") is True:
+                                    break
+                            except ChromiumReplayError:
+                                pass
+                            time.sleep(0.05)
+                        if not isinstance(ready, dict) or ready.get("ok") is not True:
+                            raise WebContractError(
+                                "automatic two-step login did not reach a password stage"
+                            )
+                        username_submitted = True
+                    evaluated_login = client.command(
+                        "Runtime.evaluate",
+                        {
+                            "expression": automatic_login_expression(
+                                identity.login,
+                                username,
+                                password,
+                                username_submitted=username_submitted,
+                            ),
+                            "returnByValue": True,
+                        },
+                        session_id=session_id,
+                        deadline=deadline,
+                    )
+                    login_submission = evaluated_login.get("result", {}).get("value")
+                    if (
+                        evaluated_login.get("exceptionDetails")
+                        or not isinstance(login_submission, dict)
+                        or login_submission.get("ok") is not True
+                    ):
+                        reason = (
+                            str(login_submission.get("reason") or "login-action-failed")
+                            if isinstance(login_submission, dict)
+                            else "login-action-failed"
+                        )
+                        raise WebContractError(f"automatic login failed: {reason}")
+                    before_url = str(login_submission.get("beforeUrl") or navigation_url)
+                    status: dict[str, Any] | None = None
+                    while time.monotonic() < login_deadline:
+                        try:
+                            evaluated_status = client.command(
+                                "Runtime.evaluate",
+                                {
+                                    "expression": automatic_login_status_expression(
+                                        identity.login, before_url
+                                    ),
+                                    "returnByValue": True,
+                                },
+                                session_id=session_id,
+                                deadline=login_deadline,
+                            )
+                            candidate = evaluated_status.get("result", {}).get("value")
+                            if isinstance(candidate, dict):
+                                status = candidate
+                                if candidate.get("ok") is True:
+                                    break
+                        except ChromiumReplayError:
+                            pass
+                        time.sleep(0.05)
+                    if not isinstance(status, dict) or status.get("ok") is not True:
+                        raise WebContractError(
+                            "automatic login did not produce an observable authenticated transition"
+                        )
+                    automatic_login_result = {
+                        "attempted": True,
+                        "observedTransition": True,
+                        "usernameRefUsed": True,
+                        "passwordRefUsed": True,
+                        "submitRequests": int(automatic_login_state["used"]),
+                        "successSelectorConfigured": bool(
+                            identity.login.get("successSelector")
+                        ),
+                        "successPathConfigured": bool(
+                            identity.login.get("successPathPrefix")
+                        ),
+                    }
+                    action_results.append(
+                        {
+                            "id": "automatic-login",
+                            "type": "automatic-login",
+                            "usedSecretRef": True,
+                            "observedTransition": True,
+                        }
+                    )
+                finally:
+                    automatic_login_state["active"] = False
+                    active_action["id"] = None
+
+                current_url = client.command(
+                    "Runtime.evaluate",
+                    {"expression": "location.href", "returnByValue": True},
+                    session_id=session_id,
+                    deadline=deadline,
+                ).get("result", {}).get("value", "")
+                if evidence_url(str(current_url)) != evidence_url(admitted["url"]):
+                    target_event_index = len(client.events)
+                    client.command(
+                        "Page.navigate", {"url": admitted["url"]},
+                        session_id=session_id, deadline=deadline,
+                    )
+                    client.wait_for(
+                        "Page.loadEventFired", session_id=session_id, deadline=deadline,
+                        after_index=target_event_index,
+                    )
             for action in browser_actions:
                 active_action["id"] = action["id"]
                 action_value: str | None = None
@@ -798,23 +1348,86 @@ def discover(
                     action_value = secret_store.get(str(action["secretRef"])).decode(
                         "utf-8", "strict"
                     )
+                    secret_redactions.append(action_value)
                 elif action.get("value") is not None:
                     action_value = str(action["value"])
-                evaluated_action = client.command(
-                    "Runtime.evaluate",
-                    {
-                        "expression": browser_action_expression(action, action_value),
-                        "awaitPromise": True,
-                        "returnByValue": True,
-                    },
-                    session_id=session_id,
-                    deadline=deadline,
-                )
-                if evaluated_action.get("exceptionDetails"):
-                    raise ChromiumReplayError(
-                        f"fixed browser action failed: {action['id']}"
+                action_type = str(action["type"])
+                if action_type == "navigate":
+                    destination = str(action.get("url") or action.get("path") or "")
+                    target_url = urljoin(admitted["origin"] + "/", destination)
+                    target_origin = canonical_origin(
+                        f"{urlsplit(target_url).scheme}://{urlsplit(target_url).netloc}"
                     )
-                action_result = evaluated_action.get("result", {}).get("value")
+                    if target_origin != admitted["origin"]:
+                        raise WebContractError(
+                            "declarative browser navigation left the admitted origin"
+                        )
+                    if identity is not None:
+                        identities.authorize(
+                            identity.id,
+                            origin_id=admitted["originId"],
+                            path_or_url=target_url,
+                            transport="browser",
+                        )
+                    navigation_index = len(client.events)
+                    client.command(
+                        "Page.navigate", {"url": target_url},
+                        session_id=session_id, deadline=deadline,
+                    )
+                    client.wait_for(
+                        "Page.loadEventFired", session_id=session_id, deadline=deadline,
+                        after_index=navigation_index,
+                    )
+                    action_result = {"ok": True, "type": "navigate"}
+                elif action_type == "wait-for-url":
+                    destination = str(action.get("url") or action.get("path") or "")
+                    expected_url = urljoin(admitted["origin"] + "/", destination)
+                    expected_origin = canonical_origin(
+                        f"{urlsplit(expected_url).scheme}://{urlsplit(expected_url).netloc}"
+                    )
+                    if expected_origin != admitted["origin"]:
+                        raise WebContractError(
+                            "declarative URL wait left the admitted origin"
+                        )
+                    action_result = {"ok": False, "type": "wait-for-url"}
+                    while time.monotonic() < deadline:
+                        current_url = client.command(
+                            "Runtime.evaluate",
+                            {"expression": "location.href", "returnByValue": True},
+                            session_id=session_id, deadline=deadline,
+                        ).get("result", {}).get("value", "")
+                        if evidence_url(str(current_url)) == evidence_url(expected_url):
+                            action_result["ok"] = True
+                            break
+                        time.sleep(0.05)
+                else:
+                    evaluated_action = client.command(
+                        "Runtime.evaluate",
+                        {
+                            "expression": browser_action_expression(action, action_value),
+                            "awaitPromise": True,
+                            "returnByValue": True,
+                        },
+                        session_id=session_id,
+                        deadline=deadline,
+                    )
+                    if evaluated_action.get("exceptionDetails"):
+                        raise ChromiumReplayError(
+                            f"fixed browser action failed: {action['id']}"
+                        )
+                    action_result = evaluated_action.get("result", {}).get("value")
+                    if action_type == "press" and isinstance(action_result, dict) and action_result.get("ok") is True:
+                        key = str(action["key"])
+                        client.command(
+                            "Input.dispatchKeyEvent",
+                            {"type": "keyDown", "key": key},
+                            session_id=session_id, deadline=deadline,
+                        )
+                        client.command(
+                            "Input.dispatchKeyEvent",
+                            {"type": "keyUp", "key": key},
+                            session_id=session_id, deadline=deadline,
+                        )
                 if not isinstance(action_result, dict) or action_result.get("ok") is not True:
                     raise WebContractError(
                         f"browser action did not complete: {action['id']}"
@@ -823,8 +1436,20 @@ def discover(
                     {
                         "id": action["id"],
                         "type": action["type"],
-                        "selectorSha256": sha256_bytes(str(action["selector"]).encode()),
+                        "selectorSha256": (
+                            sha256_bytes(str(action["selector"]).encode())
+                            if action.get("selector") else ""
+                        ),
+                        "destinationSha256": (
+                            sha256_bytes(
+                                str(action.get("url") or action.get("path") or "").encode()
+                            )
+                            if action_type in {"navigate", "wait-for-url"} else ""
+                        ),
                         "usedSecretRef": action.get("secretRef") is not None,
+                        "automaticRequestPolicy": action.get(
+                            "useOwnedFullTestRequestPolicy"
+                        ) is True,
                     }
                 )
                 time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
@@ -832,7 +1457,7 @@ def discover(
             missing_expected = [
                 f"{request['actionId']}:{request['method']}:{request['pathPrefix']}"
                 for request in expected_requests
-                if int(request["used"]) == 0
+                if request.get("required", True) is True and int(request["used"]) == 0
             ]
             if missing_expected:
                 raise WebContractError(
@@ -1008,7 +1633,7 @@ def discover(
                 browser_pid=process.pid,
                 sentinel_path=sentinel,
             )
-            sanitized_events = redact(client.events, [credential] if credential else [])
+            sanitized_events = redact(client.events, secret_redactions)
             event_path = output / "cdp-events.redacted.json"
             atomic_json(event_path, sanitized_events, mode=0o600)
             artifact_graph = build_client_artifact_graph(client_manifest_path, output)
@@ -1024,6 +1649,20 @@ def discover(
             )
             protocol_model_path = output / "web-protocol-model.json"
             atomic_json(protocol_model_path, protocol_model, mode=0o600)
+            websocket_frontier = build_websocket_frontier(
+                protocol_model,
+                [
+                    {
+                        "id": value.id,
+                        "tenant": value.expected_tenant,
+                        "roles": list(value.roles),
+                        "verified": value.verification_status == "verified",
+                    }
+                    for value in contract.identities.values()
+                ],
+            )
+            websocket_frontier_path = output / "websocket-experiment-frontier.json"
+            atomic_json(websocket_frontier_path, websocket_frontier, mode=0o600)
             artifacts = {
                 "domSnapshotSha256": sha256_bytes(
                     json.dumps(dom_snapshot or {}, sort_keys=True).encode()
@@ -1058,6 +1697,7 @@ def discover(
                 + client_manifest_path.stat().st_size
                 + artifact_graph_path.stat().st_size
                 + protocol_model_path.stat().st_size
+                + websocket_frontier_path.stat().st_size
                 + int(client_artifacts["totalBytes"])
                 + screenshot_size
             )
@@ -1100,7 +1740,11 @@ def discover(
                 "url": admitted["url"],
                 "identityId": identity.id if identity else "anonymous",
                 "expectedTenant": identity.expected_tenant if identity else "",
-                "credentialVersion": identity.secret_version if identity else "",
+                "credentialVersion": (
+                    identity.secret_version
+                    if identity and identity.credential_type != "form-login"
+                    else "form-login-pair" if identity else ""
+                ),
                 "identity": {
                     "roles": list(identity.roles) if identity else [],
                     "session": identity.session if identity else "",
@@ -1141,6 +1785,11 @@ def discover(
                     protocol_model_path.read_bytes()
                 ),
                 "webProtocolCoverage": protocol_model["coverage"],
+                "websocketExperimentFrontier": websocket_frontier_path.name,
+                "websocketExperimentFrontierSha256": sha256_bytes(
+                    websocket_frontier_path.read_bytes()
+                ),
+                "websocketResearchCoverage": websocket_frontier["coverage"],
                 "deploymentEpoch": deployment_epoch,
                 "profileSizeBeforeVerifiedCleanup": profile_size,
                 "downloadsAllowed": False,
@@ -1148,6 +1797,7 @@ def discover(
                 "sandbox": sandbox,
                 "discovery": discovery,
                 "browserActions": action_results,
+                "automaticLogin": automatic_login_result,
                 "requestCount": request_counter,
                 "blockedRequests": admission_errors,
                 "cdpBlockedRequests": client.blocked_external,
@@ -1188,9 +1838,7 @@ def discover(
         finally:
             if client is not None and not completed:
                 try:
-                    failure_events = redact(
-                        client.events, [credential] if credential else []
-                    )
+                    failure_events = redact(client.events, secret_redactions)
                     failure_event_path = output / "cdp-events.failure.redacted.json"
                     atomic_json(failure_event_path, failure_events, mode=0o600)
                     method_counts: dict[str, int] = {}
@@ -1214,7 +1862,7 @@ def discover(
                                 }
                                 for row in admission_errors
                             ],
-                            [credential] if credential else [],
+                            secret_redactions,
                         ),
                         "networkFailureCount": len(client.network_failures),
                         "lastEvents": [
@@ -1313,11 +1961,21 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
         )
+        rea_status = run_web_rea(
+            campaign,
+            Path(args.output).expanduser().resolve(),
+        )
         print(json.dumps({
             "stepId": result["stepId"],
             "requestCount": result["requestCount"],
             "sandboxVerified": result["sandbox"]["verified"],
             "blockedRequests": len(result["blockedRequests"]),
+            "websocketExperiments": result["websocketResearchCoverage"],
+            "reaClientAnalysis": {
+                "state": rea_status["state"],
+                "artifactCount": rea_status["artifactCount"],
+                "hypothesisCount": rea_status.get("hypothesisCount", 0),
+            },
         }, indent=2))
         return 0
     except (OSError, ValueError, WebContractError, ChromiumReplayError) as exc:

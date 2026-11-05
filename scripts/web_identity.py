@@ -141,12 +141,10 @@ class IdentityBroker:
             )
         return identity
 
-    def resolve(self, identity: IdentityPolicy) -> str:
-        if not identity.credential_ref:
-            raise AuthInconclusive(
-                f"auth-inconclusive: identity {identity.id} has no runtime credential"
-            )
-        name = identity.credential_ref.removeprefix("secret://")
+    def resolve_reference(self, reference: str, *, version: str = "") -> str:
+        """Resolve one opaque reference without exposing it to worker artifacts."""
+
+        name = reference.removeprefix("secret://")
         environment_name = "KRINEON_SECRET_" + re.sub(
             r"[^A-Za-z0-9]", "_", name
         ).upper()
@@ -156,18 +154,44 @@ class IdentityBroker:
         if self.secret_store is not None:
             try:
                 return self.secret_store.get(
-                    identity.credential_ref,
-                    version=None
-                    if identity.secret_version == "unversioned"
-                    else identity.secret_version,
+                    reference,
+                    version=None if version == "unversioned" else version or None,
                 ).decode("utf-8")
             except UnicodeDecodeError as exc:
                 raise AuthInconclusive(
                     "auth-inconclusive: credential cannot be injected as an HTTP value"
                 ) from exc
         raise AuthInconclusive(
-            f"auth-inconclusive: fresh secret {identity.credential_ref} is unavailable"
+            f"auth-inconclusive: fresh secret {reference} is unavailable"
         )
+
+    def resolve(self, identity: IdentityPolicy) -> str:
+        if identity.credential_type == "form-login":
+            raise AuthInconclusive(
+                f"auth-inconclusive: identity {identity.id} requires browser form login"
+            )
+        if not identity.credential_ref:
+            raise AuthInconclusive(
+                f"auth-inconclusive: identity {identity.id} has no runtime credential"
+            )
+        return self.resolve_reference(
+            identity.credential_ref, version=identity.secret_version
+        )
+
+    def form_login_credentials(self, identity: IdentityPolicy) -> tuple[str, str]:
+        if identity.credential_type != "form-login" or not isinstance(identity.login, dict):
+            raise AuthInconclusive(
+                f"auth-inconclusive: identity {identity.id} has no form-login contract"
+            )
+        username = self.resolve_reference(
+            str(identity.login["usernameRef"]),
+            version=str(identity.login["usernameVersion"]),
+        )
+        password = self.resolve_reference(
+            str(identity.login["passwordRef"]),
+            version=str(identity.login["passwordVersion"]),
+        )
+        return username, password
 
     def injection_headers(
         self, identity: IdentityPolicy, credential: str
@@ -188,6 +212,8 @@ class IdentityBroker:
                     )
                 value = supplied_value
             return [("Cookie", f"{identity.cookie_name}={value}")]
+        if identity.credential_type == "form-login":
+            return []
         raise AuthInconclusive("auth-inconclusive: unsupported credential type")
 
     def lease(self, identity_id: str, operation: str) -> IdentityLease:

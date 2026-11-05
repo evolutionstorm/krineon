@@ -267,8 +267,24 @@ Prepare the following information:
   project containing only authorized traffic.
 
 Do not paste passwords, cookies, API keys, or bearer tokens into the prompt.
-Krineon stores credentials through private references and keeps them out of
-agent-visible evidence.
+Import them through Krineon's private secret prompt, environment reference, or
+owner-only secret file. Krineon accepts username/password pairs, bearer tokens,
+API keys, cookies, and existing browser sessions. The campaign contract keeps
+only `secret://` references; raw values stay out of worker prompts, command
+arguments, CDP logs, and structured retained evidence. Screenshots remain
+bounded evidence and may show ordinary account UI, so use dedicated test
+identities without sensitive personal data.
+
+For a username/password account, select `form-login` in the owned-account
+manifest and reference one private username secret and one private password
+secret. Krineon opens the admitted application in real Chromium, finds an
+unambiguous same-origin login form or login link, fills it with native browser
+events, handles one-page and username-then-password flows, submits it, verifies
+an observable session transition, and continues
+the signed workflow in that browser session. Optional selector and success-path
+overrides handle forms that cannot be identified unambiguously. Bearer tokens,
+API keys, cookies, and supplied browser sessions are injected only on the exact
+origins and paths assigned to that identity.
 
 When program rules, exact origins, and verified owned-account details are all
 available, Krineon activates owned full-test mode. The retained contract then
@@ -276,12 +292,32 @@ authorizes all bounded, in-scope methods and workflows on those accounts,
 including state changes, uploads, browser actions, WebSockets, credential
 lifecycle checks, cache/parser experiments, and small paired-concurrency tests.
 Krineon does not pause for separate approval of each verb or hypothesis.
+POST, PUT, PATCH, and DELETE are enabled by default for exact-scope operations
+on owned disposable fixtures. Krineon creates and signs those workflows itself,
+verifies the resulting server state, and runs their cleanup without asking for
+method-by-method confirmation.
 Its primary objective is novel, target-specific zero-day mechanism discovery.
 It treats authentication and authorization as baseline coverage and one
 possible chain family, keeping that family below roughly one fifth of active
 exploration whenever producer-consumer, parser, workflow, cache, browser,
 integration, storage, asynchronous, protocol, native, or execution-boundary
 work is ready.
+
+The first approved Chromium journey retains the production client artifacts.
+When REA is installed, Krineon immediately runs its bounded JavaScript
+application analysis on those artifacts before deeper workflow experiments.
+This recovers module, dynamic-load, API, permission, and WebSocket-handler
+relationships that are otherwise hidden in generated bundles. REA output is
+planning evidence, not a finding: Krineon confirms each useful relationship
+against source or an independent runtime observation.
+
+WebSockets receive a dedicated state-machine lane. Every browser-observed
+channel automatically produces bounded experiments for handshake identity,
+Origin and subprotocol binding, per-message tenant and resource authorization,
+logout and revocation of existing channels, reconnect behavior, replay and
+ordering, alternate consumers, and binary-frame parser disagreements. These
+tests use only verified owned identities and resources and are capped at two
+connections and sixteen small frames per connection. They are not load tests.
 
 ### Start the campaign
 
@@ -302,6 +338,17 @@ through failed hypotheses without another user confirmation. It uses only
 owned accounts and disposable data. Every candidate still requires an enforcing
 negative control, authoritative readback, cleanup, and independent replay before
 reporting.
+
+Once signed in, Krineon can execute the browser workflow itself, including
+navigation, clicks and double-clicks, focus and hover states, filling and
+selecting fields, checking options, bounded key presses, submitting forms,
+waiting for application state, and preserving cookies and storage for the rest
+of that audit run. It inventories visible interactive controls and uses them to
+generate subsequent signed workflows, so the researcher does not need to drive
+the browser. Mutating actions
+remain bounded by the campaign's exact origins, action policies, request budget,
+fixture ownership, and cleanup contract. They do not require the researcher to
+manually operate the browser.
 
 ### Verify the generated contract
 

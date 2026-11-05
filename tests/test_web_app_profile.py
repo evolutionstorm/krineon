@@ -529,7 +529,7 @@ class WebAppProfileTests(unittest.TestCase):
             self.assertFalse(output["authorizationConfirmed"])
             launch = json.loads((campaign / "launch-plan.json").read_text())
             contract = WebCampaignContract.load(campaign / "web-campaign.json")
-            self.assertEqual(len(launch["tasks"]), 26)
+            self.assertEqual(len(launch["tasks"]), 28)
             self.assertTrue(
                 {
                     "web-cache-semantic-research",

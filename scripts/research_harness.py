@@ -2733,6 +2733,18 @@ The researcher supplied retained program rules and verified owned-account
 bindings. The exact contract is the standing authorization for every bounded
 experiment it admits. Do not pause for another user confirmation, downgrade an
 eligible lane to planning-only, or return merely because one request is denied.
+POST, PUT, PATCH, and DELETE are default research operations, not optional
+follow-ups. For each discovered state-changing operation that can be exercised
+with owned disposable fixtures, generate the baseline, bounded mutation,
+authoritative readback, and cleanup workflow and execute it without asking the
+user again. If cleanup is not yet known, first create or identify a reversible
+fixture; record the concrete blocker instead of silently skipping the verb.
+The browser is an execution surface, not a manual checkpoint. Consume its
+interactive-control inventory, generate signed declarative action sequences,
+and operate eligible application workflows without asking the researcher to
+click, type, navigate, or submit forms. Use the owned full-test request policy
+when the exact downstream mutation is selected at runtime by application code;
+keep its origin, path, methods, count, readback, and cleanup bounded.
 The coordinator must generate and sign the exact workflow automatically,
 execute it through the controlled broker, retain failed exchanges before
 cleanup, revise observer/extraction errors, and continue with the next distinct

@@ -135,7 +135,14 @@ class SecretStore:
         payload = value.encode("utf-8") if isinstance(value, str) else bytes(value)
         if not payload or len(payload) > MAX_SECRET_BYTES:
             raise WebContractError("secret value is empty or exceeds the import limit")
-        if kind not in {"bearer", "cookie", "api-key", "browser-session"}:
+        if kind not in {
+            "bearer",
+            "cookie",
+            "api-key",
+            "browser-session",
+            "username",
+            "password",
+        }:
             raise WebContractError("secret kind is unsupported")
         manifest = self._manifest()
         entries = manifest["secrets"].setdefault(reference, [])
@@ -215,7 +222,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--kind",
-        choices=("bearer", "cookie", "api-key", "browser-session"),
+        choices=(
+            "bearer",
+            "cookie",
+            "api-key",
+            "browser-session",
+            "username",
+            "password",
+        ),
     )
     parser.add_argument("--version")
     parser.add_argument("--expires-at")

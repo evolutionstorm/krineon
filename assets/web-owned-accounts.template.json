@@ -15,10 +15,21 @@
   "accounts": [
     {
       "id": "owner-admin",
-      "credentialRef": "secret://owner-admin",
-      "secretVersion": "owner-admin-v1",
-      "credentialType": "cookie",
-      "cookieName": "session",
+      "credentialType": "form-login",
+      "login": {
+        "usernameRef": "secret://owner-admin-username",
+        "usernameVersion": "owner-admin-username-v1",
+        "passwordRef": "secret://owner-admin-password",
+        "passwordVersion": "owner-admin-password-v1",
+        "startPath": "",
+        "usernameSelector": "",
+        "passwordSelector": "",
+        "submitSelector": "",
+        "successSelector": "",
+        "successPathPrefix": "",
+        "timeoutSeconds": 15,
+        "maxSubmitRequests": 3
+      },
       "expectedTenant": "owned-tenant",
       "roles": [
         "administrator"
@@ -31,7 +42,6 @@
         "/"
       ],
       "allowedTransports": [
-        "http",
         "browser"
       ],
       "verification": {

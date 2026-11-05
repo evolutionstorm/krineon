@@ -183,11 +183,41 @@ class WebAuthorizationReviewTests(unittest.TestCase):
             self.assertIn("POST", result["allowedMethods"])
             self.assertIn("PROPFIND", result["allowedMethods"])
             self.assertTrue(result["autoApproveBoundedWorkflows"])
+            self.assertFalse(result["perOperationUserConfirmation"])
+            self.assertEqual(
+                set(result["defaultMutationMethods"]),
+                {"POST", "PUT", "PATCH", "DELETE"},
+            )
 
             loaded = WebCampaignContract.load(contract)
             loaded.require_live_authorization()
             authorization = loaded.raw["authorization"]
             self.assertTrue(authorization["ownedFullTesting"]["enabled"])
+            self.assertFalse(
+                authorization["ownedFullTesting"]["perOperationUserConfirmation"]
+            )
+            self.assertEqual(
+                set(authorization["ownedFullTesting"]["defaultMutationMethods"]),
+                {"POST", "PUT", "PATCH", "DELETE"},
+            )
+            self.assertTrue(
+                authorization["ownedFullTesting"]["autonomousBrowserOperations"]
+            )
+            self.assertFalse(
+                authorization["ownedFullTesting"][
+                    "perBrowserActionUserConfirmation"
+                ]
+            )
+            self.assertTrue(
+                authorization["ownedFullTesting"]["websocketSpecialFocus"]
+            )
+            self.assertTrue(
+                authorization["ownedFullTesting"]["websocketAutomaticExperiments"]
+            )
+            self.assertEqual(
+                authorization["ownedFullTesting"]["reaClientReverseEngineering"],
+                "required-when-available",
+            )
             self.assertTrue(authorization["allowStateChangingOperations"])
             self.assertTrue(authorization["allowBrowserActions"])
             self.assertTrue(authorization["allowUploads"])

@@ -178,6 +178,22 @@
       "exploration": true
     },
     {
+      "id": "web-artifact-reverse-engineering",
+      "title": "Production client artifact reverse engineering",
+      "boundary": "source assumptions crossing generated and browser-loaded production artifacts",
+      "mechanism": "REA-assisted recovery of module, import, dynamic-load, API, WebSocket-handler, permission, and capability relationships",
+      "invariant": "the shipped client artifact and runtime must preserve the same security-relevant checker, consumer, representation, and authority relationships as the analyzed source",
+      "exploration": true
+    },
+    {
+      "id": "web-websocket-state-machine",
+      "title": "WebSocket handshake, message, and lifecycle state machine",
+      "boundary": "browser session authority crossing an upgraded connection, long-lived message consumer, reconnect, and alternate identity",
+      "mechanism": "handshake identity, Origin and subprotocol binding, per-message authorization, revocation, reconnect, replay, ordering, and binary-frame interpretation",
+      "invariant": "every handshake, message, and reconnect must enforce current identity, tenant, resource, permission version, and protocol structure",
+      "exploration": true
+    },
+    {
       "id": "web-capability-sharing",
       "title": "Links, shares, bundles, and delegated capabilities",
       "boundary": "server-issued or user-created capability crossing identity, workspace, expiry, revocation, or recipient boundaries",
@@ -270,6 +286,7 @@
       "web-contract-coordinator": ["campaign-foundation", "web-controlled-broker"],
       "web-identity-resource-inventory": ["web-authorization-isolation", "ingress-authority"],
       "web-api-browser-discovery": ["web-browser-api", "ingress-authority"],
+      "web-rea-client-reverse-engineering": ["web-artifact-reverse-engineering", "dependency-integration", "representation-parser"],
       "web-normal-workflow-acquisition": ["web-workflow-business-logic", "web-controlled-broker"],
       "web-authorization-oracles": ["web-authorization-isolation", "representation-parser"],
       "web-workflow-state-modeling": ["web-workflow-business-logic"],
@@ -279,6 +296,7 @@
       "web-upload-storage-discovery": ["web-upload-storage-processing", "representation-parser", "ingress-authority"],
       "web-async-lifecycle-discovery": ["web-async-job-lifecycle", "web-workflow-business-logic"],
       "web-protocol-differential-discovery": ["web-protocol-differential", "representation-parser", "ingress-authority"],
+      "web-websocket-state-machine": ["web-websocket-state-machine", "web-protocol-differential", "web-controlled-broker"],
       "web-cheapest-discriminators": ["blocker-alternative-route", "web-controlled-broker"],
       "web-business-logic-oracles": ["web-workflow-business-logic"],
       "web-business-sequence-planning": ["web-workflow-business-logic", "chain-composition"],

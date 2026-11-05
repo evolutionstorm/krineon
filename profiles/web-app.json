@@ -75,6 +75,21 @@
     },
     {
       "wave": 1,
+      "id": "web-rea-client-reverse-engineering",
+      "title": "REA-assisted production client reverse engineering",
+      "objective": "Immediately after the first approved Chromium artifact capture, automatically analyze the retained production client artifacts with an existing REA installation. Recover module, import, dynamic-loading, route, API, WebSocket-constructor, message-handler, permission, and capability relationships before deeper workflow experiments. Preserve complete REA Evidence, coverage, limitations, residual unknowns, and target/tool hashes. Treat every recovered relationship as an untrusted hypothesis until source analysis or an independent runtime observer confirms it. If REA is unavailable or incomplete, retain the exact blocker rather than inventing the missing graph.",
+      "deliverables": [
+        "campaign-bound REA JavaScript analysis specification",
+        "complete REA Evidence and value-free summary when available",
+        "client module, API, WebSocket, and permission relationship hypotheses",
+        "source-artifact-runtime differential experiments",
+        "explicit tool-unavailable, coverage, and residual-unknown records"
+      ],
+      "priority": 150,
+      "dependsOn": ["web-contract-coordinator", "web-api-browser-discovery"]
+    },
+    {
+      "wave": 1,
       "id": "web-normal-workflow-acquisition",
       "title": "Authoritative normal-workflow acquisition",
       "objective": "Execute the smallest legitimate owned-fixture lifecycle for each admitted high-value feature before anomaly testing. Bind exact operations, actor and effective actor, resource identity and generation, authoritative before/after readback, asynchronous completion or quiescence, and cleanup. Missing contracts create acquisition tasks; they do not become guessed endpoints or prose-only security routes.",
@@ -88,7 +103,28 @@
       "dependsOn": [
         "web-contract-coordinator",
         "web-identity-resource-inventory",
-        "web-api-browser-discovery"
+        "web-api-browser-discovery",
+        "web-rea-client-reverse-engineering"
+      ]
+    },
+    {
+      "wave": 1,
+      "id": "web-websocket-state-machine",
+      "title": "WebSocket handshake, message, and lifecycle security research",
+      "objective": "Treat every browser-observed WebSocket channel as a primary research surface. Use the retained protocol model, REA relationship hypotheses, and websocket-experiment-frontier.json to test handshake identity and session binding, Origin and subprotocol enforcement, per-message actor/resource/tenant authorization, logout or revocation of existing channels, reconnect behavior, replay and ordering, alternate consumers, and bounded binary-frame parser disagreements. Execute only against observed channels with verified owned identities and resources. Cap each experiment at two connections and sixteen small frames per connection; availability testing and unbounded frame fuzzing remain prohibited.",
+      "deliverables": [
+        "prioritized WebSocket experiment frontier",
+        "handshake and message-consumer authority map",
+        "session, permission-version, reconnect, replay, and ordering invariants",
+        "binary-frame parser differential experiments when observed",
+        "authoritative server-state controls and fresh independent replay requirements"
+      ],
+      "priority": 145,
+      "dependsOn": [
+        "web-contract-coordinator",
+        "web-api-browser-discovery",
+        "web-rea-client-reverse-engineering",
+        "web-normal-workflow-acquisition"
       ]
     },
     {
@@ -230,7 +266,8 @@
         "web-integration-callback-discovery",
         "web-upload-storage-discovery",
         "web-async-lifecycle-discovery",
-        "web-protocol-differential-discovery"
+        "web-protocol-differential-discovery",
+        "web-websocket-state-machine"
       ]
     },
     {

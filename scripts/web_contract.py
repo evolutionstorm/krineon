@@ -109,7 +109,13 @@ OPERATION_CLASSES = {
     "request-signing",
     "http-desynchronization",
 }
-CREDENTIAL_TYPES = {"bearer", "cookie", "api-key", "browser-session"}
+CREDENTIAL_TYPES = {
+    "bearer",
+    "cookie",
+    "api-key",
+    "browser-session",
+    "form-login",
+}
 CREDENTIAL_TRANSPORTS = {"http", "browser"}
 SECRET_REF = re.compile(r"^secret://[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
@@ -333,6 +339,7 @@ class IdentityPolicy:
     api_key_header: str
     cookie_name: str
     secret_version: str
+    login: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -467,6 +474,43 @@ class WebCampaignContract:
                 if full_testing.get("autoApproveBoundedWorkflows") is not True:
                     raise WebContractError(
                         "owned full testing requires bounded workflow auto-approval"
+                    )
+                if full_testing.get("perOperationUserConfirmation") is not False:
+                    raise WebContractError(
+                        "owned full testing must disable per-operation user confirmation"
+                    )
+                default_mutations = full_testing.get("defaultMutationMethods")
+                if not isinstance(default_mutations, list) or set(
+                    map(str, default_mutations)
+                ) != {"POST", "PUT", "PATCH", "DELETE"}:
+                    raise WebContractError(
+                        "owned full testing must enable POST, PUT, PATCH, and DELETE by default"
+                    )
+                if full_testing.get("mutationExecutionMode") != (
+                    "automatic-bounded-owned-fixtures"
+                ):
+                    raise WebContractError(
+                        "owned full testing requires automatic bounded mutation execution"
+                    )
+                if full_testing.get("autonomousBrowserOperations") is not True:
+                    raise WebContractError(
+                        "owned full testing requires autonomous browser operations"
+                    )
+                if full_testing.get("perBrowserActionUserConfirmation") is not False:
+                    raise WebContractError(
+                        "owned full testing must disable per-browser-action confirmation"
+                    )
+                if full_testing.get("websocketSpecialFocus") is not True:
+                    raise WebContractError(
+                        "owned full testing requires special WebSocket research focus"
+                    )
+                if full_testing.get("websocketAutomaticExperiments") is not True:
+                    raise WebContractError(
+                        "owned full testing requires automatic bounded WebSocket experiments"
+                    )
+                if full_testing.get("reaClientReverseEngineering") != "required-when-available":
+                    raise WebContractError(
+                        "owned full testing requires REA client reverse engineering when available"
                     )
                 manifest_path = safe_campaign_path(
                     self.path.parent,
@@ -656,10 +700,80 @@ class WebCampaignContract:
                 raise WebContractError(
                     f"identity {identity_id} credentialRef must use secret://"
                 )
+            credential_type = str(item.get("credentialType") or "bearer")
+            if credential_type not in CREDENTIAL_TYPES:
+                raise WebContractError(
+                    f"identity {identity_id} has an unsupported credentialType"
+                )
+            login_value = item.get("login")
+            login: dict[str, Any] | None = None
+            if credential_type == "form-login":
+                if credential_ref:
+                    raise WebContractError(
+                        f"identity {identity_id} form-login must use login secret references, not credentialRef"
+                    )
+                if not isinstance(login_value, dict):
+                    raise WebContractError(
+                        f"identity {identity_id} form-login requires a login object"
+                    )
+                login = json.loads(json.dumps(login_value))
+                for field in ("usernameRef", "passwordRef"):
+                    if not SECRET_REF.fullmatch(str(login.get(field) or "")):
+                        raise WebContractError(
+                            f"identity {identity_id} login.{field} must use secret://"
+                        )
+                for field in ("usernameVersion", "passwordVersion"):
+                    require_identifier(
+                        login.get(field), f"identities[{index}].login.{field}"
+                    )
+                start_path = str(login.get("startPath") or "")
+                if start_path and not start_path.startswith("/"):
+                    raise WebContractError(
+                        f"identity {identity_id} login.startPath must begin with /"
+                    )
+                for field in (
+                    "usernameSelector",
+                    "passwordSelector",
+                    "submitSelector",
+                    "successSelector",
+                ):
+                    selector = str(login.get(field) or "")
+                    if len(selector.encode("utf-8")) > 2048:
+                        raise WebContractError(
+                            f"identity {identity_id} login.{field} exceeds the selector limit"
+                        )
+                    login[field] = selector
+                success_path = str(login.get("successPathPrefix") or "")
+                if success_path and not success_path.startswith("/"):
+                    raise WebContractError(
+                        f"identity {identity_id} login.successPathPrefix must begin with /"
+                    )
+                login["startPath"] = start_path
+                login["successPathPrefix"] = success_path
+                login["timeoutSeconds"] = require_positive_int(
+                    login.get("timeoutSeconds", 15),
+                    f"identities[{index}].login.timeoutSeconds",
+                )
+                if int(login["timeoutSeconds"]) > 30:
+                    raise WebContractError(
+                        f"identity {identity_id} login.timeoutSeconds cannot exceed 30"
+                    )
+                login["maxSubmitRequests"] = require_positive_int(
+                    login.get("maxSubmitRequests", 3),
+                    f"identities[{index}].login.maxSubmitRequests",
+                )
+                if int(login["maxSubmitRequests"]) > 5:
+                    raise WebContractError(
+                        f"identity {identity_id} login.maxSubmitRequests cannot exceed 5"
+                    )
+            elif login_value not in (None, {}):
+                raise WebContractError(
+                    f"identity {identity_id} login is only valid for credentialType=form-login"
+                )
             allowed_origin_ids = frozenset(
                 str(value) for value in item.get("allowedOriginIds", [])
             )
-            if credential_ref and not allowed_origin_ids:
+            if (credential_ref or login is not None) and not allowed_origin_ids:
                 raise WebContractError(
                     f"identity {identity_id} requires allowedOriginIds for credential use"
                 )
@@ -674,11 +788,6 @@ class WebCampaignContract:
                     f"identity {identity_id} uses unknown credential origins: "
                     + ", ".join(sorted(unknown_origins))
                 )
-            credential_type = str(item.get("credentialType") or "bearer")
-            if credential_type not in CREDENTIAL_TYPES:
-                raise WebContractError(
-                    f"identity {identity_id} has an unsupported credentialType"
-                )
             allowed_paths = item.get("allowedPathPrefixes", ["/"])
             if not isinstance(allowed_paths, list) or not allowed_paths or any(
                 not isinstance(value, str) or not value.startswith("/")
@@ -687,6 +796,16 @@ class WebCampaignContract:
                 raise WebContractError(
                     f"identity {identity_id} requires allowedPathPrefixes"
                 )
+            if login is not None:
+                for field in ("startPath", "successPathPrefix"):
+                    path_value = str(login.get(field) or "")
+                    if path_value and not any(
+                        path_matches_prefix(path_value, str(prefix))
+                        for prefix in allowed_paths
+                    ):
+                        raise WebContractError(
+                            f"identity {identity_id} login.{field} is outside allowedPathPrefixes"
+                        )
             allowed_transports = frozenset(
                 str(value) for value in item.get("allowedTransports", ["http"])
             )
@@ -695,6 +814,10 @@ class WebCampaignContract:
             ):
                 raise WebContractError(
                     f"identity {identity_id} has invalid allowedTransports"
+                )
+            if credential_type == "form-login" and allowed_transports != {"browser"}:
+                raise WebContractError(
+                    f"identity {identity_id} form-login is valid only for browser transport"
                 )
             expires_value = item.get("expiresAt")
             expires_at = (
@@ -759,6 +882,7 @@ class WebCampaignContract:
                 api_key_header=api_key_header,
                 cookie_name=cookie_name,
                 secret_version=secret_version,
+                login=login,
             )
 
         if isinstance(full_testing, dict) and full_testing.get("enabled") is True:
@@ -1253,6 +1377,7 @@ class WebCampaignContract:
         if operation == "browser" and operation_class not in {
             "browser-discovery",
             "browser-action",
+            "credential-refresh",
         }:
             raise WebContractError("browser steps must use a browser operation class")
         if operation == "nuclei" and operation_class != "nuclei-read":
@@ -1270,7 +1395,7 @@ class WebCampaignContract:
             raise WebContractError("state-changing methods cannot be labelled read-only")
         if operation == "browser" and authorization.get("allowBrowserNavigation") is not True:
             raise WebContractError("browser navigation is not authorized")
-        if operation_class == "browser-action" and authorization.get(
+        if operation_class in {"browser-action", "credential-refresh"} and authorization.get(
             "allowBrowserActions"
         ) is not True:
             raise WebContractError("browser actions are not authorized")
@@ -1649,19 +1774,37 @@ def _load_owned_accounts_manifest(
                 f"owned account {account_id} references unknown origins: "
                 + ", ".join(sorted(unknown_origins))
             )
+        credential_type = str(account.get("credentialType") or "bearer")
         credential_ref = str(account.get("credentialRef") or "")
-        if not credential_ref:
-            raise WebContractError(
-                f"owned account {account_id} requires a private credentialRef"
-            )
-        if not SECRET_REF.fullmatch(credential_ref):
-            raise WebContractError(
-                f"owned account {account_id} must use a secret:// credential reference"
-            )
-        if credential_ref and not str(account.get("secretVersion") or "").strip():
-            raise WebContractError(
-                f"owned account {account_id} requires secretVersion"
-            )
+        if credential_type == "form-login":
+            login = account.get("login")
+            if not isinstance(login, dict):
+                raise WebContractError(
+                    f"owned account {account_id} form-login requires login metadata"
+                )
+            for field in ("usernameRef", "passwordRef"):
+                if not SECRET_REF.fullmatch(str(login.get(field) or "")):
+                    raise WebContractError(
+                        f"owned account {account_id} login.{field} must use secret://"
+                    )
+            for field in ("usernameVersion", "passwordVersion"):
+                if not str(login.get(field) or "").strip():
+                    raise WebContractError(
+                        f"owned account {account_id} login.{field} is required"
+                    )
+        else:
+            if not credential_ref:
+                raise WebContractError(
+                    f"owned account {account_id} requires a private credentialRef"
+                )
+            if not SECRET_REF.fullmatch(credential_ref):
+                raise WebContractError(
+                    f"owned account {account_id} must use a secret:// credential reference"
+                )
+            if not str(account.get("secretVersion") or "").strip():
+                raise WebContractError(
+                    f"owned account {account_id} requires secretVersion"
+                )
         if not str(account.get("expectedTenant") or "").strip():
             raise WebContractError(
                 f"owned account {account_id} requires an expectedTenant"
@@ -1832,6 +1975,14 @@ def activate_owned_full_testing(
                 "enabled": True,
                 "ownedAccountsOnly": True,
                 "autoApproveBoundedWorkflows": True,
+                "perOperationUserConfirmation": False,
+                "defaultMutationMethods": ["POST", "PUT", "PATCH", "DELETE"],
+                "mutationExecutionMode": "automatic-bounded-owned-fixtures",
+                "autonomousBrowserOperations": True,
+                "perBrowserActionUserConfirmation": False,
+                "websocketSpecialFocus": True,
+                "websocketAutomaticExperiments": True,
+                "reaClientReverseEngineering": "required-when-available",
                 "accountManifest": manifest_relative,
                 "accountManifestSha256": manifest_sha,
                 "accountIds": [str(account["id"]) for account in accounts],
@@ -1908,6 +2059,13 @@ def activate_owned_full_testing(
         "accountIds": authorization["ownedFullTesting"]["accountIds"],
         "allowedMethods": sorted(OWNED_FULL_TEST_METHODS),
         "autoApproveBoundedWorkflows": True,
+        "perOperationUserConfirmation": False,
+        "defaultMutationMethods": ["POST", "PUT", "PATCH", "DELETE"],
+        "autonomousBrowserOperations": True,
+        "perBrowserActionUserConfirmation": False,
+        "websocketSpecialFocus": True,
+        "websocketAutomaticExperiments": True,
+        "reaClientReverseEngineering": "required-when-available",
         "trafficExecuted": False,
     }
 

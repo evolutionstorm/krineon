@@ -58,7 +58,20 @@
     ],
     "unknownEffectPolicy": "block-until-reviewed",
     "ownedFullTesting": {
-      "enabled": false
+      "enabled": false,
+      "perOperationUserConfirmation": false,
+      "defaultMutationMethods": [
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "mutationExecutionMode": "automatic-bounded-owned-fixtures",
+      "autonomousBrowserOperations": true,
+      "perBrowserActionUserConfirmation": false,
+      "websocketSpecialFocus": true,
+      "websocketAutomaticExperiments": true,
+      "reaClientReverseEngineering": "required-when-available"
     },
     "allowCacheMutation": false,
     "allowDeserializationExperiments": false,
