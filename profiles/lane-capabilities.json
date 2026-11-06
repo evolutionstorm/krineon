@@ -66,6 +66,7 @@
       ],
       "laneIds": [
         "static-analysis-lead-generation",
+        "state-machine-analysis",
         "public-ingress-map",
         "execution-sink-backtrace",
         "memory-lifetime-invariants",
@@ -73,6 +74,7 @@
         "capability-code-loading-invariants",
         "dependency-boundary-audit",
         "v8-static-analysis-lead-generation",
+        "v8-state-machine-analysis",
         "jit-compiler-invariants",
         "gc-object-lifetime",
         "wasm-parser-compiler",

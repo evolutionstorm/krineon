@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "target": "replace-with-target",
+  "revision": "replace-with-pinned-revision",
+  "createdAt": "",
+  "updatedAt": "",
+  "status": "uninitialized",
+  "discovery": {
+    "schemaVersion": 1,
+    "extractor": "krineon-universal-state-machine-source-v1",
+    "generatedAt": "",
+    "sourceRoot": "",
+    "revision": "replace-with-pinned-revision",
+    "mode": "pending",
+    "filesScanned": 0,
+    "bytesScanned": 0,
+    "filesSkippedByLimit": 0,
+    "languages": {},
+    "excludedDirectories": [],
+    "skippedFiles": [],
+    "candidateCountBeforeLimit": 0,
+    "candidates": [],
+    "limitations": []
+  },
+  "machines": [],
+  "coverage": {
+    "explicitMachinesReviewed": 0,
+    "implicitMachinesReviewed": 0,
+    "retryTransitionsReviewed": 0,
+    "concurrentTransitionsReviewed": 0,
+    "reachableInvalidStates": 0,
+    "unresolvedMachines": [],
+    "sourceFilesScanned": 0,
+    "sourceLanguagesObserved": [],
+    "unpromotedSourceCandidates": 0
+  }
+}

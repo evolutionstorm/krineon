@@ -36,6 +36,21 @@
     },
     {
       "wave": 1,
+      "id": "state-machine-analysis",
+      "title": "Explicit and implicit state-machine inventory",
+      "objective": "At analysis start, run the universal target-neutral extractor over every supported language in the pinned source, then semantically develop its unpromoted candidates and independently identified gaps. Extract declared and implicit state machines from source, tests, assertions, supported runtime, and production entrypoints without assuming an SDK, provider, framework, or language. Document concrete states, invariants, guarded transitions, failure state, retries, idempotency or identity binding, cancellation, object generation, shared state, locking, and relevant interleavings in state-machine-inventory.json. Resolve every branch on any claimed invalid path and retain runtime evidence and enforcing controls before calling an invalid state or transition reachable.",
+      "deliverables": [
+        "populated and schema-valid state-machine-inventory.json",
+        "transition tables for explicit and implicit machines",
+        "retry, cancellation, and concurrency transition review",
+        "evidence-bound reachable-invalid-state entries and refuted controls",
+        "unresolved transitions converted into falsifiable experiments"
+      ],
+      "priority": 145,
+      "dependsOn": ["coordinator-setup"]
+    },
+    {
+      "wave": 1,
       "id": "static-analysis-lead-generation",
       "title": "Executable differential-witness lead generator",
       "objective": "Use source reading, Trailmark, language frontends, Joern, or Tree-sitter only to identify candidate producer/consumer pairs. Queue nothing from names or static hits. Build two pinned consumers, run both on the same hashed inputs through scripts/differential_witness.py, retain an equal control and a recorded disagreement, and pass those witness specs to scripts/static_analysis_pipeline.py. Bind any Z3 spec to an exact pinned-source fragment with an honest extraction label. Ingest only executed differentials and source-bound constraints with command and artifact provenance.",

@@ -43,6 +43,36 @@ that absence as proof that the mechanism is irrelevant. Inferred facts may
 prioritize an acquisition experiment but cannot grant runtime authority. Read
 [capability-conditioned lane activation](references/capability-lane-activation.md).
 
+When a campaign needs an SDK, API client, service integration, or other owned
+application fixture, use the provider-neutral
+[application fixture broker](references/sdk-fixture-broker.md). The coordinator
+defines the hash-pinned command, private secret-to-environment bindings, exact
+egress endpoints, typed operations, payload limits, readiness event, and
+budgets. Workers receive only the fixture ID and admitted operations. Do not
+give a worker the broker token, secret values, configuration-writing authority,
+or an unrestricted shell merely because the application needs credentials.
+
+At the start of every campaign, build and continuously refine the single
+`state-machine-inventory.json` described in
+[state-machine analysis](references/state-machine-analysis.md). Find explicit
+machines and implicit lifecycle, retry, cache, parser, protocol, authorization,
+cancellation, ownership, and concurrency machines. Record concrete states,
+target-owned invariants, guarded transitions, failure state, retry and
+idempotency behavior, shared state, locking, and relevant interleavings.
+Require a complete branch-resolved source path or controlled runtime witness
+before calling an invalid state or transition reachable. Include the required
+history, retry sequence, or concurrency schedule and an enforcing control.
+Workers submit locked merge proposals; they do not overwrite the campaign
+inventory or promote theoretical state combinations.
+
+This extraction is universal, not tied to an SDK, provider, framework, or
+language. When a pinned checkout is available, run the bounded universal source
+extractor at campaign initialization and use its `source-signal-only`
+candidates to assign deeper semantic work. For unsupported or generated code,
+record the coverage gap and create an acquisition or runtime experiment. Never
+interpret an absent lexical candidate as proof that the target has no relevant
+state machine.
+
 On Codex, invoke `$krineon`, keep the root agent as coordinator, and read the
 [Codex runtime adapter](references/codex.md) before launching workers. Use
 `list_agents` for capacity, `spawn_agent` with `fork_turns="none"` by default,

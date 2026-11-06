@@ -10,6 +10,14 @@
       "exploration": false
     },
     {
+      "id": "state-machine-invariants",
+      "title": "Explicit and implicit state-machine analysis",
+      "boundary": "target state, retry, lifecycle, and concurrency transitions",
+      "mechanism": "guarded transition extraction, invariant mapping, retry semantics, shared-state interleavings, and evidence-bound invalid-state reachability",
+      "invariant": "every reachable transition preserves the target-owned state invariants for the same object, generation, principal, and execution history",
+      "exploration": true
+    },
+    {
       "id": "ingress-authority",
       "title": "External ingress and authority transitions",
       "boundary": "untrusted input to privileged parser, handler, or principal",
@@ -245,6 +253,7 @@
   "profileMappings": {
     "critical-rce": {
       "coordinator-setup": ["campaign-foundation"],
+      "state-machine-analysis": ["state-machine-invariants", "representation-parser", "memory-lifetime"],
       "static-analysis-lead-generation": ["static-lead-generation"],
       "public-ingress-map": ["ingress-authority"],
       "execution-sink-backtrace": ["execution-sink-backtrace"],
@@ -265,6 +274,7 @@
     },
     "chrome-v8": {
       "chrome-v8-setup": ["campaign-foundation"],
+      "v8-state-machine-analysis": ["state-machine-invariants", "jit-optimization", "memory-lifetime"],
       "v8-static-analysis-lead-generation": ["static-lead-generation"],
       "jit-compiler-invariants": ["jit-optimization"],
       "gc-object-lifetime": ["memory-lifetime"],
@@ -284,6 +294,7 @@
     },
     "web-app": {
       "web-contract-coordinator": ["campaign-foundation", "web-controlled-broker"],
+      "web-state-machine-analysis": ["state-machine-invariants", "web-workflow-business-logic", "web-protocol-differential"],
       "web-identity-resource-inventory": ["web-authorization-isolation", "ingress-authority"],
       "web-api-browser-discovery": ["web-browser-api", "ingress-authority"],
       "web-rea-client-reverse-engineering": ["web-artifact-reverse-engineering", "dependency-integration", "representation-parser"],

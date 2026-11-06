@@ -10,6 +10,14 @@
       "Pinned-revision file and line or symbol references"
     ],
     "dependenciesAnalyzed": [],
+    "stateMachineAnalysis": {
+      "inventory": "state-machine-inventory.json",
+      "machinesReviewed": [],
+      "transitionsReviewed": [],
+      "retryPathsReviewed": [],
+      "concurrencyPathsReviewed": [],
+      "reachableInvalidConclusions": []
+    },
     "evidence": [
       "Retained artifact, log, harness, or exact source proof"
     ],

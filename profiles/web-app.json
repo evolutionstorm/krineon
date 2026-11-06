@@ -40,6 +40,21 @@
     },
     {
       "wave": 1,
+      "id": "web-state-machine-analysis",
+      "title": "Application and protocol state-machine inventory",
+      "objective": "Beginning with contract validation and the first legitimate application observations, model explicit workflows and implicit session, resource, job, cache, upload, parser, callback, WebSocket, SSE, retry, cancellation, and concurrency state machines. Document states, invariants, guarded transitions, actors, identity and generation binding, retry behavior, shared state, and relevant interleavings in state-machine-inventory.json. Use owned fixtures and authoritative readback to prove an invalid state or transition is reachable; status differences or imagined request orderings are not evidence.",
+      "deliverables": [
+        "populated and schema-valid state-machine-inventory.json",
+        "application, asynchronous-job, and protocol transition tables",
+        "retry, reconnect, cancellation, and bounded concurrency review",
+        "authoritatively observed invalid transitions and enforcing controls",
+        "unresolved transitions converted into bounded one-variable experiments"
+      ],
+      "priority": 145,
+      "dependsOn": ["web-contract-coordinator"]
+    },
+    {
+      "wave": 1,
       "id": "web-identity-resource-inventory",
       "title": "Identity, tenant, resource, and authority inventory",
       "objective": "After the required JavaScript/API extraction and endpoint catalog stage, use scripts/web_surface_map.py and scripts/web_workflow_model.py over supplied requests, browser observations, the measured endpoint catalog, API descriptions, source, and bounded read-only discovery to connect owned identities, roles, tenants, resources, lifecycle states, representation boundaries, and privileged actions. Label evidence confidence and track actor x resource x action x state coverage. Do not infer authorization from UI visibility, HTTP method, URL, credential, capture, or route name.",

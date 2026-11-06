@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 2,
+  "fixtureId": "owned-application-fixture",
+  "applicationId": "replace-with-application-or-sdk-name",
+  "campaignRoot": "/absolute/path/to/krineon-campaigns/owned-application",
+  "workingDirectory": "/absolute/path/to/owned-fixture",
+  "command": {
+    "executable": "node",
+    "arguments": ["fixture.mjs"]
+  },
+  "artifacts": [
+    {"path": "fixture.mjs", "sha256": "REPLACE_WITH_SHA256"},
+    {"path": "package-lock.json", "sha256": "REPLACE_WITH_SHA256"}
+  ],
+  "secrets": [
+    {
+      "store": "/private/path/outside/the/worktrees/application-secrets",
+      "reference": "secret://owned-application-token",
+      "version": null,
+      "environment": "APPLICATION_TOKEN",
+      "prefix": "",
+      "pattern": null,
+      "minLength": 1,
+      "maxLength": 16384
+    }
+  ],
+  "environment": {"FIXTURE_MODE": "owned-research"},
+  "approvedEndpoints": [
+    {"host": "api.example.test", "port": 443, "allowPrivate": false}
+  ],
+  "proxy": {"exportStandardEnvironment": true},
+  "protocol": {
+    "rpcPrefix": "KRINEON_RPC ",
+    "readyEvent": "ready",
+    "shutdownOperation": "shutdown"
+  },
+  "operations": {
+    "status": {
+      "kind": "broker",
+      "maxCalls": 0,
+      "maxPayloadBytes": 2,
+      "allowedFields": [],
+      "requiredFields": []
+    },
+    "owned-operation": {
+      "kind": "fixture",
+      "maxCalls": 25,
+      "maxPayloadBytes": 8192,
+      "allowedFields": ["resourceId", "input"],
+      "requiredFields": ["resourceId"],
+      "fieldTypes": {"resourceId": "string", "input": "object"}
+    },
+    "restart": {
+      "kind": "broker",
+      "maxCalls": 8,
+      "maxPayloadBytes": 2,
+      "allowedFields": [],
+      "requiredFields": []
+    },
+    "shutdown": {
+      "kind": "broker",
+      "maxCalls": 0,
+      "maxPayloadBytes": 2,
+      "allowedFields": [],
+      "requiredFields": []
+    }
+  },
+  "startupTimeoutSeconds": 30,
+  "operationTimeoutSeconds": 15,
+  "budgets": {
+    "maxOperations": 250,
+    "maxProxyConnections": 256,
+    "maxProxyBytes": 134217728
+  }
+}

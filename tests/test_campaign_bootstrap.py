@@ -115,14 +115,15 @@ class CampaignBootstrapTests(unittest.TestCase):
             self.assertEqual(campaign_json["profile"], "chrome-v8")
             launch = json.loads((campaign / "launch-plan.json").read_text())
             self.assertEqual(launch["profile"], "chrome-v8")
-            self.assertEqual(len(launch["tasks"]), 17)
+            self.assertEqual(len(launch["tasks"]), 18)
+            self.assertTrue((campaign / "state-machine-inventory.json").is_file())
             self.assertTrue((campaign / "tools" / "tool-probe.json").is_file())
             self.assertTrue((campaign / "AUTHORIZATION.md").is_file())
             self.assertTrue((campaign / "orchestration.db").is_file())
 
             with sqlite3.connect(campaign / "orchestration.db") as connection:
                 count = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-            self.assertEqual(count, 17)
+            self.assertEqual(count, 18)
 
             hashed = subprocess.run(
                 [sys.executable, str(HARNESS), "hash", str(campaign)],

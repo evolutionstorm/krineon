@@ -1053,7 +1053,12 @@ class HarnessTests(unittest.TestCase):
             self.assertTrue((campaign / "capability-facts.json").is_file())
             self.run_cli("plan", str(campaign))
             launch = json.loads((campaign / "launch-plan.json").read_text())
-            self.assertEqual(len(launch["tasks"]), 18)
+            self.assertEqual(len(launch["tasks"]), 19)
+            state_inventory = json.loads(
+                (campaign / "state-machine-inventory.json").read_text()
+            )
+            self.assertEqual(state_inventory["status"], "uninitialized")
+            self.assertEqual(state_inventory["machines"], [])
             activation_path = campaign / launch["capabilityActivation"]["path"]
             self.assertTrue(activation_path.is_file())
             self.assertEqual(
@@ -1161,7 +1166,7 @@ class HarnessTests(unittest.TestCase):
             self.run_cli("plan", str(campaign))
             launch = json.loads((campaign / "launch-plan.json").read_text())
             self.assertEqual(launch["profile"], "chrome-v8")
-            self.assertEqual(len(launch["tasks"]), 17)
+            self.assertEqual(len(launch["tasks"]), 18)
             tasks = {item["taskId"]: item for item in launch["tasks"]}
             self.assertEqual(
                 tasks["structured-js-fuzzing"]["dependsOn"],
@@ -1568,7 +1573,7 @@ class HarnessTests(unittest.TestCase):
 
             wave_one = self.run_cli("claim", str(campaign), "worker-a", "--json")
             self.assertEqual(
-                json.loads(wave_one.stdout)["lane"], "public-ingress-map"
+                json.loads(wave_one.stdout)["lane"], "state-machine-analysis"
             )
 
     def test_worker_allocation_reserves_turn_for_less_loaded_active_agent(self) -> None:
@@ -2900,7 +2905,7 @@ class HarnessTests(unittest.TestCase):
             first = json.loads(
                 self.run_cli("claim", str(campaign), "worker-b", "--json").stdout
             )
-            self.assertEqual(first["taskId"], "public-ingress-map")
+            self.assertEqual(first["taskId"], "state-machine-analysis")
             refused = json.loads(
                 self.run_cli(
                     "claim", str(campaign), "worker-a-alias", "--json", expected=3
@@ -2908,15 +2913,15 @@ class HarnessTests(unittest.TestCase):
             )
             self.assertFalse(refused["claimed"])
             self.assertEqual(refused["reason"], "agent-already-holds-running-task")
-            self.assertEqual(refused["taskId"], "public-ingress-map")
+            self.assertEqual(refused["taskId"], "state-machine-analysis")
             second = json.loads(
                 self.run_cli("claim", str(campaign), "worker-c", "--json").stdout
             )
-            self.assertEqual(second["taskId"], "execution-sink-backtrace")
+            self.assertEqual(second["taskId"], "public-ingress-map")
             third = json.loads(
                 self.run_cli("claim", str(campaign), "worker-d", "--json").stdout
             )
-            self.assertEqual(third["taskId"], "capability-code-loading-invariants")
+            self.assertEqual(third["taskId"], "execution-sink-backtrace")
             self.run_cli("claim", str(campaign), "worker-a", "--json", expected=3)
             capped = json.loads(
                 self.run_cli("orchestration-status", str(campaign), "--json").stdout
@@ -2998,10 +3003,10 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(
                 {item["taskId"] for item in claimed},
                 {
+                    "state-machine-analysis",
                     "public-ingress-map",
                     "execution-sink-backtrace",
                     "capability-code-loading-invariants",
-                    "parser-representation-invariants",
                     "dependency-boundary-audit",
                 },
             )

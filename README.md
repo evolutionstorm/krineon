@@ -99,6 +99,17 @@ Burp Suite MCP must already be enabled in Codex, OpenCode, or OMP. Krineon
 does not install or configure Burp, bypass bot protection, or grant tools more
 scope than the signed campaign contract.
 
+### Application and SDK fixtures
+
+For an authorized service campaign, Krineon can run a hash-pinned owned SDK,
+API client, integration, or test application through a provider-neutral secret
+and egress broker. The configuration defines multiple private secret bindings,
+exact host and port allowlists, typed operations, payload limits, per-operation
+budgets, readiness, restart, cleanup, and replay evidence. Workers receive only
+an opaque fixture ID and bounded operations. Existing LaunchDarkly schema-v1
+fixtures remain compatible. See the
+[application fixture broker](references/sdk-fixture-broker.md).
+
 ## Supported hosts
 
 Krineon supports these native 64-bit hosts:
@@ -420,47 +431,55 @@ Krineon runs the following campaign:
    function-scoped def-use, aliases and property mutations, control candidates,
    cross-module calls, request representation changes, authority, ownership,
    lifetime, source maps, and runtime identity.
-4. Moves campaigns through machine-enforced architecture, threat-model,
+4. Maintains one evidence-bound state-machine inventory from the first analysis
+   pass. A bounded, language-neutral extractor seeds unpromoted candidates from
+   any pinned source tree; agents then resolve scope, data flow, guards,
+   ownership, identity, and runtime behavior. The inventory records explicit
+   and implicit states, invariants, guarded transitions, retry behavior,
+   cancellation, object generations, shared state, and concurrency
+   interleavings. Invalid states advance only when a complete source path or
+   controlled runtime witness proves reachability.
+5. Moves campaigns through machine-enforced architecture, threat-model,
    planning, research, reconciliation, adversarial-review, production-critic,
    confirmation, replay, and reporting stages. Partial and blocked stages retain
    their exact reason.
-5. Reconciles immutable source, runtime, browser, and fuzzing observations by
+6. Reconciles immutable source, runtime, browser, and fuzzing observations by
    mechanism and generates competing explanations. Runtime experiments require
    coordinator-owned baseline, enforcing-negative, positive, and automatic
    interpretation contracts.
-6. Models each primitive as a typed capability and marks a connection feasible,
+7. Models each primitive as a typed capability and marks a connection feasible,
    unknown, or impossible. A chain exists only when one execution satisfies
    context, object generation, state, lifetime, ordering, deployment, and
    acquisition conditions together.
-7. Treats login, cache priming, ownership transfer, worker reuse, allocation,
+8. Treats login, cache priming, ownership transfer, worker reuse, allocation,
    release, reallocation, and victim reads as bounded, history-preserving state
    sequences. Browser and HTTP sessions are bound to exact actors, tenants,
    roles, and permission generations.
-8. Launches independent research routes and prevents one approach family from
+9. Launches independent research routes and prevents one approach family from
    consuming all worker capacity.
-9. Promotes leads through observation, source-supported mechanism, runtime
+10. Promotes leads through observation, source-supported mechanism, runtime
    differential, verified primitive, compatible chain edge, and complete
    terminal. Every hypothesis receives an explicit disposition. Per-mechanism
    work limits and evidence expiry keep the active frontier bounded.
-10. Rebuilds a versioned campaign-wide capability graph and assigns its
+11. Rebuilds a versioned campaign-wide capability graph and assigns its
    highest-value missing-link experiment by boundary relevance, uncertainty,
    shared usefulness, and measured cost.
-11. Activates lane context from measured source, tool, artifact, browser, MCP,
+12. Activates lane context from measured source, tool, artifact, browser, MCP,
     and authorization capabilities. Missing capabilities keep a lane visible
     for planning without granting execution authority.
-12. Compares evidence-bound fingerprints across independent observers and
+13. Compares evidence-bound fingerprints across independent observers and
     one-dimensional scope changes. Disagreements create controlled experiments,
     not version or vulnerability verdicts.
-13. Requires separate adversarial and production-viability reviews. Reviewers
+14. Requires separate adversarial and production-viability reviews. Reviewers
     receive role-isolated context without the originator's verdict, and source
     citations remain bound to exact revision, file, line, and snippet hashes.
-14. Tests promising chains against supported release or production-equivalent
+15. Tests promising chains against supported release or production-equivalent
     builds in an owned environment.
-15. Feeds coverage plateaus, invariant observations, and minimized stack
+16. Feeds coverage plateaus, invariant observations, and minimized stack
    clusters back into the next harness, grammar, or replay decision.
-16. Requires coordinator-signed experiments, recomputed raw observations, an
+17. Requires coordinator-signed experiments, recomputed raw observations, an
    enforcing negative control, and fresh-process adversarial replay.
-17. Produces a source-audit report package only when complete Critical/RCE
+18. Produces a source-audit report package only when complete Critical/RCE
     impact is demonstrated. The separate web profile uses program-defined High
     or Critical impact and application-specific invariant gates.
 
@@ -577,6 +596,7 @@ Prefer disposable local virtual machines or containers for unsafe targets.
 - [Capability-conditioned lane activation](references/capability-lane-activation.md)
 - [Runtime feedback loop](references/runtime-feedback.md)
 - [Execution-boundary and typed chain reasoning](references/chain-reasoning.md)
+- [Explicit and implicit state-machine analysis](references/state-machine-analysis.md)
 - [Held-out multi-stage evaluation](references/multistage-evaluation.md)
 - [Chrome and V8 campaigns](references/chrome-v8.md)
 - [workerd native lifetime research](references/workerd-native.md)

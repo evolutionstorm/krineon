@@ -22,6 +22,14 @@
     "toolInventory": "tools/tool-inventory.json",
     "fingerprintAnalysis": "evidence/fingerprint-analysis.json"
   },
+  "stateMachineInventory": {
+    "path": "state-machine-inventory.json",
+    "requiredAtAnalysisStart": true,
+    "universalSourceExtraction": true,
+    "candidateSignalsAreNotFindings": true,
+    "requireRetryAndConcurrencyReview": true,
+    "reachableInvalidRequiresEvidence": true
+  },
   "discoveryPolicy": {
     "firstPrinciplesOnly": true,
     "prohibitedDiscoveryInputs": [

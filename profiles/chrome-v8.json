@@ -32,6 +32,21 @@
     },
     {
       "wave": 1,
+      "id": "v8-state-machine-analysis",
+      "title": "Engine and browser state-machine inventory",
+      "objective": "At analysis start, extract explicit and implicit state machines across parsing, tiering, feedback, deoptimization, GC, handles, backing stores, termination, task cancellation, IPC, and sandbox capability lifecycles. Record states, target-owned invariants, guarded transitions, retries, concurrent interleavings, object generations, and actually reachable invalid states in state-machine-inventory.json. Do not infer reachability from a theoretical state combination; retain the complete source path or runtime trace and controls.",
+      "deliverables": [
+        "populated and schema-valid state-machine-inventory.json",
+        "engine and browser transition tables",
+        "GC, task, retry, cancellation, and concurrency schedules",
+        "evidence-bound invalid transitions and refuted controls",
+        "unresolved transitions converted into executable differential hypotheses"
+      ],
+      "priority": 145,
+      "dependsOn": ["chrome-v8-setup"]
+    },
+    {
+      "wave": 1,
       "id": "v8-static-analysis-lead-generation",
       "title": "Executable V8 differential-witness lead generator",
       "objective": "Use the pinned V8 source and optional structural tools to nominate incompatible consumers, but queue no syntax census or CPG name hit. Run two exact consumers or tiers on the same hashed JavaScript, Wasm, or protocol input through scripts/differential_witness.py, require an equal control and a recorded disagreement, and ingest only the executed witness. Bind any Z3 model to exact pinned-source expressions and feed its concrete output into both consumers.",

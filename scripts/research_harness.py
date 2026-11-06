@@ -67,6 +67,11 @@ try:
     from .web_contract import WebCampaignContract
     from .web_budget import SharedWebBudget
     from .web_workflow import verify as verify_web_workflow
+    from .state_machine_inventory import (
+        InventoryError,
+        discover_state_machines,
+        validate_inventory,
+    )
 except ImportError:  # Direct script execution.
     from chain_reasoning import (
         analyze_chain,
@@ -104,6 +109,11 @@ except ImportError:  # Direct script execution.
     from web_contract import WebCampaignContract
     from web_budget import SharedWebBudget
     from web_workflow import verify as verify_web_workflow
+    from state_machine_inventory import (
+        InventoryError,
+        discover_state_machines,
+        validate_inventory,
+    )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -204,6 +214,11 @@ WEB_REPORTABLE_GATES = WEB_CANDIDATE_GATES + (
 )
 
 PROFILE_NAMES = ("critical-rce", "chrome-v8", "web-app")
+STATE_MACHINE_LANES = {
+    "state-machine-analysis",
+    "v8-state-machine-analysis",
+    "web-state-machine-analysis",
+}
 
 
 def approach_family_config() -> dict[str, Any]:
@@ -1516,6 +1531,53 @@ def validate_completed_result(
     return validate_research_leads(root, task_result)
 
 
+def validate_state_machine_task_result(
+    root: Path, task_result: dict[str, Any]
+) -> None:
+    analysis = task_result.get("stateMachineAnalysis")
+    if not isinstance(analysis, dict):
+        raise SystemExit(
+            "state-machine analysis task requires taskResult.stateMachineAnalysis"
+        )
+    if analysis.get("inventory") != "state-machine-inventory.json":
+        raise SystemExit(
+            "stateMachineAnalysis.inventory must be state-machine-inventory.json"
+        )
+    machines_reviewed = require_string_list(
+        analysis.get("machinesReviewed"),
+        "taskResult.stateMachineAnalysis.machinesReviewed",
+    )
+    require_string_list(
+        analysis.get("transitionsReviewed"),
+        "taskResult.stateMachineAnalysis.transitionsReviewed",
+    )
+    for field in (
+        "retryPathsReviewed",
+        "concurrencyPathsReviewed",
+        "reachableInvalidConclusions",
+    ):
+        values = analysis.get(field)
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value.strip() for value in values
+        ):
+            raise SystemExit(
+                f"taskResult.stateMachineAnalysis.{field} must be a list of strings"
+            )
+    try:
+        inventory = validate_inventory(
+            read_json(root / "state-machine-inventory.json"), allow_empty=False
+        )
+    except (InventoryError, OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"state-machine inventory validation failed: {error}") from error
+    inventory_ids = {machine["id"] for machine in inventory["machines"]}
+    unknown = set(machines_reviewed).difference(inventory_ids)
+    if unknown:
+        raise SystemExit(
+            "stateMachineAnalysis references unknown machines: "
+            + ", ".join(sorted(unknown))
+        )
+
+
 def coordinator_reexecute_result(
     root: Path,
     result: dict[str, Any],
@@ -2476,6 +2538,7 @@ def provision_workspace(
         ("PROGRAM_SCOPE.md", "PROGRAM_SCOPE.md"),
         ("approach-registry.json", "KRINEON_APPROACH_REGISTRY.json"),
         ("web-campaign.json", "KRINEON_WEB_CAMPAIGN.json"),
+        ("state-machine-inventory.json", "KRINEON_STATE_MACHINE_INVENTORY.json"),
     ):
         source = root / source_name
         if source.is_file():
@@ -2490,6 +2553,7 @@ def provision_workspace(
         "approach-families.md",
         "dependencies.md",
         "rediscovery-benchmark.md",
+        "state-machine-analysis.md",
     ]
     if campaign.get("profile") == "chrome-v8":
         reference_names.extend(
@@ -2857,6 +2921,24 @@ Read `KRINEON_REFERENCES/dependencies.md` and `KRINEON_DEPENDENCIES.json` before
 assuming a library boundary ends the chain. Pinned dependency worktrees, when
 present, are under `KRINEON_THIRD_PARTY/`.
 
+## State-machine analysis
+
+Read `KRINEON_REFERENCES/state-machine-analysis.md` and the campaign's single
+`state-machine-inventory.json` before analysis. Identify explicit machines and
+implicit lifecycle, retry, cache, parser, protocol, authorization, cancellation,
+ownership, memory-lifetime, job, transaction, capability, compiler, and
+concurrency machines in the assigned surface. The inventory's extracted
+`source-signal-only` candidates are universal prioritization hints, not proved
+flows or findings. Resolve scope, aliases, dominance, identities, generations,
+and actual consumers before promotion. Record states, entry and exit
+conditions, target-owned invariants, guarded transitions, retry semantics,
+shared state, locking, and relevant interleavings. An invalid state or
+transition is a lead only when a complete source path or retained runtime
+witness proves it is reachable. Include the required history, retry sequence,
+or concurrency schedule and enforcing controls. Submit a schema-valid proposal
+and merge it with `scripts/state_machine_inventory.py`; do not overwrite the
+shared inventory or turn an imagined state combination into a finding.
+
 ## {mission_heading}
 
 {mission_text}
@@ -3050,9 +3132,33 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "toolInventory": "tools/tool-inventory.json",
                 "fingerprintAnalysis": "evidence/fingerprint-analysis.json",
             },
+            "stateMachineInventory": {
+                "path": "state-machine-inventory.json",
+                "requiredAtAnalysisStart": True,
+                "universalSourceExtraction": True,
+                "candidateSignalsAreNotFindings": True,
+                "requireRetryAndConcurrencyReview": True,
+                "reachableInvalidRequiresEvidence": True,
+            },
         }
     )
     write_json(root / "campaign.json", data)
+    state_inventory = template("state-machine-inventory.template.json")
+    state_inventory.update(
+        {
+            "target": args.target,
+            "revision": args.commit,
+            "createdAt": utc_now(),
+            "updatedAt": utc_now(),
+        }
+    )
+    state_inventory["discovery"]["revision"] = args.commit
+    if args.checkout:
+        state_inventory["discovery"] = discover_state_machines(
+            Path(args.checkout),
+            revision=args.commit,
+        )
+    write_json(root / "state-machine-inventory.json", state_inventory)
     write_json(
         root / "capability-facts.json",
         template("capability-facts.template.json"),
@@ -7368,6 +7474,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
             validated_leads = validate_completed_result(
                 root, result, str(task["task_id"])
             )
+            if task["lane"] in STATE_MACHINE_LANES:
+                validate_state_machine_task_result(root, result["taskResult"])
             if task["task_kind"] == "route-development":
                 validate_route_development_result(
                     result, str(task["route_id"]), int(task["research_round"])
